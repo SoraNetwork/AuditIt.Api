@@ -1,0 +1,6 @@
+@AuditIt.Api_HostAddress = http://localhost:5048
+
+GET {{AuditIt.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
