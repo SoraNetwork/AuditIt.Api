@@ -7,6 +7,6 @@ namespace AuditIt.Api.Services
     {
         Task<string> GetAccessTokenAsync();
         Task<DingTalkUserInfo> GetLegacyUserInfoByCodeAsync(string code);
-        Task<DingTalkSsoUserInfo> GetSsoUserInfoByCodeAsync(string ssoCode);
+        Task<SnsUserInfo> GetSsoUserInfoByCodeAsync(string ssoCode);
     }
 }
