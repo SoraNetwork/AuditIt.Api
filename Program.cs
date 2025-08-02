@@ -2,11 +2,14 @@ using System.Text;
 using System.Text.Json.Serialization;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
+using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.WebHost.UseUrls("http://0.0.0.0:5880");
 
 // Add services to the container.
 builder.Services.AddControllers()
@@ -47,6 +50,11 @@ builder.Services.AddCors(options =>
                    .AllowAnyHeader();
         });
 });
+
+// 配置钉钉服务
+builder.Services.Configure<DingTalkConfiguration>(builder.Configuration.GetSection("DingTalk"));
+builder.Services.AddMemoryCache();
+builder.Services.AddHttpClient<IDingTalkService, DingTalkService>();
 
 
 builder.Services.AddEndpointsApiExplorer();

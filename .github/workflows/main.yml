@@ -51,13 +51,13 @@ jobs:
       run: |
         find ./deploy-package -name "appsettings*.json" -delete
 
-    # - name: Stop remote service
-    #  uses: appleboy/ssh-action@v1
-    #  with: 
-    #    host: ${{ secrets.HANGZHOU_SERVER }}
-    #    username: ${{ secrets.HANGZHOU_USERNAME }}
-    #    password: ${{ secrets.HANGZHOU_KEY }}
-    #    script: sudo supervisorctl stop auditit-service
+    - name: Stop remote service
+      uses: appleboy/ssh-action@v1
+      with: 
+        host: ${{ secrets.HANGZHOU_SERVER }}
+        username: ${{ secrets.HANGZHOU_USERNAME }}
+        password: ${{ secrets.HANGZHOU_KEY }}
+        script: sudo supervisorctl stop auditit-service
           
     - name: Deploy via SFTP
       uses: wlixcc/SFTP-Deploy-Action@v1.2.5
@@ -68,13 +68,13 @@ jobs:
         local_path: './deploy-package/*'
         remote_path: '/www/AuditIt.Api/'
         
-    # - name: Start remote service
-    #  uses: appleboy/ssh-action@v1
-    #  with: 
-    #    host: ${{ secrets.HANGZHOU_SERVER }}
-    #    username: ${{ secrets.HANGZHOU_USERNAME }}
-    #    password: ${{ secrets.HANGZHOU_KEY }}
-    #    script: sudo supervisorctl start auditit-service
+    - name: Start remote service
+      uses: appleboy/ssh-action@v1
+      with: 
+        host: ${{ secrets.HANGZHOU_SERVER }}
+        username: ${{ secrets.HANGZHOU_USERNAME }}
+        password: ${{ secrets.HANGZHOU_KEY }}
+        script: sudo supervisorctl start auditit-service
 
 
 

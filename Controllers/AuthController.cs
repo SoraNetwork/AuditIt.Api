@@ -2,7 +2,9 @@ using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.Tasks;
 using AuditIt.Api.Models;
+using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
@@ -14,26 +16,42 @@ namespace AuditIt.Api.Controllers
     public class AuthController : ControllerBase
     {
         private readonly IConfiguration _configuration;
+        private readonly IDingTalkService _dingTalkService;
 
-        public AuthController(IConfiguration configuration)
+        public AuthController(IConfiguration configuration, IDingTalkService dingTalkService)
         {
             _configuration = configuration;
+            _dingTalkService = dingTalkService;
         }
 
         [HttpPost("dingtalk-login")]
-        public IActionResult DingTalkLogin([FromBody] DingTalkLoginRequest request)
+        public async Task<IActionResult> DingTalkLogin([FromBody] DingTalkLoginRequest request)
         {
-            // 模拟钉钉登录
-            var user = new User
+            if (string.IsNullOrEmpty(request.Code))
             {
-                Name = "模拟用户",
-                Phone = "1234567890",
-                DingTalkId = "mock_dingtalk_id"
-            };
+                return BadRequest("免登授权码不能为空");
+            }
 
-            var token = GenerateJwtToken(user);
+            try
+            {
+                var dingTalkUser = await _dingTalkService.GetUserInfoByCodeAsync(request.Code);
 
-            return Ok(new { Token = token, User = user });
+                var user = new User
+                {
+                    Id = Guid.NewGuid(),
+                    Name = dingTalkUser.Name,
+                    DingTalkId = dingTalkUser.UserId,
+                };
+
+                var token = GenerateJwtToken(user);
+
+                return Ok(new { Token = token, User = user });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"获取钉钉用户信息失败: {ex.Message}");
+            }
+            
         }
 
         private string GenerateJwtToken(User user)
@@ -44,7 +62,6 @@ namespace AuditIt.Api.Controllers
             var claims = new[]
             {
                 new Claim(ClaimTypes.NameIdentifier, user.Name),
-                new Claim("phone", user.Phone),
                 new Claim("dingTalkId", user.DingTalkId),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             };
