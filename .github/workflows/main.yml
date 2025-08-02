@@ -1,0 +1,82 @@
+name: Deploy Backend
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Install .NET Core
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+        
+    - name: Restore the application
+      run: dotnet restore
+      
+    - name: Build the application
+      run: |
+        dotnet publish -f net8.0 -c Release -r linux-x64 --self-contained false /p:PublishSingleFile=true /p:SourceRevisionId=${{ github.sha }}
+        
+    - name: Remove extra files
+      run: |
+        cd ./bin/Release/net8.0/linux-x64/publish/
+        rm -f *.pdb
+        rm -f *.json
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: SoraAuditIt.Api-Release-linux-x64 
+        path: ./bin/Release/net8.0/linux-x64/publish/
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: publish
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: SoraAuditIt.Api-Release-linux-x64
+        path: ./deploy-package
+        
+    - name: Remove excluded files
+      run: |
+        find ./deploy-package -name "appsettings*.json" -delete
+
+    # - name: Stop remote service
+    #  uses: appleboy/ssh-action@v1
+    #  with: 
+    #    host: ${{ secrets.HANGZHOU_SERVER }}
+    #    username: ${{ secrets.HANGZHOU_USERNAME }}
+    #    password: ${{ secrets.HANGZHOU_KEY }}
+    #    script: sudo supervisorctl stop auditit-service
+          
+    - name: Deploy via SFTP
+      uses: wlixcc/SFTP-Deploy-Action@v1.2.5
+      with:
+        server: ${{ secrets.HANGZHOU_SERVER }}
+        username: ${{ secrets.HANGZHOU_USERNAME }}
+        password: ${{ secrets.HANGZHOU_KEY }}
+        local_path: './deploy-package/*'
+        remote_path: '/www/AuditIt.Api/'
+        
+    # - name: Start remote service
+    #  uses: appleboy/ssh-action@v1
+    #  with: 
+    #    host: ${{ secrets.HANGZHOU_SERVER }}
+    #    username: ${{ secrets.HANGZHOU_USERNAME }}
+    #    password: ${{ secrets.HANGZHOU_KEY }}
+    #    script: sudo supervisorctl start auditit-service
+
+
+
+
+
