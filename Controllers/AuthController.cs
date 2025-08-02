@@ -94,7 +94,7 @@ namespace AuditIt.Api.Controllers
                 issuer: _configuration["Jwt:Issuer"],
                 audience: _configuration["Jwt:Audience"],
                 claims: claims,
-                expires: DateTime.Now.AddMinutes(120),
+                expires: DateTime.Now.AddHours(72),
                 signingCredentials: credentials);
 
             return new JwtSecurityTokenHandler().WriteToken(token);
