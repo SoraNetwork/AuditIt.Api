@@ -65,8 +65,8 @@ namespace AuditIt.Api.Controllers
                 var user = new User
                 {
                     Id = Guid.NewGuid(),
-                    Name = dingTalkUser.UserName, 
-                    DingTalkId = dingTalkUser.UserId,
+                    Name = dingTalkUser.Nick, 
+                    DingTalkId = dingTalkUser.UnionId, // 使用 UnionId 作为跨应用的唯一标识
                 };
 
                 var token = GenerateJwtToken(user);

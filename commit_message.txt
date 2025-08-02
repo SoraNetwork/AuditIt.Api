@@ -1,1 +1,1 @@
-feat(db): Add migration for hybrid auth model changes
+fix(auth): Correctly implement DingTalk SSO signature flow
