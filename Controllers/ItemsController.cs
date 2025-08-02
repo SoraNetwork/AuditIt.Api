@@ -91,10 +91,15 @@ namespace AuditIt.Api.Controllers
                 photoUrl = await SavePhoto(photo);
             }
 
+            var newItemId = Guid.NewGuid();
+            var shortId = !string.IsNullOrEmpty(dto.ShortId)
+                ? dto.ShortId
+                : newItemId.ToString().Substring(newItemId.ToString().Length - 8).ToUpper();
+
             var item = new Item
             {
-                Id = Guid.NewGuid(),
-                ShortId = dto.ShortId, // Using user-provided external ID
+                Id = newItemId,
+                ShortId = shortId,
                 ItemDefinitionId = dto.ItemDefinitionId,
                 WarehouseId = dto.WarehouseId,
                 Remarks = dto.Remarks,

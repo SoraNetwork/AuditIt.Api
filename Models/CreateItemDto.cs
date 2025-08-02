@@ -10,9 +10,8 @@ namespace AuditIt.Api.Models
         [Required]
         public int WarehouseId { get; set; }
 
-        [Required]
         [StringLength(50)]
-        public string ShortId { get; set; } // External Barcode
+        public string? ShortId { get; set; } // External Barcode
 
         [StringLength(500)]
         public string? Remarks { get; set; }
