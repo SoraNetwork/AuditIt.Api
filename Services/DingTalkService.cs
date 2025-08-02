@@ -1,10 +1,8 @@
 using System;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading.Tasks;
-using System.Web;
 using AuditIt.Api.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -16,7 +14,7 @@ namespace AuditIt.Api.Services
         private readonly HttpClient _httpClient;
         private readonly DingTalkConfiguration _dingTalkConfig;
         private readonly IMemoryCache _cache;
-        private const string AccessTokenCacheKey = "DingTalkAccessToken";
+        private const string AppAccessTokenCacheKey = "DingTalkAppAccessToken";
 
         public DingTalkService(HttpClient httpClient, IOptions<DingTalkConfiguration> dingTalkConfigOptions, IMemoryCache cache)
         {
@@ -25,9 +23,10 @@ namespace AuditIt.Api.Services
             _cache = cache;
         }
 
+        // Gets the application access token, used for legacy in-app login
         public async Task<string> GetAccessTokenAsync()
         {
-            if (_cache.TryGetValue(AccessTokenCacheKey, out string accessToken))
+            if (_cache.TryGetValue(AppAccessTokenCacheKey, out string accessToken))
             {
                 return accessToken;
             }
@@ -44,23 +43,24 @@ namespace AuditIt.Api.Services
             var tokenResponse = await response.Content.ReadFromJsonAsync<AccessTokenResponse>();
             if (tokenResponse == null || string.IsNullOrEmpty(tokenResponse.AccessToken))
             {
-                throw new InvalidOperationException("无法从钉钉获取 Access Token。");
+                throw new InvalidOperationException("无法从钉钉获取应用 Access Token。");
             }
             
             var cacheEntryOptions = new MemoryCacheEntryOptions()
                 .SetAbsoluteExpiration(TimeSpan.FromSeconds(tokenResponse.ExpireIn - 120));
 
-            _cache.Set(AccessTokenCacheKey, tokenResponse.AccessToken, cacheEntryOptions);
+            _cache.Set(AppAccessTokenCacheKey, tokenResponse.AccessToken, cacheEntryOptions);
 
             return tokenResponse.AccessToken;
         }
 
+        // Legacy in-app免登login
         public async Task<DingTalkUserInfo> GetLegacyUserInfoByCodeAsync(string code)
         {
-            var accessToken = await GetAccessTokenAsync();
+            var appAccessToken = await GetAccessTokenAsync();
             var requestBody = new { code };
             
-            var response = await _httpClient.PostAsJsonAsync($"https://oapi.dingtalk.com/topapi/v2/user/getuserinfo?access_token={accessToken}", requestBody);
+            var response = await _httpClient.PostAsJsonAsync($"https://oapi.dingtalk.com/topapi/v2/user/getuserinfo?access_token={appAccessToken}", requestBody);
             response.EnsureSuccessStatusCode();
 
             var userResponse = await response.Content.ReadFromJsonAsync<DingTalkUserResponse>();
@@ -72,37 +72,60 @@ namespace AuditIt.Api.Services
             return userResponse.Result;
         }
 
-        public async Task<SnsUserInfo> GetSsoUserInfoByCodeAsync(string ssoCode)
+        // Web SSO login flow
+        public async Task<DingTalkContactUser> GetSsoUserInfoByCodeAsync(string ssoCode)
         {
-            var timestamp = new DateTimeOffset(DateTime.UtcNow).ToUnixTimeMilliseconds().ToString();
-            var signature = GenerateSignature(timestamp, _dingTalkConfig.AppSecret);
-            
-            var requestUrl = $"https://oapi.dingtalk.com/sns/getuserinfo_bycode?accessKey={_dingTalkConfig.AppKey}&timestamp={timestamp}&signature={HttpUtility.UrlEncode(signature)}";
+            // Step 1: Get user-specific access token using the SSO code
+            var userAccessToken = await GetUserAccessTokenAsync(ssoCode);
 
-            var requestBody = new { tmp_auth_code = ssoCode };
+            // Step 2: Get user's contact info using the user-specific access token
+            var request = new HttpRequestMessage(HttpMethod.Get, "https://api.dingtalk.com/v1.0/contact/users/me");
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.Add("x-acs-dingtalk-access-token", userAccessToken);
+
+            var response = await _httpClient.SendAsync(request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                throw new InvalidOperationException($"获取用户个人信息失败: {response.StatusCode} - {errorContent}");
+            }
+
+            var userInfo = await response.Content.ReadFromJsonAsync<DingTalkContactUser>();
+            if (userInfo == null)
+            {
+                throw new InvalidOperationException("无法解析用户个人信息。");
+            }
+
+            return userInfo;
+        }
+
+        private async Task<string> GetUserAccessTokenAsync(string ssoCode)
+        {
+            var requestUrl = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken";
+            var requestBody = new
+            {
+                clientId = _dingTalkConfig.AppKey,
+                clientSecret = _dingTalkConfig.AppSecret,
+                code = ssoCode,
+                grantType = "authorization_code"
+            };
 
             var response = await _httpClient.PostAsJsonAsync(requestUrl, requestBody);
 
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
-                throw new InvalidOperationException($"获取钉钉 SSO 用户信息失败: {response.StatusCode} - {errorContent}");
+                throw new InvalidOperationException($"获取用户个人 Access Token 失败: {response.StatusCode} - {errorContent}");
             }
 
-            var snsResponse = await response.Content.ReadFromJsonAsync<DingTalkSnsResponse>();
-            if (snsResponse == null || snsResponse.ErrorCode != 0)
+            var tokenResponse = await response.Content.ReadFromJsonAsync<UserAccessTokenResponse>();
+            if (tokenResponse == null || string.IsNullOrEmpty(tokenResponse.AccessToken))
             {
-                 throw new InvalidOperationException($"获取钉钉 SSO 用户信息失败: {snsResponse?.ErrorMessage}");
+                throw new InvalidOperationException("未能从响应中获取用户个人 Access Token。");
             }
 
-            return snsResponse.UserInfo;
-        }
-
-        private string GenerateSignature(string timestamp, string appSecret)
-        {
-            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(appSecret));
-            var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(timestamp));
-            return Convert.ToBase64String(hash);
+            return tokenResponse.AccessToken;
         }
     }
 }
