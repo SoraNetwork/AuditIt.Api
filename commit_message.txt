@@ -1,1 +1,1 @@
-fix(auth): Implement correct two-step web SSO flow
+feat(items): Implement item creation with remarks, photos, and external IDs

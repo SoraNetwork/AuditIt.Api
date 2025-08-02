@@ -18,7 +18,7 @@ namespace AuditIt.Api.Models
 
         [Required]
         [StringLength(50)]
-        public string ShortId { get; set; } = string.Empty;
+        public string ShortId { get; set; } = string.Empty; // This will now store the External Barcode
 
         public int ItemDefinitionId { get; set; }
         [ForeignKey("ItemDefinitionId")]
@@ -33,5 +33,11 @@ namespace AuditIt.Api.Models
         public DateTime LastUpdated { get; set; } = DateTime.UtcNow;
 
         public DateTime EntryDate { get; set; } = DateTime.UtcNow;
+
+        [StringLength(500)]
+        public string? Remarks { get; set; }
+
+        [StringLength(2048)]
+        public string? PhotoUrl { get; set; }
     }
 }

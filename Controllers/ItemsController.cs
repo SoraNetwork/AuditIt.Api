@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Security.Claims;
 using System.Threading.Tasks;
@@ -8,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 
 namespace AuditIt.Api.Controllers
 {
@@ -17,10 +19,12 @@ namespace AuditIt.Api.Controllers
     public class ItemsController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly IWebHostEnvironment _env;
 
-        public ItemsController(ApplicationDbContext context)
+        public ItemsController(ApplicationDbContext context, IWebHostEnvironment env)
         {
             _context = context;
+            _env = env;
         }
 
         // GET: api/Items
@@ -52,40 +56,58 @@ namespace AuditIt.Api.Controllers
             return await query.OrderByDescending(i => i.LastUpdated).ToListAsync();
         }
 
-        // POST: api/Items/inbound
-        [HttpPost("inbound")]
-        public async Task<ActionResult<Item>> Inbound(InboundRequest request)
+        // POST: api/Items/batch
+        [HttpPost("batch")]
+        public async Task<ActionResult<IEnumerable<Item>>> GetItemsBatch([FromBody] Guid[] ids)
         {
-            var itemDefinition = await _context.ItemDefinitions.FindAsync(request.ItemDefinitionId);
-            if (itemDefinition == null)
+            if (ids == null || !ids.Any())
             {
-                return BadRequest("Item definition not found.");
+                return BadRequest("No item IDs provided.");
             }
 
-            var warehouse = await _context.Warehouses.FindAsync(request.WarehouseId);
-            if (warehouse == null)
+            var items = await _context.Items
+                .Where(i => ids.Contains(i.Id))
+                .Include(i => i.ItemDefinition)
+                .Include(i => i.Warehouse)
+                .ToListAsync();
+
+            return Ok(items);
+        }
+
+        // POST: api/Items/create
+        [HttpPost("create")]
+        [Consumes("multipart/form-data")]
+        public async Task<ActionResult<Item>> CreateItem([FromForm] CreateItemDto dto, IFormFile? photo)
+        {
+            var itemDefinition = await _context.ItemDefinitions.FindAsync(dto.ItemDefinitionId);
+            if (itemDefinition == null) return BadRequest("Item definition not found.");
+
+            var warehouse = await _context.Warehouses.FindAsync(dto.WarehouseId);
+            if (warehouse == null) return BadRequest("Warehouse not found.");
+
+            string? photoUrl = null;
+            if (photo != null)
             {
-                return BadRequest("Warehouse not found.");
+                photoUrl = await SavePhoto(photo);
             }
 
             var item = new Item
             {
-                Id = Guid.NewGuid(), // Generate a new UUID
-                ShortId = Guid.NewGuid().ToString("N").Substring(0, 8).ToUpper(),
-                ItemDefinitionId = request.ItemDefinitionId,
-                WarehouseId = request.WarehouseId,
+                Id = Guid.NewGuid(),
+                ShortId = dto.ShortId, // Using user-provided external ID
+                ItemDefinitionId = dto.ItemDefinitionId,
+                WarehouseId = dto.WarehouseId,
+                Remarks = dto.Remarks,
+                PhotoUrl = photoUrl,
                 Status = ItemStatus.InStock,
                 EntryDate = DateTime.UtcNow,
                 LastUpdated = DateTime.UtcNow
             };
 
             _context.Items.Add(item);
-            
             await LogAudit(item, AuditAction.Inbound, itemDefinition.Name, warehouse.Name);
-
             await _context.SaveChangesAsync();
 
-            // Manually load navigation properties to be returned in the response
             await _context.Entry(item).Reference(i => i.ItemDefinition).LoadAsync();
             await _context.Entry(item).Reference(i => i.Warehouse).LoadAsync();
 
@@ -108,10 +130,7 @@ namespace AuditIt.Api.Controllers
                 .Include(i => i.Warehouse)
                 .FirstOrDefaultAsync(i => i.Id == id);
 
-            if (item == null)
-            {
-                return NotFound();
-            }
+            if (item == null) return NotFound();
             
             await LogAudit(item, AuditAction.Check, item.ItemDefinition.Name, item.Warehouse.Name);
             await _context.SaveChangesAsync();
@@ -139,10 +158,7 @@ namespace AuditIt.Api.Controllers
                 .Include(i => i.Warehouse)
                 .FirstOrDefaultAsync(i => i.Id == id);
 
-            if (item == null)
-            {
-                return NotFound();
-            }
+            if (item == null) return NotFound();
 
             item.Status = newStatus;
             item.LastUpdated = DateTime.UtcNow;
@@ -163,7 +179,7 @@ namespace AuditIt.Api.Controllers
             {
                 Timestamp = DateTime.UtcNow,
                 Action = action,
-                ItemId = item.Id, // Now a Guid
+                ItemId = item.Id,
                 Item = item,
                 ItemShortId = item.ShortId,
                 ItemName = itemName,
@@ -174,11 +190,24 @@ namespace AuditIt.Api.Controllers
 
             _context.AuditLogs.Add(auditLog);
         }
-    }
 
-    public class InboundRequest
-    {
-        public int ItemDefinitionId { get; set; }
-        public int WarehouseId { get; set; }
+        private async Task<string> SavePhoto(IFormFile photo)
+        {
+            var uploadsFolderPath = Path.Combine(_env.WebRootPath ?? _env.ContentRootPath, "photos");
+            if (!Directory.Exists(uploadsFolderPath))
+            {
+                Directory.CreateDirectory(uploadsFolderPath);
+            }
+
+            var uniqueFileName = Guid.NewGuid().ToString() + "_" + photo.FileName;
+            var filePath = Path.Combine(uploadsFolderPath, uniqueFileName);
+
+            await using (var stream = new FileStream(filePath, FileMode.Create))
+            {
+                await photo.CopyToAsync(stream);
+            }
+
+            return $"/photos/{uniqueFileName}";
+        }
     }
 }
