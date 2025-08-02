@@ -34,8 +34,7 @@ namespace AuditIt.Api.Controllers
 
             try
             {
-                var dingTalkUser = await _dingTalkService.GetUserInfoByCodeAsync(request.Code);
-
+                var dingTalkUser = await _dingTalkService.GetLegacyUserInfoByCodeAsync(request.Code);
                 var user = new User
                 {
                     Id = Guid.NewGuid(),
@@ -44,14 +43,39 @@ namespace AuditIt.Api.Controllers
                 };
 
                 var token = GenerateJwtToken(user);
-
                 return Ok(new { Token = token, User = user });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"获取钉钉用户信息失败: {ex.Message}");
+                return StatusCode(500, $"通过免登码获取钉钉用户信息失败: {ex.Message}");
             }
-            
+        }
+
+        [HttpPost("dingtalk-sso-login")]
+        public async Task<IActionResult> DingTalkSsoLogin([FromBody] DingTalkLoginRequest request)
+        {
+            if (string.IsNullOrEmpty(request.Code))
+            {
+                return BadRequest("SSO 授权码不能为空");
+            }
+
+            try
+            {
+                var dingTalkUser = await _dingTalkService.GetSsoUserInfoByCodeAsync(request.Code);
+                var user = new User
+                {
+                    Id = Guid.NewGuid(),
+                    Name = dingTalkUser.UserName, 
+                    DingTalkId = dingTalkUser.UserId,
+                };
+
+                var token = GenerateJwtToken(user);
+                return Ok(new { Token = token, User = user });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"通过 SSO 授权码获取钉钉用户信息失败: {ex.Message}");
+            }
         }
 
         private string GenerateJwtToken(User user)

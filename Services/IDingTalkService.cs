@@ -6,6 +6,7 @@ namespace AuditIt.Api.Services
     public interface IDingTalkService
     {
         Task<string> GetAccessTokenAsync();
-        Task<DingTalkUserInfo> GetUserInfoByCodeAsync(string code);
+        Task<DingTalkUserInfo> GetLegacyUserInfoByCodeAsync(string code);
+        Task<DingTalkSsoUserInfo> GetSsoUserInfoByCodeAsync(string code);
     }
 }
