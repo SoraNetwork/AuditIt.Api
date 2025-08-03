@@ -33,3 +33,4 @@ auditit.db
 
 # App settings
 appsettings.Development.json
+*_back*.db 

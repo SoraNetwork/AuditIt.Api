@@ -6,6 +6,7 @@ using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -88,6 +89,16 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 
 app.UseStaticFiles(); // Enable serving static files from wwwroot
+
+// Serve photos from the 'photos' directory
+// Serve photos from the 'photos' directory in the content root
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(
+        Path.Combine(builder.Environment.ContentRootPath, "photos")),
+    RequestPath = "/photos"
+});
+
 
 app.UseCors("AllowAll");
 

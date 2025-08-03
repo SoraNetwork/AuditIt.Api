@@ -45,5 +45,8 @@ namespace AuditIt.Api.Models
         [Required]
         [StringLength(100)]
         public string User { get; set; } = string.Empty;
+
+        [StringLength(200)]
+        public string? Destination { get; set; }
     }
 }

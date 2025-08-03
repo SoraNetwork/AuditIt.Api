@@ -8,7 +8,8 @@ namespace AuditIt.Api.Models
     {
         InStock,
         LoanedOut,
-        Disposed
+        Disposed,
+        SuspectedMissing
     }
 
     public class Item
@@ -39,5 +40,8 @@ namespace AuditIt.Api.Models
 
         [StringLength(2048)]
         public string? PhotoUrl { get; set; }
+
+        [StringLength(200)]
+        public string? CurrentDestination { get; set; }
     }
 }
