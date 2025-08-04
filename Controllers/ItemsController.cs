@@ -127,7 +127,14 @@ namespace AuditIt.Api.Controllers
                 return NotFound();
             }
 
+            if (!string.IsNullOrEmpty(dto.ShortId))
+            {
+                // Optional: Add validation to ensure ShortId is unique if needed
+                item.ShortId = dto.ShortId;
+            }
+
             item.Remarks = dto.Remarks;
+            item.CurrentDestination = dto.CurrentDestination;
             item.LastUpdated = DateTime.UtcNow;
 
             if (dto.Photo != null)
