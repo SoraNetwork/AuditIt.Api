@@ -1,12 +1,12 @@
-using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Http;
 
 namespace AuditIt.Api.Models
 {
     public class UpdateItemDto
     {
-        [StringLength(500)]
         public string? Remarks { get; set; }
-
         public IFormFile? Photo { get; set; }
+        public bool? DeletePhoto { get; set; }
     }
 }
+

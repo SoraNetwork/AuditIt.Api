@@ -135,6 +135,11 @@ namespace AuditIt.Api.Controllers
                 DeletePhoto(item.PhotoUrl); // Delete the old photo
                 item.PhotoUrl = await SavePhoto(dto.Photo); // Save the new one
             }
+            else if (dto.DeletePhoto == true)
+            {
+                DeletePhoto(item.PhotoUrl);
+                item.PhotoUrl = null;
+            }
 
             await _context.SaveChangesAsync();
 
