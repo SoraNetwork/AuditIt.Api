@@ -153,16 +153,7 @@ namespace AuditIt.Api.Controllers
         [HttpPut("{id}/check")]
         public async Task<ActionResult<Item>> Check(Guid id)
         {
-            var item = await _context.Items
-                .Include(i => i.ItemDefinition)
-                .Include(i => i.Warehouse)
-                .FirstOrDefaultAsync(i => i.Id == id);
-
-            if (item == null) return NotFound();
-            
-            await LogAudit(item, AuditAction.Check, item.ItemDefinition.Name, item.Warehouse.Name, null);
-            await _context.SaveChangesAsync();
-            return Ok(item);
+            return await UpdateItemStatus(id, ItemStatus.InStock, AuditAction.Check, null);
         }
 
         // PUT: api/Items/{id}/return
