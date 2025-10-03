@@ -10,7 +10,8 @@ namespace AuditIt.Api.Models
         Outbound,
         Check,
         Return,
-        Dispose
+        Dispose,
+        Transfer
     }
 
     public class AuditLog

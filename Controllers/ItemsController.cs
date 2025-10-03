@@ -215,6 +215,59 @@ namespace AuditIt.Api.Controllers
             return Ok(new { message = $"{itemsToUpdate.Count} items updated to {request.Status}." });
         }
 
+        // PUT: api/Items/{id}/transfer
+        [HttpPut("{id}/transfer")]
+        public async Task<ActionResult<Item>> TransferWarehouse(Guid id, [FromBody] TransferWarehouseRequest request)
+        {
+            var item = await _context.Items
+                .Include(i => i.ItemDefinition)
+                .Include(i => i.Warehouse)
+                .FirstOrDefaultAsync(i => i.Id == id);
+
+            if (item == null)
+            {
+                return NotFound("Item not found.");
+            }
+
+            var newWarehouse = await _context.Warehouses.FindAsync(request.NewWarehouseId);
+            if (newWarehouse == null)
+            {
+                return BadRequest("Target warehouse not found.");
+            }
+
+            // 记录旧库房信息
+            var oldWarehouseName = item.Warehouse?.Name ?? "Unknown";
+            var oldWarehouseId = item.WarehouseId;
+
+            // 更新库房
+            item.WarehouseId = request.NewWarehouseId;
+            item.LastUpdated = DateTime.UtcNow;
+            
+            // 如果需要，可以更新备注
+            if (!string.IsNullOrEmpty(request.Remarks))
+            {
+                item.Remarks = request.Remarks;
+            }
+
+            _context.Entry(item).State = EntityState.Modified;
+
+            // 记录审计日志 - 从旧库房转移到新库房
+            await LogAudit(
+                item, 
+                AuditAction.Transfer, 
+                item.ItemDefinition?.Name ?? "Unknown Item", 
+                newWarehouse.Name, 
+                $"From: {oldWarehouseName} (ID: {oldWarehouseId})"
+            );
+
+            await _context.SaveChangesAsync();
+
+            // 重新加载关联数据以返回完整信息
+            await _context.Entry(item).Reference(i => i.Warehouse).LoadAsync();
+
+            return Ok(item);
+        }
+
         private async Task<ActionResult<Item>> UpdateItemStatus(Guid id, ItemStatus newStatus, AuditAction action, string? destination)
         {
             var item = await _context.Items
