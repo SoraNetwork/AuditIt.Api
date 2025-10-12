@@ -116,6 +116,40 @@ namespace AuditIt.Api.Controllers
             return CreatedAtAction(nameof(GetItems), new { id = item.Id }, item);
         }
 
+	// POST: api/Items/create/batch
+        [HttpPost("create/batch")]
+        public async Task<IActionResult> PostItems([FromBody] CreateItemsDto dto)
+        {
+            var itemDefinition = await _context.ItemDefinitions.FindAsync(dto.ItemDefinitionId);
+            if (itemDefinition == null) return BadRequest("Item definition not found.");
+            var warehouse = await _context.Warehouses.FindAsync(dto.WarehouseId);
+            if (warehouse == null) return BadRequest("Warehouse not found.");
+            var newItems = new List<Item>();
+            foreach (var itemDto in dto.Items)
+            {
+                var newItemId = Guid.NewGuid();
+                var shortId = !string.IsNullOrEmpty(itemDto.ShortId)
+                    ? itemDto.ShortId
+                    : newItemId.ToString().Substring(0, 8).ToUpper();
+                var item = new Item
+                {
+                    Id = newItemId,
+                    ShortId = shortId,
+                    ItemDefinitionId = dto.ItemDefinitionId,
+                    WarehouseId = dto.WarehouseId,
+                    Remarks = itemDto.Remarks,
+                    Status = ItemStatus.InStock,
+                    EntryDate = DateTime.UtcNow,
+                    LastUpdated = DateTime.UtcNow
+                };
+                newItems.Add(item);
+                _context.Items.Add(item);
+                await LogAudit(item, AuditAction.Inbound, itemDefinition.Name, warehouse.Name, "Initial creation");
+            }
+            await _context.SaveChangesAsync();
+            return Ok(new { message = $"{newItems.Count} items created successfully." });
+        }
+
         // PUT: api/Items/{id}
         [HttpPut("{id}")]
         [Consumes("multipart/form-data")]
