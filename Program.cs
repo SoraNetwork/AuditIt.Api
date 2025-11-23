@@ -53,9 +53,18 @@ builder.Services.AddCors(options =>
 });
 
 // 配置钉钉服务
+
 builder.Services.Configure<DingTalkConfiguration>(builder.Configuration.GetSection("DingTalk"));
+
 builder.Services.AddMemoryCache();
+
 builder.Services.AddHttpClient<IDingTalkService, DingTalkService>();
+
+
+
+// 注册快捷备注服务
+
+builder.Services.AddScoped<IQuickRemarkService, QuickRemarkService>();
 
 
 builder.Services.AddEndpointsApiExplorer();
