@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
+using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using SixLabors.ImageSharp;
@@ -31,6 +32,7 @@ namespace AuditIt.Api.Controllers
 
         // GET: api/Items
         [HttpGet]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<IEnumerable<Item>>> GetItems([FromQuery] ItemQueryParameters queryParameters)
         {
             var query = _context.Items.Include(i => i.ItemDefinition).Include(i => i.Warehouse).AsQueryable();
@@ -51,12 +53,17 @@ namespace AuditIt.Api.Controllers
             {
                 query = query.Where(i => i.ShortId == queryParameters.ShortId);
             }
+            if (!string.IsNullOrEmpty(queryParameters.SerialNumber))
+            {
+                query = query.Where(i => i.SerialNumber == queryParameters.SerialNumber);
+            }
 
             return await query.OrderByDescending(i => i.LastUpdated).ToListAsync();
         }
 
         // POST: api/Items/batch
         [HttpPost("batch")]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<IEnumerable<Item>>> GetItemsBatch([FromBody] Guid[] ids)
         {
             if (ids == null || !ids.Any())
@@ -74,6 +81,7 @@ namespace AuditIt.Api.Controllers
         // POST: api/Items/create
         [HttpPost("create")]
         [Consumes("multipart/form-data")]
+        [RequirePermission(PermissionCodes.ItemCreate)]
         public async Task<ActionResult<Item>> CreateItem([FromForm] CreateItemDto dto)
         {
             var itemDefinition = await _context.ItemDefinitions.FindAsync(dto.ItemDefinitionId);
@@ -81,6 +89,12 @@ namespace AuditIt.Api.Controllers
 
             var warehouse = await _context.Warehouses.FindAsync(dto.WarehouseId);
             if (warehouse == null) return BadRequest("Warehouse not found.");
+
+            if (!string.IsNullOrWhiteSpace(dto.SerialNumber))
+            {
+                var dup = await _context.Items.AnyAsync(i => i.SerialNumber == dto.SerialNumber);
+                if (dup) return Conflict($"SN {dto.SerialNumber} 已存在。");
+            }
 
             string? photoUrl = null;
             if (dto.Photo != null)
@@ -97,6 +111,7 @@ namespace AuditIt.Api.Controllers
             {
                 Id = newItemId,
                 ShortId = shortId,
+                SerialNumber = string.IsNullOrWhiteSpace(dto.SerialNumber) ? null : dto.SerialNumber,
                 ItemDefinitionId = dto.ItemDefinitionId,
                 WarehouseId = dto.WarehouseId,
                 Remarks = dto.Remarks,
@@ -118,12 +133,24 @@ namespace AuditIt.Api.Controllers
 
 	// POST: api/Items/create/batch
         [HttpPost("create/batch")]
+        [RequirePermission(PermissionCodes.ItemCreate)]
         public async Task<IActionResult> PostItems([FromBody] CreateItemsDto dto)
         {
             var itemDefinition = await _context.ItemDefinitions.FindAsync(dto.ItemDefinitionId);
             if (itemDefinition == null) return BadRequest("Item definition not found.");
             var warehouse = await _context.Warehouses.FindAsync(dto.WarehouseId);
             if (warehouse == null) return BadRequest("Warehouse not found.");
+            var snList = dto.Items.Where(i => !string.IsNullOrWhiteSpace(i.SerialNumber))
+                                   .Select(i => i.SerialNumber!).ToList();
+            if (snList.Count != snList.Distinct().Count())
+                return BadRequest("批量请求中存在重复 SerialNumber。");
+            if (snList.Count > 0)
+            {
+                var taken = await _context.Items.Where(i => snList.Contains(i.SerialNumber!))
+                    .Select(i => i.SerialNumber).ToListAsync();
+                if (taken.Count > 0) return Conflict($"以下 SN 已存在：{string.Join(", ", taken)}");
+            }
+
             var newItems = new List<Item>();
             foreach (var itemDto in dto.Items)
             {
@@ -135,6 +162,7 @@ namespace AuditIt.Api.Controllers
                 {
                     Id = newItemId,
                     ShortId = shortId,
+                    SerialNumber = string.IsNullOrWhiteSpace(itemDto.SerialNumber) ? null : itemDto.SerialNumber,
                     ItemDefinitionId = dto.ItemDefinitionId,
                     WarehouseId = dto.WarehouseId,
                     Remarks = itemDto.Remarks,
@@ -153,6 +181,7 @@ namespace AuditIt.Api.Controllers
         // PUT: api/Items/{id}
         [HttpPut("{id}")]
         [Consumes("multipart/form-data")]
+        [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<IActionResult> UpdateItem(Guid id, [FromForm] UpdateItemDto dto)
         {
             var item = await _context.Items.FirstOrDefaultAsync(i => i.Id == id);
@@ -165,6 +194,17 @@ namespace AuditIt.Api.Controllers
             {
                 // Optional: Add validation to ensure ShortId is unique if needed
                 item.ShortId = dto.ShortId;
+            }
+
+            if (dto.SerialNumber != null)
+            {
+                var normalized = string.IsNullOrWhiteSpace(dto.SerialNumber) ? null : dto.SerialNumber;
+                if (normalized != null && normalized != item.SerialNumber)
+                {
+                    var dup = await _context.Items.AnyAsync(i => i.Id != id && i.SerialNumber == normalized);
+                    if (dup) return Conflict($"SN {normalized} 已存在。");
+                }
+                item.SerialNumber = normalized;
             }
 
             item.Remarks = dto.Remarks;
@@ -190,6 +230,7 @@ namespace AuditIt.Api.Controllers
 
         // PUT: api/Items/{id}/outbound
         [HttpPut("{id}/outbound")]
+        [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<ActionResult<Item>> Outbound(Guid id, [FromBody] UpdateItemRequest request)
         {
             return await UpdateItemStatus(id, ItemStatus.LoanedOut, AuditAction.Outbound, request.Destination);
@@ -197,6 +238,7 @@ namespace AuditIt.Api.Controllers
 
         // PUT: api/Items/{id}/check
         [HttpPut("{id}/check")]
+        [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<ActionResult<Item>> Check(Guid id)
         {
             return await UpdateItemStatus(id, ItemStatus.InStock, AuditAction.Check, null);
@@ -204,6 +246,7 @@ namespace AuditIt.Api.Controllers
 
         // PUT: api/Items/{id}/return
         [HttpPut("{id}/return")]
+        [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<ActionResult<Item>> Return(Guid id)
         {
             return await UpdateItemStatus(id, ItemStatus.InStock, AuditAction.Return, null);
@@ -211,6 +254,7 @@ namespace AuditIt.Api.Controllers
 
         // PUT: api/Items/{id}/dispose
         [HttpPut("{id}/dispose")]
+        [RequirePermission(PermissionCodes.ItemDelete)]
         public async Task<ActionResult<Item>> Dispose(Guid id, [FromBody] UpdateItemRequest request)
         {
             return await UpdateItemStatus(id, ItemStatus.Disposed, AuditAction.Dispose, request.Destination);
@@ -218,6 +262,7 @@ namespace AuditIt.Api.Controllers
 
         // POST: api/Items/update-status/batch
         [HttpPost("update-status/batch")]
+        [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<IActionResult> UpdateStatusBatch([FromBody] UpdateStatusBatchRequest request)
         {
             if (request.ItemIds == null || !request.ItemIds.Any())
@@ -251,6 +296,7 @@ namespace AuditIt.Api.Controllers
 
         // PUT: api/Items/{id}/transfer
         [HttpPut("{id}/transfer")]
+        [RequirePermission(PermissionCodes.ItemTransfer)]
         public async Task<ActionResult<Item>> TransferWarehouse(Guid id, [FromBody] TransferWarehouseRequest request)
         {
             var item = await _context.Items

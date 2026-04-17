@@ -21,6 +21,10 @@ namespace AuditIt.Api.Models
         [StringLength(50)]
         public string ShortId { get; set; } = string.Empty; // This will now store the External Barcode
 
+        // 厂家序列号 / 特殊 ID（SN）。全库唯一，作用等价于 ShortId。
+        [StringLength(100)]
+        public string? SerialNumber { get; set; }
+
         public int ItemDefinitionId { get; set; }
         [ForeignKey("ItemDefinitionId")]
         public virtual ItemDefinition? ItemDefinition { get; set; }

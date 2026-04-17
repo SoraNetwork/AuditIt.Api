@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
+using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 
 namespace AuditIt.Api.Controllers
@@ -23,6 +24,7 @@ namespace AuditIt.Api.Controllers
 
         // GET: api/Categories
         [HttpGet]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<IEnumerable<Category>>> GetCategories()
         {
             return await _context.Categories.ToListAsync();
@@ -30,6 +32,7 @@ namespace AuditIt.Api.Controllers
 
         // GET: api/Categories/5
         [HttpGet("{id}")]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<Category>> GetCategory(int id)
         {
             var category = await _context.Categories.FindAsync(id);
@@ -44,6 +47,7 @@ namespace AuditIt.Api.Controllers
 
         // PUT: api/Categories/5
         [HttpPut("{id}")]
+        [RequirePermission(PermissionCodes.CategoryManage)]
         public async Task<ActionResult<Category>> PutCategory(int id, CreateCategoryDto categoryDto)
         {
             var category = await _context.Categories.FindAsync(id);
@@ -78,6 +82,7 @@ namespace AuditIt.Api.Controllers
 
         // POST: api/Categories
         [HttpPost]
+        [RequirePermission(PermissionCodes.CategoryManage)]
         public async Task<ActionResult<Category>> PostCategory(CreateCategoryDto categoryDto)
         {
             var category = new Category
@@ -94,6 +99,7 @@ namespace AuditIt.Api.Controllers
 
         // DELETE: api/Categories/5
         [HttpDelete("{id}")]
+        [RequirePermission(PermissionCodes.CategoryManage)]
         public async Task<IActionResult> DeleteCategory(int id)
         {
             var category = await _context.Categories.FindAsync(id);

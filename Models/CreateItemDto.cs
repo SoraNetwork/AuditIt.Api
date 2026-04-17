@@ -13,6 +13,9 @@ namespace AuditIt.Api.Models
         [StringLength(50)]
         public string? ShortId { get; set; } // External Barcode
 
+        [StringLength(100)]
+        public string? SerialNumber { get; set; }
+
         [StringLength(500)]
         public string? Remarks { get; set; }
 

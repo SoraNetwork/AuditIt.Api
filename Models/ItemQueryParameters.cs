@@ -6,5 +6,6 @@ namespace AuditIt.Api.Models
         public ItemStatus? Status { get; set; }
         public Guid? Id { get; set; }
         public string? ShortId { get; set; }
+        public string? SerialNumber { get; set; }
     }
 }

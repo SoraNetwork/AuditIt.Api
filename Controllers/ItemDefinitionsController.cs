@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
+using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 
 namespace AuditIt.Api.Controllers
@@ -23,6 +24,7 @@ namespace AuditIt.Api.Controllers
 
         // GET: api/ItemDefinitions
         [HttpGet]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<IEnumerable<ItemDefinition>>> GetItemDefinitions()
         {
             return await _context.ItemDefinitions.Include(i => i.Category).ToListAsync();
@@ -30,6 +32,7 @@ namespace AuditIt.Api.Controllers
 
         // GET: api/ItemDefinitions/5
         [HttpGet("{id}")]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<ItemDefinition>> GetItemDefinition(int id)
         {
             var itemDefinition = await _context.ItemDefinitions.Include(i => i.Category).FirstOrDefaultAsync(i => i.Id == id);
@@ -44,6 +47,7 @@ namespace AuditIt.Api.Controllers
 
         // PUT: api/ItemDefinitions/5
         [HttpPut("{id}")]
+        [RequirePermission(PermissionCodes.ItemDefinitionManage)]
         public async Task<IActionResult> PutItemDefinition(int id, ItemDefinition itemDefinition)
         {
             if (id != itemDefinition.Id)
@@ -74,6 +78,7 @@ namespace AuditIt.Api.Controllers
 
         // POST: api/ItemDefinitions
         [HttpPost]
+        [RequirePermission(PermissionCodes.ItemDefinitionManage)]
         public async Task<ActionResult<ItemDefinition>> PostItemDefinition(CreateItemDefinitionDto itemDefinitionDto)
         {
             var category = await _context.Categories.FindAsync(itemDefinitionDto.CategoryId);
@@ -102,6 +107,7 @@ namespace AuditIt.Api.Controllers
 
         // DELETE: api/ItemDefinitions/5
         [HttpDelete("{id}")]
+        [RequirePermission(PermissionCodes.ItemDefinitionManage)]
         public async Task<IActionResult> DeleteItemDefinition(int id)
         {
             var itemDefinition = await _context.ItemDefinitions.FindAsync(id);

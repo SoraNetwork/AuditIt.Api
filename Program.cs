@@ -66,6 +66,21 @@ builder.Services.AddHttpClient<IDingTalkService, DingTalkService>();
 
 builder.Services.AddScoped<IQuickRemarkService, QuickRemarkService>();
 
+// 租赁平台相关服务
+builder.Services.Configure<ReminderOptions>(builder.Configuration.GetSection("Reminders"));
+builder.Services.AddScoped<IRenterService, RenterService>();
+builder.Services.AddScoped<IRentalService, RentalService>();
+builder.Services.AddScoped<IItemListingService, ItemListingService>();
+builder.Services.AddScoped<IReminderService, ReminderService>();
+builder.Services.AddScoped<INotificationChannel, InAppNotificationChannel>();
+builder.Services.AddHostedService<ReminderSweeper>();
+
+// 用户/角色/权限服务
+builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection("Auth"));
+builder.Services.AddScoped<IIdentityService, IdentityService>();
+builder.Services.AddScoped<IRoleService, RoleService>();
+builder.Services.AddScoped<IUserService, UserService>();
+
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -80,6 +95,7 @@ using (var scope = app.Services.CreateScope())
     {
         var context = services.GetRequiredService<ApplicationDbContext>();
         context.Database.Migrate();
+        await RbacSeeder.SeedAsync(context);
     }
     catch (Exception ex)
     {

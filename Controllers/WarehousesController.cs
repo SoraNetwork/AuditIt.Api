@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
+using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 
 namespace AuditIt.Api.Controllers
@@ -23,6 +24,7 @@ namespace AuditIt.Api.Controllers
 
         // GET: api/Warehouses
         [HttpGet]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<IEnumerable<Warehouse>>> GetWarehouses()
         {
             return await _context.Warehouses.ToListAsync();
@@ -30,6 +32,7 @@ namespace AuditIt.Api.Controllers
 
         // GET: api/Warehouses/5
         [HttpGet("{id}")]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<Warehouse>> GetWarehouse(int id)
         {
             var warehouse = await _context.Warehouses.FindAsync(id);
@@ -44,6 +47,7 @@ namespace AuditIt.Api.Controllers
 
         // PUT: api/Warehouses/5
         [HttpPut("{id}")]
+        [RequirePermission(PermissionCodes.WarehouseManage)]
         public async Task<ActionResult<Warehouse>> PutWarehouse(int id, CreateWarehouseDto warehouseDto)
         {
             var warehouse = await _context.Warehouses.FindAsync(id);
@@ -80,6 +84,7 @@ namespace AuditIt.Api.Controllers
 
         // POST: api/Warehouses
         [HttpPost]
+        [RequirePermission(PermissionCodes.WarehouseManage)]
         public async Task<ActionResult<Warehouse>> PostWarehouse(CreateWarehouseDto warehouseDto)
         {
             var warehouse = new Warehouse
@@ -99,6 +104,7 @@ namespace AuditIt.Api.Controllers
 
         // DELETE: api/Warehouses/5
         [HttpDelete("{id}")]
+        [RequirePermission(PermissionCodes.WarehouseManage)]
         public async Task<IActionResult> DeleteWarehouse(int id)
         {
             var warehouse = await _context.Warehouses.FindAsync(id);

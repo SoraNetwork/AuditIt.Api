@@ -11,7 +11,13 @@ namespace AuditIt.Api.Models
         Check,
         Return,
         Dispose,
-        Transfer
+        Transfer,
+        RentalCreated,
+        RentalShipped,
+        RentalDelivered,
+        RentalReturned,
+        RentalExtended,
+        RentalCancelled
     }
 
     public class AuditLog

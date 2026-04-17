@@ -30,7 +30,12 @@ bld/
 
 # Local Database
 auditit.db
+auditit.db-shm
+auditit.db-wal
 
 # App settings
 appsettings.Development.json
-*_back*.db 
+*_back*.db
+
+# Claude Code local state
+.claude/ 

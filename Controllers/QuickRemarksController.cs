@@ -1,11 +1,13 @@
 using AuditIt.Api.Models;
 using AuditIt.Api.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AuditIt.Api.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [Authorize]
     public class QuickRemarksController : ControllerBase
     {
         private readonly IQuickRemarkService _quickRemarkService;
@@ -16,6 +18,7 @@ namespace AuditIt.Api.Controllers
         }
 
         [HttpGet]
+        [RequirePermission(PermissionCodes.ItemView)]
         public async Task<ActionResult<IEnumerable<QuickRemarkDto>>> GetQuickRemarks()
         {
             var quickRemarks = await _quickRemarkService.GetAllQuickRemarksAsync();
@@ -23,6 +26,7 @@ namespace AuditIt.Api.Controllers
         }
 
         [HttpPost]
+        [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<ActionResult<QuickRemarkDto>> CreateQuickRemark([FromBody] CreateQuickRemarkDto dto)
         {
             if (!ModelState.IsValid)
@@ -35,6 +39,7 @@ namespace AuditIt.Api.Controllers
         }
 
         [HttpDelete("{id}")]
+        [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<IActionResult> DeleteQuickRemark(int id)
         {
             var result = await _quickRemarkService.DeleteQuickRemarkAsync(id);

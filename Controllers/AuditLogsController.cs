@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
+using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 
 namespace AuditIt.Api.Controllers
@@ -23,6 +24,7 @@ namespace AuditIt.Api.Controllers
 
         // GET: api/AuditLogs
         [HttpGet]
+        [RequirePermission(PermissionCodes.AuditLogView)]
         public async Task<ActionResult<IEnumerable<AuditLog>>> GetAuditLogs([FromQuery] Guid? itemId)
         {
             var query = _context.AuditLogs.AsQueryable();
