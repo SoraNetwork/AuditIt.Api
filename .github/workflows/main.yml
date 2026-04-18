@@ -54,27 +54,27 @@ jobs:
     - name: Stop remote service
       uses: appleboy/ssh-action@v1
       with: 
-        host: ${{ secrets.HANGZHOU_SERVER }}
-        username: ${{ secrets.HANGZHOU_USERNAME }}
-        password: ${{ secrets.HANGZHOU_KEY }}
-        script: sudo supervisorctl stop auditit-service
+        host: ${{ secrets.NINGBO_SERVER }}
+        username: ${{ secrets.NINGBO_USERNAME }}
+        password: ${{ secrets.NINGBO_KEY }}
+        script: sudo supervisorctl stop rentit-service
           
     - name: Deploy via SFTP
       uses: wlixcc/SFTP-Deploy-Action@v1.2.5
       with:
-        server: ${{ secrets.HANGZHOU_SERVER }}
-        username: ${{ secrets.HANGZHOU_USERNAME }}
-        password: ${{ secrets.HANGZHOU_KEY }}
+        server: ${{ secrets.NINGBO_SERVER }}
+        username: ${{ secrets.NINGBO_USERNAME }}
+        password: ${{ secrets.NINGBO_KEY }}
         local_path: './deploy-package/*'
-        remote_path: '/www/AuditIt.Api/'
+        remote_path: '/www/RentIt.Api/'
         
     - name: Start remote service
       uses: appleboy/ssh-action@v1
       with: 
-        host: ${{ secrets.HANGZHOU_SERVER }}
-        username: ${{ secrets.HANGZHOU_USERNAME }}
-        password: ${{ secrets.HANGZHOU_KEY }}
-        script: sudo supervisorctl start auditit-service
+        host: ${{ secrets.NINGBO_SERVER }}
+        username: ${{ secrets.NINGBO_USERNAME }}
+        password: ${{ secrets.NINGBO_KEY }}
+        script: sudo supervisorctl start rentit-service
 
 
 
