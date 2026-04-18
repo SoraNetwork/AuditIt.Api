@@ -8,14 +8,22 @@ namespace AuditIt.Api.Services
     {
         private readonly ApplicationDbContext _context;
         private readonly IRenterService _renterService;
+        private readonly IIdentityService _identityService;
+        private readonly IEnumerable<INotificationChannel> _notificationChannels;
 
-        public RentalService(ApplicationDbContext context, IRenterService renterService)
+        public RentalService(
+            ApplicationDbContext context,
+            IRenterService renterService,
+            IIdentityService identityService,
+            IEnumerable<INotificationChannel> notificationChannels)
         {
             _context = context;
             _renterService = renterService;
+            _identityService = identityService;
+            _notificationChannels = notificationChannels;
         }
 
-        public async Task<IEnumerable<RentalDto>> ListAsync(RentalQueryParameters query)
+        public async Task<(IEnumerable<RentalDto> items, int total)> ListAsync(RentalQueryParameters query)
         {
             var q = _context.Rentals
                 .Include(r => r.Renter)
@@ -33,6 +41,8 @@ namespace AuditIt.Api.Services
             if (query.StartDateFrom.HasValue) q = q.Where(r => r.StartDate >= query.StartDateFrom.Value);
             if (query.StartDateTo.HasValue) q = q.Where(r => r.StartDate <= query.StartDateTo.Value);
 
+            var total = await q.CountAsync();
+
             var page = Math.Max(1, query.Page);
             var pageSize = Math.Clamp(query.PageSize, 1, 200);
 
@@ -41,7 +51,7 @@ namespace AuditIt.Api.Services
                 .Take(pageSize)
                 .ToListAsync();
 
-            return rows.Select(ToDto).ToList();
+            return (rows.Select(ToDto), total);
         }
 
         public async Task<RentalDto?> GetByIdAsync(Guid id)
@@ -59,11 +69,12 @@ namespace AuditIt.Api.Services
             if (dto.ItemIds == null || dto.ItemIds.Count == 0)
                 return (null, "至少选择一件物品。");
 
-            var distinctItemIds = dto.ItemIds.Distinct().ToList();
+            var distinctItemIds = dto.ItemIds.Select(id => Guid.Parse(id)).Distinct().ToList();
 
             var items = await _context.Items
                 .Include(i => i.ItemDefinition)
                 .Include(i => i.Warehouse)
+                .Include(i => i.Listings)
                 .Where(i => distinctItemIds.Contains(i.Id))
                 .ToListAsync();
 
@@ -103,12 +114,17 @@ namespace AuditIt.Api.Services
 
             foreach (var item in items)
             {
+                var listingRemarks = string.Join("; ", item.Listings
+                    .Where(l => l.Status == ListingStatus.Listed)
+                    .Select(l => $"{l.Platform}: {l.Remarks ?? "无备注"}"));
+
                 var ri = new RentalItem
                 {
                     RentalId = rentalId,
                     ItemId = item.Id,
                     ItemShortIdSnapshot = item.ShortId,
-                    ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty
+                    ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty,
+                    ListingRemarksSnapshot = string.IsNullOrEmpty(listingRemarks) ? null : listingRemarks
                 };
                 _context.RentalItems.Add(ri);
 
@@ -120,6 +136,9 @@ namespace AuditIt.Api.Services
             }
 
             await _context.SaveChangesAsync();
+
+            await NotifyStatusChangeAsync(rental, "已创建", currentUser,
+                $"租客：{renter.Name}，物品 {items.Count} 件");
 
             return (await GetByIdAsync(rentalId), null);
         }
@@ -134,38 +153,78 @@ namespace AuditIt.Api.Services
             if (rental.Status == RentalStatus.Returned || rental.Status == RentalStatus.Cancelled)
                 return (null, "已结束的租赁单不可修改。");
 
+            var changes = new List<string>();
             var extended = false;
+
             if (dto.ExpectedEndDate.HasValue && dto.ExpectedEndDate.Value != rental.ExpectedEndDate)
             {
                 extended = dto.ExpectedEndDate.Value > rental.ExpectedEndDate;
+                changes.Add($"预计结束 {rental.ExpectedEndDate:yyyy-MM-dd} → {dto.ExpectedEndDate.Value:yyyy-MM-dd}");
                 rental.ExpectedEndDate = dto.ExpectedEndDate.Value;
                 // If was Overdue and extension pushes expiry into the future, demote to Active.
                 if (rental.Status == RentalStatus.Overdue && rental.ExpectedEndDate > DateTime.UtcNow)
                     rental.Status = RentalStatus.Active;
             }
-            if (dto.TotalPrice.HasValue) rental.TotalPrice = dto.TotalPrice.Value;
-            if (dto.Deposit.HasValue) rental.Deposit = dto.Deposit.Value;
-            if (dto.ShippingAddress != null) rental.ShippingAddress = dto.ShippingAddress;
-            if (dto.Notes != null) rental.Notes = dto.Notes;
-            if (dto.AssignedTo != null) rental.AssignedTo = string.IsNullOrWhiteSpace(dto.AssignedTo) ? null : dto.AssignedTo.Trim();
+            if (dto.TotalPrice.HasValue && dto.TotalPrice.Value != rental.TotalPrice)
+            {
+                changes.Add($"总价 {rental.TotalPrice:0.0} → {dto.TotalPrice.Value:0.0}");
+                rental.TotalPrice = dto.TotalPrice.Value;
+            }
+            if (dto.Deposit.HasValue && dto.Deposit.Value != rental.Deposit)
+            {
+                changes.Add($"押金 {rental.Deposit?.ToString("0.0") ?? "-"} → {dto.Deposit.Value:0.0}");
+                rental.Deposit = dto.Deposit.Value;
+            }
+            if (dto.ShippingAddress != null && dto.ShippingAddress != rental.ShippingAddress)
+            {
+                changes.Add($"地址 {Truncate(rental.ShippingAddress)} → {Truncate(dto.ShippingAddress)}");
+                rental.ShippingAddress = dto.ShippingAddress;
+            }
+            if (dto.Notes != null && dto.Notes != rental.Notes)
+            {
+                changes.Add($"备注 {Truncate(rental.Notes)} → {Truncate(dto.Notes)}");
+                rental.Notes = dto.Notes;
+            }
+            if (dto.AssignedTo != null)
+            {
+                var next = string.IsNullOrWhiteSpace(dto.AssignedTo) ? null : dto.AssignedTo.Trim();
+                if (next != rental.AssignedTo)
+                {
+                    changes.Add($"负责人 {rental.AssignedTo ?? "-"} → {next ?? "-"}");
+                    rental.AssignedTo = next;
+                }
+            }
+
+            if (changes.Count == 0)
+                return (await GetByIdAsync(id), null);
 
             rental.UpdatedAt = DateTime.UtcNow;
             rental.UpdatedBy = currentUser;
 
-            if (extended)
+            var summary = string.Join("；", changes);
+            foreach (var ri in rental.Items)
             {
-                foreach (var ri in rental.Items)
-                {
-                    if (ri.Item != null)
-                        LogAudit(ri.Item, AuditAction.RentalExtended, rental.RentalNumber, currentUser);
-                }
+                if (ri.Item == null) continue;
+                if (extended)
+                    LogAudit(ri.Item, AuditAction.RentalExtended, rental.RentalNumber, currentUser, summary);
+                else
+                    LogAudit(ri.Item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, summary);
             }
 
             await _context.SaveChangesAsync();
+
+            await NotifyStatusChangeAsync(rental, "信息已更新", currentUser, summary);
+
             return (await GetByIdAsync(id), null);
         }
 
-        public async Task<(RentalShipmentDto? shipment, string? error)> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser)
+        private static string Truncate(string? s, int max = 40)
+        {
+            if (string.IsNullOrEmpty(s)) return "-";
+            return s.Length <= max ? s : s.Substring(0, max) + "…";
+        }
+
+        public async Task<(RentalDto? rental, string? error)> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser)
         {
             var rental = await _context.Rentals
                 .Include(r => r.Items).ThenInclude(ri => ri.Item)
@@ -209,10 +268,15 @@ namespace AuditIt.Api.Services
             await _context.SaveChangesAsync();
 
             await _context.Entry(shipment).Reference(s => s.OriginWarehouse).LoadAsync();
-            return (ToShipmentDto(shipment), null);
+
+            var shipAction = dto.Direction == ShipmentDirection.Outbound ? "已发货" : "已收货";
+            await NotifyStatusChangeAsync(rental, shipAction, currentUser,
+                $"物流：{dto.Carrier}{(string.IsNullOrWhiteSpace(dto.TrackingNumber) ? "" : " " + dto.TrackingNumber)}");
+
+            return (await GetByIdAsync(rentalId), null);
         }
 
-        public async Task<(RentalShipmentDto? shipment, string? error)> MarkDeliveredAsync(Guid rentalId, int shipmentId, DeliverShipmentDto dto, string? currentUser)
+        public async Task<(RentalDto? rental, string? error)> MarkDeliveredAsync(Guid rentalId, int shipmentId, DeliverShipmentDto dto, string? currentUser)
         {
             var shipment = await _context.RentalShipments
                 .Include(s => s.OriginWarehouse)
@@ -233,7 +297,11 @@ namespace AuditIt.Api.Services
             rental.UpdatedBy = currentUser;
 
             await _context.SaveChangesAsync();
-            return (ToShipmentDto(shipment), null);
+
+            var direction = shipment.Direction == ShipmentDirection.Outbound ? "出库物流已签收" : "回库物流已签收";
+            await NotifyStatusChangeAsync(rental, direction, currentUser);
+
+            return (await GetByIdAsync(rentalId), null);
         }
 
         public async Task<(RentalDto? rental, string? error)> ReturnAsync(Guid rentalId, ReturnRentalDto dto, string? currentUser)
@@ -276,6 +344,12 @@ namespace AuditIt.Api.Services
             rental.UpdatedBy = currentUser;
 
             await _context.SaveChangesAsync();
+
+            await NotifyStatusChangeAsync(rental,
+                allReturned ? "已全部归还" : "部分归还",
+                currentUser,
+                $"归还 {targets.Count} 件");
+
             return (await GetByIdAsync(rentalId), null);
         }
 
@@ -313,7 +387,95 @@ namespace AuditIt.Api.Services
             rental.UpdatedBy = currentUser;
 
             await _context.SaveChangesAsync();
+
+            await NotifyStatusChangeAsync(rental, "已取消", currentUser,
+                string.IsNullOrWhiteSpace(dto.Reason) ? null : $"原因：{dto.Reason}");
+
             return (await GetByIdAsync(rentalId), null);
+        }
+
+        public async Task<(RentalDto? rental, string? error)> BulkUpdateItemsAsync(Guid rentalId, BulkUpdateRentalItemsDto dto, string? currentUser)
+        {
+            var rental = await _context.Rentals
+                .Include(r => r.Items)
+                .FirstOrDefaultAsync(r => r.Id == rentalId);
+            if (rental == null) return (null, "租赁单不存在。");
+            if (rental.Status == RentalStatus.Cancelled)
+                return (null, "已取消的租赁单不可修改物品信息。");
+
+            var itemMap = rental.Items.ToDictionary(ri => ri.Id);
+            var missing = dto.Items.Where(u => !itemMap.ContainsKey(u.RentalItemId)).Select(u => u.RentalItemId).ToList();
+            if (missing.Count > 0)
+                return (null, $"以下 RentalItemId 不属于本租赁单：{string.Join(", ", missing)}");
+
+            foreach (var u in dto.Items)
+            {
+                var ri = itemMap[u.RentalItemId];
+                if (u.ListingRemarks != null) ri.ListingRemarksSnapshot = string.IsNullOrWhiteSpace(u.ListingRemarks) ? null : u.ListingRemarks.Trim();
+                if (u.PerItemPrice.HasValue) ri.PerItemPrice = u.PerItemPrice.Value;
+            }
+
+            rental.UpdatedAt = DateTime.UtcNow;
+            rental.UpdatedBy = currentUser;
+            await _context.SaveChangesAsync();
+            return (await GetByIdAsync(rentalId), null);
+        }
+
+        private async Task NotifyStatusChangeAsync(Rental rental, string action, string? currentUser, string? extra = null)
+        {
+            try
+            {
+                var title = $"租赁单 {rental.RentalNumber} · {action}";
+                var message = extra == null
+                    ? $"状态：{rental.Status}"
+                    : $"状态：{rental.Status}，{extra}";
+
+                var targets = new HashSet<string>();
+                if (!string.IsNullOrWhiteSpace(rental.CreatedBy)) targets.Add(rental.CreatedBy.Trim());
+                if (!string.IsNullOrWhiteSpace(rental.AssignedTo))
+                {
+                    foreach (var name in rental.AssignedTo.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        targets.Add(name);
+                    }
+                }
+                // 管理员默认全量接收
+                var admins = await _identityService.GetUsersInRoleAsync(BuiltInRoles.Admin);
+                foreach (var a in admins) targets.Add(a);
+
+                if (targets.Count == 0) return;
+
+                var now = DateTime.UtcNow;
+                var level = action.Contains("取消") || action.Contains("逾期")
+                    ? ReminderLevel.Warning
+                    : ReminderLevel.Info;
+
+                var reminders = targets.Select(t => new Reminder
+                {
+                    Type = ReminderType.Manual,
+                    Level = level,
+                    RelatedEntityType = "Rental",
+                    RelatedEntityId = rental.Id.ToString(),
+                    Title = title,
+                    Message = message,
+                    TargetUser = t,
+                    DueAt = now,
+                    CreatedAt = now
+                }).ToList();
+
+                _context.Reminders.AddRange(reminders);
+                await _context.SaveChangesAsync();
+
+                foreach (var r in reminders)
+                foreach (var ch in _notificationChannels)
+                {
+                    try { await ch.DeliverAsync(r, default); } catch { /* ignore channel failures */ }
+                }
+            }
+            catch
+            {
+                // 提醒通道失败不影响主业务流程
+            }
         }
 
         private async Task<string> GenerateRentalNumberAsync(DateTime at)
@@ -373,7 +535,8 @@ namespace AuditIt.Api.Services
             PerItemPrice = ri.PerItemPrice,
             ReturnedAt = ri.ReturnedAt,
             ReturnCondition = ri.ReturnCondition,
-            ReturnNotes = ri.ReturnNotes
+            ReturnNotes = ri.ReturnNotes,
+            ListingRemarks = ri.ListingRemarksSnapshot
         };
 
         private static RentalShipmentDto ToShipmentDto(RentalShipment s) => new()

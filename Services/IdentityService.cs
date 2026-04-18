@@ -103,5 +103,17 @@ namespace AuditIt.Api.Services
                 .Distinct()
                 .ToListAsync();
         }
+
+        public async Task<IReadOnlyList<string>> GetUsersInRoleAsync(string roleName)
+        {
+            return await _context.UserRoles
+                .Where(ur => ur.Role != null
+                             && ur.User != null
+                             && ur.User.Status == UserStatus.Active
+                             && ur.Role.Name == roleName)
+                .Select(ur => ur.User!.Name)
+                .Distinct()
+                .ToListAsync();
+        }
     }
 }

@@ -21,10 +21,7 @@ namespace AuditIt.Api.Services
                 var k = keyword.Trim();
                 q = q.Where(r =>
                     r.Name.Contains(k) ||
-                    (r.Phone != null && r.Phone.Contains(k)) ||
-                    (r.XianyuId != null && r.XianyuId.Contains(k)) ||
-                    (r.TaobaoId != null && r.TaobaoId.Contains(k)) ||
-                    (r.XiaohongshuId != null && r.XiaohongshuId.Contains(k)));
+                    (r.Phone != null && r.Phone.Contains(k)));
             }
 
             return await q.OrderByDescending(r => r.LastUpdated)

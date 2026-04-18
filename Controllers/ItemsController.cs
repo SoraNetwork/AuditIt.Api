@@ -33,7 +33,7 @@ namespace AuditIt.Api.Controllers
         // GET: api/Items
         [HttpGet]
         [RequirePermission(PermissionCodes.ItemView)]
-        public async Task<ActionResult<IEnumerable<Item>>> GetItems([FromQuery] ItemQueryParameters queryParameters)
+        public async Task<ActionResult<IEnumerable<ItemDto>>> GetItems([FromQuery] ItemQueryParameters queryParameters)
         {
             var query = _context.Items.Include(i => i.ItemDefinition).Include(i => i.Warehouse).AsQueryable();
 
@@ -57,14 +57,39 @@ namespace AuditIt.Api.Controllers
             {
                 query = query.Where(i => i.SerialNumber == queryParameters.SerialNumber);
             }
+            if (!string.IsNullOrEmpty(queryParameters.Search))
+            {
+                var search = queryParameters.Search.Trim();
+                query = query.Where(i =>
+                    i.ShortId.Contains(search) ||
+                    (i.ItemDefinition != null && i.ItemDefinition.Name.Contains(search)) ||
+                    (i.SerialNumber != null && i.SerialNumber.Contains(search)));
+            }
 
-            return await query.OrderByDescending(i => i.LastUpdated).ToListAsync();
+            return await query.OrderByDescending(i => i.LastUpdated).Select(i => ToItemDto(i)).ToListAsync();
         }
+
+        private static ItemDto ToItemDto(Item i) => new()
+        {
+            Id = i.Id.ToString(),
+            ShortId = i.ShortId,
+            SerialNumber = i.SerialNumber,
+            Status = i.Status,
+            WarehouseId = i.WarehouseId,
+            ItemDefinitionId = i.ItemDefinitionId,
+            Remarks = i.Remarks,
+            PhotoUrl = i.PhotoUrl,
+            LastUpdated = i.LastUpdated.ToString("O"),
+            EntryDate = i.EntryDate.ToString("O"),
+            CurrentDestination = i.CurrentDestination,
+            ItemDefinitionName = i.ItemDefinition?.Name ?? string.Empty,
+            WarehouseName = i.Warehouse?.Name ?? string.Empty,
+        };
 
         // POST: api/Items/batch
         [HttpPost("batch")]
         [RequirePermission(PermissionCodes.ItemView)]
-        public async Task<ActionResult<IEnumerable<Item>>> GetItemsBatch([FromBody] Guid[] ids)
+        public async Task<ActionResult<IEnumerable<ItemDto>>> GetItemsBatch([FromBody] Guid[] ids)
         {
             if (ids == null || !ids.Any())
             {
@@ -75,14 +100,14 @@ namespace AuditIt.Api.Controllers
                 .Include(i => i.ItemDefinition)
                 .Include(i => i.Warehouse)
                 .ToListAsync();
-            return Ok(items);
+            return Ok(items.Select(ToItemDto));
         }
 
         // POST: api/Items/create
         [HttpPost("create")]
         [Consumes("multipart/form-data")]
         [RequirePermission(PermissionCodes.ItemCreate)]
-        public async Task<ActionResult<Item>> CreateItem([FromForm] CreateItemDto dto)
+        public async Task<ActionResult<ItemDto>> CreateItem([FromForm] CreateItemDto dto)
         {
             var itemDefinition = await _context.ItemDefinitions.FindAsync(dto.ItemDefinitionId);
             if (itemDefinition == null) return BadRequest("Item definition not found.");
@@ -128,7 +153,7 @@ namespace AuditIt.Api.Controllers
             await _context.Entry(item).Reference(i => i.ItemDefinition).LoadAsync();
             await _context.Entry(item).Reference(i => i.Warehouse).LoadAsync();
 
-            return CreatedAtAction(nameof(GetItems), new { id = item.Id }, item);
+            return CreatedAtAction(nameof(GetItems), new { id = item.Id }, ToItemDto(item));
         }
 
 	// POST: api/Items/create/batch
@@ -231,7 +256,7 @@ namespace AuditIt.Api.Controllers
         // PUT: api/Items/{id}/outbound
         [HttpPut("{id}/outbound")]
         [RequirePermission(PermissionCodes.ItemUpdate)]
-        public async Task<ActionResult<Item>> Outbound(Guid id, [FromBody] UpdateItemRequest request)
+        public async Task<ActionResult<ItemDto>> Outbound(Guid id, [FromBody] UpdateItemRequest request)
         {
             return await UpdateItemStatus(id, ItemStatus.LoanedOut, AuditAction.Outbound, request.Destination);
         }
@@ -239,7 +264,7 @@ namespace AuditIt.Api.Controllers
         // PUT: api/Items/{id}/check
         [HttpPut("{id}/check")]
         [RequirePermission(PermissionCodes.ItemUpdate)]
-        public async Task<ActionResult<Item>> Check(Guid id)
+        public async Task<ActionResult<ItemDto>> Check(Guid id)
         {
             return await UpdateItemStatus(id, ItemStatus.InStock, AuditAction.Check, null);
         }
@@ -247,7 +272,7 @@ namespace AuditIt.Api.Controllers
         // PUT: api/Items/{id}/return
         [HttpPut("{id}/return")]
         [RequirePermission(PermissionCodes.ItemUpdate)]
-        public async Task<ActionResult<Item>> Return(Guid id)
+        public async Task<ActionResult<ItemDto>> Return(Guid id)
         {
             return await UpdateItemStatus(id, ItemStatus.InStock, AuditAction.Return, null);
         }
@@ -255,7 +280,7 @@ namespace AuditIt.Api.Controllers
         // PUT: api/Items/{id}/dispose
         [HttpPut("{id}/dispose")]
         [RequirePermission(PermissionCodes.ItemDelete)]
-        public async Task<ActionResult<Item>> Dispose(Guid id, [FromBody] UpdateItemRequest request)
+        public async Task<ActionResult<ItemDto>> Dispose(Guid id, [FromBody] UpdateItemRequest request)
         {
             return await UpdateItemStatus(id, ItemStatus.Disposed, AuditAction.Dispose, request.Destination);
         }
@@ -297,7 +322,7 @@ namespace AuditIt.Api.Controllers
         // PUT: api/Items/{id}/transfer
         [HttpPut("{id}/transfer")]
         [RequirePermission(PermissionCodes.ItemTransfer)]
-        public async Task<ActionResult<Item>> TransferWarehouse(Guid id, [FromBody] TransferWarehouseRequest request)
+        public async Task<ActionResult<ItemDto>> TransferWarehouse(Guid id, [FromBody] TransferWarehouseRequest request)
         {
             var item = await _context.Items
                 .Include(i => i.ItemDefinition)
@@ -345,10 +370,10 @@ namespace AuditIt.Api.Controllers
             // 重新加载关联数据以返回完整信息
             await _context.Entry(item).Reference(i => i.Warehouse).LoadAsync();
 
-            return Ok(item);
+            return Ok(ToItemDto(item));
         }
 
-        private async Task<ActionResult<Item>> UpdateItemStatus(Guid id, ItemStatus newStatus, AuditAction action, string? destination)
+        private async Task<ActionResult<ItemDto>> UpdateItemStatus(Guid id, ItemStatus newStatus, AuditAction action, string? destination)
         {
             var item = await _context.Items
                 .Include(i => i.ItemDefinition)
@@ -375,7 +400,7 @@ namespace AuditIt.Api.Controllers
             
             await _context.SaveChangesAsync();
 
-            return Ok(item);
+            return Ok(ToItemDto(item));
         }
 
         private async Task LogAudit(Item item, AuditAction action, string itemName, string warehouseName, string? destination)

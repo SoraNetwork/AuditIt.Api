@@ -7,5 +7,6 @@ namespace AuditIt.Api.Models
         public Guid? Id { get; set; }
         public string? ShortId { get; set; }
         public string? SerialNumber { get; set; }
+        public string? Search { get; set; }
     }
 }

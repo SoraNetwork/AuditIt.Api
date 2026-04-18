@@ -17,7 +17,8 @@ namespace AuditIt.Api.Models
         RentalDelivered,
         RentalReturned,
         RentalExtended,
-        RentalCancelled
+        RentalCancelled,
+        RentalUpdated
     }
 
     public class AuditLog

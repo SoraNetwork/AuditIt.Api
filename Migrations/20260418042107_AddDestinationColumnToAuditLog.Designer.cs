@@ -3,6 +3,7 @@ using System;
 using AuditIt.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace AuditIt.Api.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260418042107_AddDestinationColumnToAuditLog")]
+    partial class AddDestinationColumnToAuditLog
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.7");
@@ -410,10 +413,6 @@ namespace AuditIt.Api.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("ListingRemarksSnapshot")
-                        .HasMaxLength(500)
-                        .HasColumnType("TEXT");
-
                     b.Property<decimal?>("PerItemPrice")
                         .HasColumnType("decimal(18,2)");
 
@@ -734,7 +733,7 @@ namespace AuditIt.Api.Migrations
             modelBuilder.Entity("AuditIt.Api.Models.ItemListing", b =>
                 {
                     b.HasOne("AuditIt.Api.Models.Item", "Item")
-                        .WithMany("Listings")
+                        .WithMany()
                         .HasForeignKey("ItemId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -827,11 +826,6 @@ namespace AuditIt.Api.Migrations
                     b.Navigation("Role");
 
                     b.Navigation("User");
-                });
-
-            modelBuilder.Entity("AuditIt.Api.Models.Item", b =>
-                {
-                    b.Navigation("Listings");
                 });
 
             modelBuilder.Entity("AuditIt.Api.Models.Permission", b =>

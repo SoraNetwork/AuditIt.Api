@@ -31,6 +31,9 @@ namespace AuditIt.Api.Models
         [StringLength(200)]
         public string ItemNameSnapshot { get; set; } = string.Empty;
 
+        [StringLength(500)]
+        public string? ListingRemarksSnapshot { get; set; }
+
         [Column(TypeName = "decimal(18,2)")]
         public decimal? PerItemPrice { get; set; }
 

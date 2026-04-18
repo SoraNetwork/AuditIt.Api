@@ -37,6 +37,7 @@ namespace AuditIt.Api.Models
         public DateTime? ReturnedAt { get; set; }
         public ReturnCondition? ReturnCondition { get; set; }
         public string? ReturnNotes { get; set; }
+        public string? ListingRemarks { get; set; }
     }
 
     public class RentalShipmentDto
@@ -62,7 +63,7 @@ namespace AuditIt.Api.Models
 
         [Required]
         [MinLength(1)]
-        public List<Guid> ItemIds { get; set; } = new();
+        public List<string> ItemIds { get; set; } = new();
 
         public DateTime? StartDate { get; set; }
 
@@ -141,6 +142,24 @@ namespace AuditIt.Api.Models
     {
         [StringLength(500)]
         public string? Reason { get; set; }
+    }
+
+    public class BulkUpdateRentalItemDto
+    {
+        [Required]
+        public int RentalItemId { get; set; }
+
+        public string? ListingRemarks { get; set; }
+
+        [Range(0, double.MaxValue)]
+        public decimal? PerItemPrice { get; set; }
+    }
+
+    public class BulkUpdateRentalItemsDto
+    {
+        [Required]
+        [MinLength(1)]
+        public List<BulkUpdateRentalItemDto> Items { get; set; } = new();
     }
 
     public class RentalQueryParameters

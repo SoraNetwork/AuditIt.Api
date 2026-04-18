@@ -20,9 +20,10 @@ namespace AuditIt.Api.Controllers
 
         [HttpGet]
         [RequirePermission(PermissionCodes.RentalView)]
-        public async Task<ActionResult<IEnumerable<RentalDto>>> List([FromQuery] RentalQueryParameters query)
+        public async Task<ActionResult<object>> List([FromQuery] RentalQueryParameters query)
         {
-            return Ok(await _rentals.ListAsync(query));
+            var (items, total) = await _rentals.ListAsync(query);
+            return Ok(new { items, total });
         }
 
         [HttpGet("{id:guid}")]
@@ -55,21 +56,21 @@ namespace AuditIt.Api.Controllers
 
         [HttpPost("{id:guid}/ship")]
         [RequirePermission(PermissionCodes.RentalShip)]
-        public async Task<ActionResult<RentalShipmentDto>> Ship(Guid id, [FromBody] CreateShipmentDto dto)
+        public async Task<ActionResult<RentalDto>> Ship(Guid id, [FromBody] CreateShipmentDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-            var (shipment, error) = await _rentals.AddShipmentAsync(id, dto, CurrentUser());
+            var (rental, error) = await _rentals.AddShipmentAsync(id, dto, CurrentUser());
             if (error != null) return BadRequest(error);
-            return Ok(shipment);
+            return Ok(rental);
         }
 
         [HttpPost("{id:guid}/shipments/{shipmentId:int}/deliver")]
         [RequirePermission(PermissionCodes.RentalShip)]
-        public async Task<ActionResult<RentalShipmentDto>> Deliver(Guid id, int shipmentId, [FromBody] DeliverShipmentDto dto)
+        public async Task<ActionResult<RentalDto>> Deliver(Guid id, int shipmentId, [FromBody] DeliverShipmentDto dto)
         {
-            var (shipment, error) = await _rentals.MarkDeliveredAsync(id, shipmentId, dto, CurrentUser());
+            var (rental, error) = await _rentals.MarkDeliveredAsync(id, shipmentId, dto, CurrentUser());
             if (error != null) return BadRequest(error);
-            return Ok(shipment);
+            return Ok(rental);
         }
 
         [HttpPost("{id:guid}/return")]
@@ -86,6 +87,16 @@ namespace AuditIt.Api.Controllers
         public async Task<ActionResult<RentalDto>> Cancel(Guid id, [FromBody] CancelRentalDto dto)
         {
             var (rental, error) = await _rentals.CancelAsync(id, dto, CurrentUser());
+            if (error != null) return BadRequest(error);
+            return Ok(rental);
+        }
+
+        [HttpPut("{id:guid}/items/bulk")]
+        [RequirePermission(PermissionCodes.RentalUpdate)]
+        public async Task<ActionResult<RentalDto>> BulkUpdateItems(Guid id, [FromBody] BulkUpdateRentalItemsDto dto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+            var (rental, error) = await _rentals.BulkUpdateItemsAsync(id, dto, CurrentUser());
             if (error != null) return BadRequest(error);
             return Ok(rental);
         }

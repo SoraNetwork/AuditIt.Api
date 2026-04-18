@@ -11,5 +11,7 @@ namespace AuditIt.Api.Services
         Task<IReadOnlyList<string>> GetPermissionsForUserAsync(Guid userId);
 
         Task<IReadOnlyList<string>> GetUsersWithPermissionAsync(string permissionCode);
+
+        Task<IReadOnlyList<string>> GetUsersInRoleAsync(string roleName);
     }
 }

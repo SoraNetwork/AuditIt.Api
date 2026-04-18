@@ -83,7 +83,13 @@ namespace AuditIt.Api.Services
 
                 var targets = new HashSet<string?>();
                 if (!string.IsNullOrWhiteSpace(r.CreatedBy)) targets.Add(r.CreatedBy);
-                if (!string.IsNullOrWhiteSpace(r.AssignedTo)) targets.Add(r.AssignedTo);
+                if (!string.IsNullOrWhiteSpace(r.AssignedTo))
+                {
+                    foreach (var name in r.AssignedTo.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        targets.Add(name);
+                    }
+                }
 
                 if (type == ReminderType.RentalOverdue)
                 {
