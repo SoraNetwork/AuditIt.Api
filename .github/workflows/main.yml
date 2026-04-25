@@ -56,7 +56,7 @@ jobs:
           endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
           bucketName: ${{ secrets.ALIYUN_OSS_BUCKETNAME }}
           region: ${{ secrets.ALIYUN_OSS_REGION }}
-          localPath: ./dist/SoraAuditIt.Api-Release-linux-x64.tar.gz
+          localPath: ${{ github.workspace }}/dist/SoraAuditIt.Api-Release-linux-x64.tar.gz
           objectKey: deploy/backend/SoraAuditIt.Api-Release-linux-x64.tar.gz
           overwrite: true
           expiresInSeconds: 3600
