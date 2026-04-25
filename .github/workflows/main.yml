@@ -7,76 +7,94 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    outputs:
+      package_url: ${{ steps.transfer.outputs.downloadUrl }}
+      object_key: ${{ steps.transfer.outputs.objectKey }}
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        
-    - name: Install .NET Core
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: 8.0.x
-        
-    - name: Restore the application
-      run: dotnet restore
-      
-    - name: Build the application
-      run: |
-        dotnet publish -f net8.0 -c Release -r linux-x64 --self-contained false /p:PublishSingleFile=true /p:SourceRevisionId=${{ github.sha }}
-        
-    - name: Remove extra files
-      run: |
-        cd ./bin/Release/net8.0/linux-x64/publish/
-        rm -f *.pdb
-        rm -f *.json
-        
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: SoraAuditIt.Api-Release-linux-x64 
-        path: ./bin/Release/net8.0/linux-x64/publish/
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install .NET Core
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore the application
+        run: dotnet restore
+
+      - name: Build the application
+        run: |
+          dotnet publish -f net8.0 -c Release -r linux-x64 --self-contained false /p:PublishSingleFile=true /p:SourceRevisionId=${{ github.sha }}
+
+      - name: Remove extra files
+        run: |
+          cd ./bin/Release/net8.0/linux-x64/publish/
+          rm -f *.pdb
+          rm -f *.json
+
+      - name: Upload build artifacts for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoraAuditIt.Api-Release-linux-x64
+          path: ./bin/Release/net8.0/linux-x64/publish/
+          if-no-files-found: error
+
+      - name: Pack publish output
+        run: |
+          mkdir -p ./dist
+          tar -czf ./dist/SoraAuditIt.Api-Release-linux-x64.tar.gz -C ./bin/Release/net8.0/linux-x64/publish .
+
+      - name: Upload package to private OSS
+        id: transfer
+        uses: xcube-studio/sync2oss@Vfiletransfer
+        with:
+          accessKeyId: ${{ secrets.ALIYUN_ACCESSKEYID }}
+          accessKeySecret: ${{ secrets.ALIYUN_ACCESSKEYSECRET }}
+          endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          bucketName: ${{ secrets.ALIYUN_OSS_BUCKETNAME }}
+          region: ${{ secrets.ALIYUN_OSS_REGION }}
+          localPath: ./dist/SoraAuditIt.Api-Release-linux-x64.tar.gz
+          objectKey: deploy/backend/SoraAuditIt.Api-Release-linux-x64.tar.gz
+          overwrite: true
+          expiresInSeconds: 3600
 
   deploy:
     runs-on: ubuntu-latest
     needs: publish
+
     steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: SoraAuditIt.Api-Release-linux-x64
-        path: ./deploy-package
-        
-    - name: Remove excluded files
-      run: |
-        find ./deploy-package -name "appsettings*.json" -delete
+      - name: Deploy by pulling package from OSS on remote server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.NINGBO_SERVER }}
+          username: ${{ secrets.NINGBO_USERNAME }}
+          password: ${{ secrets.NINGBO_KEY }}
+          script: |
+            set -e
 
-    - name: Stop remote service
-      uses: appleboy/ssh-action@v1
-      with: 
-        host: ${{ secrets.NINGBO_SERVER }}
-        username: ${{ secrets.NINGBO_USERNAME }}
-        password: ${{ secrets.NINGBO_KEY }}
-        script: sudo supervisorctl stop rentit-service
-          
-    - name: Deploy via SFTP
-      uses: wlixcc/SFTP-Deploy-Action@v1.2.5
-      with:
-        server: ${{ secrets.NINGBO_SERVER }}
-        username: ${{ secrets.NINGBO_USERNAME }}
-        password: ${{ secrets.NINGBO_KEY }}
-        local_path: './deploy-package/*'
-        remote_path: '/www/RentIt.Api/'
-        
-    - name: Start remote service
-      uses: appleboy/ssh-action@v1
-      with: 
-        host: ${{ secrets.NINGBO_SERVER }}
-        username: ${{ secrets.NINGBO_USERNAME }}
-        password: ${{ secrets.NINGBO_KEY }}
-        script: sudo supervisorctl start rentit-service
+            PACKAGE_URL='${{ needs.publish.outputs.package_url }}'
+            APP_DIR='/www/RentIt.Api'
+            TMP_DIR='/tmp/rentit-api-deploy'
 
+            restore_service() {
+              sudo supervisorctl start rentit-service || true
+            }
 
+            sudo supervisorctl stop rentit-service
+            trap restore_service EXIT
 
+            rm -rf "$TMP_DIR"
+            mkdir -p "$TMP_DIR"
 
+            curl -fL "$PACKAGE_URL" -o "$TMP_DIR/release.tar.gz"
 
+            sudo mkdir -p "$APP_DIR"
+            sudo tar -xzf "$TMP_DIR/release.tar.gz" -C "$APP_DIR"
+
+            rm -rf "$TMP_DIR"
+
+            trap - EXIT
+            sudo supervisorctl start rentit-service
