@@ -61,6 +61,9 @@ namespace AuditIt.Api.Models
         [StringLength(30)]
         public string? Phone { get; set; }
 
+        [StringLength(30)]
+        public string? IdCardNo { get; set; }
+
         [StringLength(100)]
         public string? XianyuId { get; set; }
 

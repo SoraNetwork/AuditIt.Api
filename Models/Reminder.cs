@@ -5,6 +5,7 @@ namespace AuditIt.Api.Models
 {
     public enum ReminderType
     {
+        RentalShipmentSoon,
         RentalDueSoon,
         RentalOverdue,
         Manual

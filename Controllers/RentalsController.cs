@@ -39,9 +39,10 @@ namespace AuditIt.Api.Controllers
         public async Task<ActionResult<RentalDto>> Create([FromBody] CreateRentalDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-            var (rental, error) = await _rentals.CreateAsync(dto, CurrentUser());
-            if (error != null) return BadRequest(error);
-            return CreatedAtAction(nameof(Get), new { id = rental!.Id }, rental);
+            var result = await _rentals.CreateAsync(dto, CurrentUser());
+            if (result.Conflict != null) return Conflict(result.Conflict);
+            if (result.Error != null) return BadRequest(result.Error);
+            return CreatedAtAction(nameof(Get), new { id = result.Rental!.Id }, result.Rental);
         }
 
         [HttpPut("{id:guid}")]

@@ -44,6 +44,9 @@ namespace AuditIt.Api.Models
         [StringLength(500)]
         public string? ShippingAddress { get; set; }
 
+        [StringLength(100)]
+        public string? PlatformOrderNo { get; set; }
+
         [StringLength(500)]
         public string? Notes { get; set; }
 

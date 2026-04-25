@@ -17,6 +17,7 @@ namespace AuditIt.Api.Models
         public decimal TotalPrice { get; set; }
         public decimal? Deposit { get; set; }
         public string? ShippingAddress { get; set; }
+        public string? PlatformOrderNo { get; set; }
         public string? Notes { get; set; }
         public DateTime CreatedAt { get; set; }
         public string? CreatedBy { get; set; }
@@ -79,6 +80,9 @@ namespace AuditIt.Api.Models
         [StringLength(500)]
         public string? ShippingAddress { get; set; }
 
+        [StringLength(100)]
+        public string? PlatformOrderNo { get; set; }
+
         [StringLength(500)]
         public string? Notes { get; set; }
 
@@ -95,10 +99,39 @@ namespace AuditIt.Api.Models
         public decimal? Deposit { get; set; }
         [StringLength(500)]
         public string? ShippingAddress { get; set; }
+        [StringLength(100)]
+        public string? PlatformOrderNo { get; set; }
         [StringLength(500)]
         public string? Notes { get; set; }
         [StringLength(100)]
         public string? AssignedTo { get; set; }
+    }
+
+    public class CreateRentalResult
+    {
+        public RentalDto? Rental { get; set; }
+        public string? Error { get; set; }
+        public RentalCreateConflictDto? Conflict { get; set; }
+    }
+
+    public class RentalCreateConflictDto
+    {
+        public string Message { get; set; } = "Selected items have rental time conflicts.";
+        public List<RentalScheduleConflictDto> PendingShipmentConflicts { get; set; } = new();
+        public List<RentalScheduleConflictDto> ShippedConflicts { get; set; } = new();
+    }
+
+    public class RentalScheduleConflictDto
+    {
+        public Guid RentalId { get; set; }
+        public string RentalNumber { get; set; } = string.Empty;
+        public RentalStatus RentalStatus { get; set; }
+        public Guid ItemId { get; set; }
+        public string ItemShortId { get; set; } = string.Empty;
+        public string ItemName { get; set; } = string.Empty;
+        public DateTime StartDate { get; set; }
+        public DateTime ExpectedEndDate { get; set; }
+        public bool HasOutboundShipment { get; set; }
     }
 
     public class CreateShipmentDto

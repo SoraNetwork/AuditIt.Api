@@ -6,7 +6,7 @@ namespace AuditIt.Api.Services
     {
         Task<(IEnumerable<RentalDto> items, int total)> ListAsync(RentalQueryParameters query);
         Task<RentalDto?> GetByIdAsync(Guid id);
-        Task<(RentalDto? rental, string? error)> CreateAsync(CreateRentalDto dto, string? currentUser);
+        Task<CreateRentalResult> CreateAsync(CreateRentalDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> MarkDeliveredAsync(Guid rentalId, int shipmentId, DeliverShipmentDto dto, string? currentUser);

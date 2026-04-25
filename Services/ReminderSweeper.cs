@@ -23,8 +23,14 @@ namespace AuditIt.Api.Services
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            try { await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken); }
-            catch (OperationCanceledException) { return; }
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -38,8 +44,14 @@ namespace AuditIt.Api.Services
                 }
 
                 var interval = Math.Max(1, _options.CurrentValue.SweepIntervalMinutes);
-                try { await Task.Delay(TimeSpan.FromMinutes(interval), stoppingToken); }
-                catch (OperationCanceledException) { return; }
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(interval), stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
         }
 
@@ -51,41 +63,71 @@ namespace AuditIt.Api.Services
             var channels = scope.ServiceProvider.GetServices<INotificationChannel>().ToList();
 
             var now = DateTime.UtcNow;
-            var leadHours = Math.Max(1, _options.CurrentValue.DueSoonLeadHours);
-            var dueSoonCutoff = now.AddHours(leadHours);
+            var oneDayLater = now.AddDays(1);
 
             var newlyOverdue = await db.Rentals
-                .Where(r => (r.Status == RentalStatus.Active || r.Status == RentalStatus.Pending)
-                            && r.ExpectedEndDate < now)
+                .Include(r => r.Shipments)
+                .Where(r => r.Status == RentalStatus.Active && r.ExpectedEndDate < now)
                 .ToListAsync(ct);
-            foreach (var r in newlyOverdue) r.Status = RentalStatus.Overdue;
-            if (newlyOverdue.Count > 0) await db.SaveChangesAsync(ct);
+
+            foreach (var rental in newlyOverdue)
+            {
+                rental.Status = RentalStatus.Overdue;
+            }
+
+            if (newlyOverdue.Count > 0)
+            {
+                await db.SaveChangesAsync(ct);
+            }
 
             var candidates = await db.Rentals
                 .Include(r => r.Renter)
-                .Where(r => r.Status == RentalStatus.Active
-                         || r.Status == RentalStatus.Pending
+                .Include(r => r.Shipments)
+                .Where(r => r.Status == RentalStatus.Pending
+                         || r.Status == RentalStatus.Active
                          || r.Status == RentalStatus.Overdue)
                 .ToListAsync(ct);
 
-            // 升级提醒时需要的 Manager 名单（拥有 RentalCancel 权限的活跃用户视作 Manager）。延迟解析，仅当真有逾期时才查。
             List<string>? managers = null;
-
             var created = new List<Reminder>();
 
-            foreach (var r in candidates)
+            foreach (var rental in candidates)
             {
-                var entityId = r.Id.ToString();
+                var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
                 ReminderType? type = null;
-                if (r.ExpectedEndDate < now) type = ReminderType.RentalOverdue;
-                else if (r.ExpectedEndDate <= dueSoonCutoff) type = ReminderType.RentalDueSoon;
-                if (type == null) continue;
 
-                var targets = new HashSet<string?>();
-                if (!string.IsNullOrWhiteSpace(r.CreatedBy)) targets.Add(r.CreatedBy);
-                if (!string.IsNullOrWhiteSpace(r.AssignedTo))
+                if (!hasOutboundShipment
+                    && rental.Status == RentalStatus.Pending
+                    && rental.StartDate >= now
+                    && rental.StartDate <= oneDayLater)
                 {
-                    foreach (var name in r.AssignedTo.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    type = ReminderType.RentalShipmentSoon;
+                }
+                else if (hasOutboundShipment && rental.ExpectedEndDate < now)
+                {
+                    type = ReminderType.RentalOverdue;
+                }
+                else if (hasOutboundShipment
+                         && rental.ExpectedEndDate >= now
+                         && rental.ExpectedEndDate <= oneDayLater)
+                {
+                    type = ReminderType.RentalDueSoon;
+                }
+
+                if (!type.HasValue)
+                {
+                    continue;
+                }
+
+                var targets = new HashSet<string?>(StringComparer.OrdinalIgnoreCase);
+                if (!string.IsNullOrWhiteSpace(rental.CreatedBy))
+                {
+                    targets.Add(rental.CreatedBy.Trim());
+                }
+
+                if (!string.IsNullOrWhiteSpace(rental.AssignedTo))
+                {
+                    foreach (var name in rental.AssignedTo.Split(new[] { ',', ';', '，', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                     {
                         targets.Add(name);
                     }
@@ -94,53 +136,85 @@ namespace AuditIt.Api.Services
                 if (type == ReminderType.RentalOverdue)
                 {
                     managers ??= (await identity.GetUsersWithPermissionAsync(PermissionCodes.RentalCancel)).ToList();
-                    foreach (var m in managers) targets.Add(m);
+                    foreach (var manager in managers)
+                    {
+                        targets.Add(manager);
+                    }
                 }
 
-                // 如果没有任何具体目标，回退为广播（TargetUser=null）。
-                if (targets.Count == 0) targets.Add(null);
+                if (targets.Count == 0)
+                {
+                    targets.Add(null);
+                }
 
                 foreach (var target in targets)
                 {
-                    if (await HasOpenReminderAsync(db, entityId, type.Value, target, ct)) continue;
-                    created.Add(BuildReminder(r, type.Value, target, now));
+                    if (await HasOpenReminderAsync(db, rental.Id.ToString(), type.Value, target, ct))
+                    {
+                        continue;
+                    }
+
+                    created.Add(BuildReminder(rental, type.Value, target, now));
                 }
             }
 
-            if (created.Count > 0)
+            if (created.Count == 0)
             {
-                db.Reminders.AddRange(created);
-                await db.SaveChangesAsync(ct);
+                return;
+            }
 
-                foreach (var reminder in created)
+            db.Reminders.AddRange(created);
+            await db.SaveChangesAsync(ct);
+
+            foreach (var reminder in created)
+            {
+                foreach (var channel in channels)
                 {
-                    foreach (var ch in channels)
+                    try
                     {
-                        try { await ch.DeliverAsync(reminder, ct); }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Notification channel {Channel} failed for reminder {Id}", ch.Name, reminder.Id);
-                        }
+                        await channel.DeliverAsync(reminder, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Notification channel {Channel} failed for reminder {Id}", channel.Name, reminder.Id);
                     }
                 }
             }
         }
 
-        private static Task<bool> HasOpenReminderAsync(ApplicationDbContext db, string entityId, ReminderType type, string? target, CancellationToken ct)
+        private static Task<bool> HasOpenReminderAsync(
+            ApplicationDbContext db,
+            string entityId,
+            ReminderType type,
+            string? target,
+            CancellationToken ct)
         {
-            return db.Reminders.AnyAsync(x =>
-                x.RelatedEntityType == "Rental"
-                && x.RelatedEntityId == entityId
-                && x.Type == type
-                && x.TargetUser == target
-                && x.DismissedAt == null, ct);
+            return db.Reminders.AnyAsync(r =>
+                r.RelatedEntityType == "Rental"
+                && r.RelatedEntityId == entityId
+                && r.Type == type
+                && r.TargetUser == target
+                && r.DismissedAt == null, ct);
         }
 
         private static Reminder BuildReminder(Rental rental, ReminderType type, string? target, DateTime now)
         {
             var renterName = rental.Renter?.Name ?? "租客";
+
             return type switch
             {
+                ReminderType.RentalShipmentSoon => new Reminder
+                {
+                    Type = type,
+                    Level = ReminderLevel.Warning,
+                    RelatedEntityType = "Rental",
+                    RelatedEntityId = rental.Id.ToString(),
+                    TargetUser = target,
+                    Title = $"租赁 {rental.RentalNumber} 明天开始，请及时发货",
+                    Message = $"{renterName} 的订单将于 {rental.StartDate:yyyy-MM-dd HH:mm} 开始，请提前确认物流信息。",
+                    DueAt = rental.StartDate,
+                    CreatedAt = now
+                },
                 ReminderType.RentalOverdue => new Reminder
                 {
                     Type = type,
@@ -149,7 +223,7 @@ namespace AuditIt.Api.Services
                     RelatedEntityId = rental.Id.ToString(),
                     TargetUser = target,
                     Title = $"租赁 {rental.RentalNumber} 已逾期",
-                    Message = $"{renterName} 的订单应于 {rental.ExpectedEndDate:yyyy-MM-dd HH:mm} 归还，已逾期。",
+                    Message = $"{renterName} 的订单应于 {rental.ExpectedEndDate:yyyy-MM-dd HH:mm} 结束，目前已逾期。",
                     DueAt = rental.ExpectedEndDate,
                     CreatedAt = now
                 },
@@ -160,8 +234,8 @@ namespace AuditIt.Api.Services
                     RelatedEntityType = "Rental",
                     RelatedEntityId = rental.Id.ToString(),
                     TargetUser = target,
-                    Title = $"租赁 {rental.RentalNumber} 即将到期",
-                    Message = $"{renterName} 的订单将于 {rental.ExpectedEndDate:yyyy-MM-dd HH:mm} 到期。",
+                    Title = $"租赁 {rental.RentalNumber} 明天到期",
+                    Message = $"{renterName} 的订单将于 {rental.ExpectedEndDate:yyyy-MM-dd HH:mm} 到期，请提前跟进。",
                     DueAt = rental.ExpectedEndDate,
                     CreatedAt = now
                 }

@@ -21,7 +21,8 @@ namespace AuditIt.Api.Services
                 var k = keyword.Trim();
                 q = q.Where(r =>
                     r.Name.Contains(k) ||
-                    (r.Phone != null && r.Phone.Contains(k)));
+                    (r.Phone != null && r.Phone.Contains(k)) ||
+                    (r.IdCardNo != null && r.IdCardNo.Contains(k)));
             }
 
             return await q.OrderByDescending(r => r.LastUpdated)
@@ -120,6 +121,7 @@ namespace AuditIt.Api.Services
                 Id = Guid.NewGuid(),
                 Name = string.IsNullOrWhiteSpace(inline.Name) ? "匿名租客" : inline.Name!,
                 Phone = phone,
+                IdCardNo = inline.IdCardNo,
                 XianyuId = inline.XianyuId,
                 TaobaoId = inline.TaobaoId,
                 XiaohongshuId = inline.XiaohongshuId,
@@ -136,6 +138,7 @@ namespace AuditIt.Api.Services
         private static void ApplyInlineUpdates(Renter target, RenterInlineDto inline)
         {
             if (!string.IsNullOrWhiteSpace(inline.Name)) target.Name = inline.Name!;
+            if (!string.IsNullOrWhiteSpace(inline.IdCardNo)) target.IdCardNo = inline.IdCardNo;
             if (!string.IsNullOrWhiteSpace(inline.XianyuId)) target.XianyuId = inline.XianyuId;
             if (!string.IsNullOrWhiteSpace(inline.TaobaoId)) target.TaobaoId = inline.TaobaoId;
             if (!string.IsNullOrWhiteSpace(inline.XiaohongshuId)) target.XiaohongshuId = inline.XiaohongshuId;
