@@ -8,5 +8,7 @@ namespace AuditIt.Api.Services
         Task<string> GetAccessTokenAsync(); // This gets the app access token
         Task<DingTalkUserInfo> GetLegacyUserInfoByCodeAsync(string code); // For in-app免登
         Task<DingTalkContactUser> GetSsoUserInfoByCodeAsync(string ssoCode); // For web SSO
+        Task<IReadOnlyList<DingTalkUserDetail>> GetDirectoryUsersAsync(CancellationToken ct = default);
+        Task SendWorkNoticeAsync(IEnumerable<string> userIds, string content, CancellationToken ct = default);
     }
 }

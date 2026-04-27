@@ -51,6 +51,14 @@ namespace AuditIt.Api.Controllers
             return updated == null ? NotFound() : Ok(updated);
         }
 
+        [HttpPost("sync-dingtalk")]
+        [RequirePermission(PermissionCodes.UserManage)]
+        public async Task<ActionResult<SyncDingTalkUsersResultDto>> SyncDingTalk([FromBody] SyncDingTalkUsersDto dto, CancellationToken ct)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+            return Ok(await _users.SyncDingTalkUsersAsync(dto, CurrentUser(), ct));
+        }
+
         private string? CurrentUser() => User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
     }
 }

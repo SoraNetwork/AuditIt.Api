@@ -26,6 +26,23 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? LastDingTalkId { get; set; }
 
+        [StringLength(100)]
+        public string? DingTalkUserId { get; set; }
+
+        [StringLength(100)]
+        public string? DingTalkUnionId { get; set; }
+
+        [StringLength(30)]
+        public string? Mobile { get; set; }
+
+        [StringLength(100)]
+        public string? JobNumber { get; set; }
+
+        [StringLength(100)]
+        public string? JobTitle { get; set; }
+
+        public DateTime? LastDingTalkSyncAt { get; set; }
+
         public DateTime? LastLoginAt { get; set; }
 
         public UserStatus Status { get; set; } = UserStatus.Active;

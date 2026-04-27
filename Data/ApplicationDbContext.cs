@@ -77,6 +77,11 @@ namespace AuditIt.Api.Data
                 .HasIndex(u => u.Name)
                 .IsUnique();
 
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.DingTalkUserId)
+                .IsUnique()
+                .HasFilter("\"DingTalkUserId\" IS NOT NULL");
+
             modelBuilder.Entity<Role>()
                 .HasIndex(r => r.Name)
                 .IsUnique();

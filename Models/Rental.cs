@@ -41,6 +41,9 @@ namespace AuditIt.Api.Models
         [Column(TypeName = "decimal(18,2)")]
         public decimal? Deposit { get; set; }
 
+        [Column(TypeName = "decimal(18,2)")]
+        public decimal OtherFee { get; set; }
+
         [StringLength(500)]
         public string? ShippingAddress { get; set; }
 

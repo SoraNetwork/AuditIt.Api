@@ -26,4 +26,70 @@ namespace AuditIt.Api.Models
         [JsonPropertyName("stateCode")]
         public string StateCode { get; set; }
     }
+
+    public class DingTalkApiResponse<T>
+    {
+        [JsonPropertyName("errcode")]
+        public int ErrorCode { get; set; }
+
+        [JsonPropertyName("errmsg")]
+        public string? ErrorMessage { get; set; }
+
+        [JsonPropertyName("result")]
+        public T? Result { get; set; }
+    }
+
+    public class DingTalkDepartment
+    {
+        [JsonPropertyName("dept_id")]
+        public long DeptId { get; set; }
+
+        [JsonPropertyName("parent_id")]
+        public long ParentId { get; set; }
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+    }
+
+    public class DingTalkDepartmentUserListResult
+    {
+        [JsonPropertyName("userid_list")]
+        public List<string> UserIds { get; set; } = new();
+    }
+
+    public class DingTalkUserDetail
+    {
+        [JsonPropertyName("userid")]
+        public string UserId { get; set; } = string.Empty;
+
+        [JsonPropertyName("unionid")]
+        public string? UnionId { get; set; }
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = string.Empty;
+
+        [JsonPropertyName("mobile")]
+        public string? Mobile { get; set; }
+
+        [JsonPropertyName("job_number")]
+        public string? JobNumber { get; set; }
+
+        [JsonPropertyName("title")]
+        public string? Title { get; set; }
+
+        [JsonPropertyName("active")]
+        public bool? Active { get; set; }
+    }
+
+    public class DingTalkWorkNoticeResponse
+    {
+        [JsonPropertyName("errcode")]
+        public int ErrorCode { get; set; }
+
+        [JsonPropertyName("errmsg")]
+        public string? ErrorMessage { get; set; }
+
+        [JsonPropertyName("task_id")]
+        public long? TaskId { get; set; }
+    }
 }

@@ -16,6 +16,9 @@ namespace AuditIt.Api.Models
         public DateTime? ActualEndDate { get; set; }
         public decimal TotalPrice { get; set; }
         public decimal? Deposit { get; set; }
+        public decimal OtherFee { get; set; }
+        public decimal TotalShippingFee { get; set; }
+        public decimal AccountedAmount { get; set; }
         public string? ShippingAddress { get; set; }
         public string? PlatformOrderNo { get; set; }
         public string? Notes { get; set; }
@@ -77,6 +80,9 @@ namespace AuditIt.Api.Models
         [Range(0, double.MaxValue)]
         public decimal? Deposit { get; set; }
 
+        [Range(0, double.MaxValue)]
+        public decimal OtherFee { get; set; }
+
         [StringLength(500)]
         public string? ShippingAddress { get; set; }
 
@@ -92,11 +98,15 @@ namespace AuditIt.Api.Models
 
     public class UpdateRentalDto
     {
+        public Guid? RenterId { get; set; }
+        public DateTime? StartDate { get; set; }
         public DateTime? ExpectedEndDate { get; set; }
         [Range(0, double.MaxValue)]
         public decimal? TotalPrice { get; set; }
         [Range(0, double.MaxValue)]
         public decimal? Deposit { get; set; }
+        [Range(0, double.MaxValue)]
+        public decimal? OtherFee { get; set; }
         [StringLength(500)]
         public string? ShippingAddress { get; set; }
         [StringLength(100)]

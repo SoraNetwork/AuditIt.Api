@@ -63,7 +63,8 @@ namespace AuditIt.Api.Services
             var channels = scope.ServiceProvider.GetServices<INotificationChannel>().ToList();
 
             var now = DateTime.UtcNow;
-            var oneDayLater = now.AddDays(1);
+            var leadHours = Math.Max(1, _options.CurrentValue.DueSoonLeadHours);
+            var leadUntil = now.AddHours(leadHours);
 
             var newlyOverdue = await db.Rentals
                 .Include(r => r.Shipments)
@@ -99,7 +100,7 @@ namespace AuditIt.Api.Services
                 if (!hasOutboundShipment
                     && rental.Status == RentalStatus.Pending
                     && rental.StartDate >= now
-                    && rental.StartDate <= oneDayLater)
+                    && rental.StartDate <= leadUntil)
                 {
                     type = ReminderType.RentalShipmentSoon;
                 }
@@ -109,7 +110,7 @@ namespace AuditIt.Api.Services
                 }
                 else if (hasOutboundShipment
                          && rental.ExpectedEndDate >= now
-                         && rental.ExpectedEndDate <= oneDayLater)
+                         && rental.ExpectedEndDate <= leadUntil)
                 {
                     type = ReminderType.RentalDueSoon;
                 }

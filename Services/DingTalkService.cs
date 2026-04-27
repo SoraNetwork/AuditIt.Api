@@ -15,6 +15,7 @@ namespace AuditIt.Api.Services
         private readonly DingTalkConfiguration _dingTalkConfig;
         private readonly IMemoryCache _cache;
         private const string AppAccessTokenCacheKey = "DingTalkAppAccessToken";
+        private const long RootDepartmentId = 1;
 
         public DingTalkService(HttpClient httpClient, IOptions<DingTalkConfiguration> dingTalkConfigOptions, IMemoryCache cache)
         {
@@ -126,6 +127,162 @@ namespace AuditIt.Api.Services
             }
 
             return tokenResponse.AccessToken;
+        }
+
+        public async Task<IReadOnlyList<DingTalkUserDetail>> GetDirectoryUsersAsync(CancellationToken ct = default)
+        {
+            var token = await GetAccessTokenAsync();
+            var departmentIds = await GetAllDepartmentIdsAsync(token, ct);
+            var userIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var deptId in departmentIds)
+            {
+                foreach (var userId in await GetDepartmentUserIdsAsync(token, deptId, ct))
+                {
+                    userIds.Add(userId);
+                }
+            }
+
+            var users = new List<DingTalkUserDetail>();
+            foreach (var userId in userIds)
+            {
+                var user = await GetUserDetailAsync(token, userId, ct);
+                if (user != null && !string.IsNullOrWhiteSpace(user.Name))
+                {
+                    users.Add(user);
+                }
+            }
+
+            return users
+                .OrderBy(u => u.Name)
+                .ThenBy(u => u.UserId)
+                .ToList();
+        }
+
+        public async Task SendWorkNoticeAsync(IEnumerable<string> userIds, string content, CancellationToken ct = default)
+        {
+            if (!_dingTalkConfig.EnableWorkNotice || !_dingTalkConfig.AgentId.HasValue)
+            {
+                return;
+            }
+
+            var targets = userIds
+                .Select(id => id?.Trim())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Chunk(100);
+
+            var token = await GetAccessTokenAsync();
+            foreach (var chunk in targets)
+            {
+                var requestBody = new
+                {
+                    agent_id = _dingTalkConfig.AgentId.Value,
+                    userid_list = string.Join(",", chunk),
+                    msg = new
+                    {
+                        msgtype = "text",
+                        text = new
+                        {
+                            content
+                        }
+                    }
+                };
+
+                var response = await _httpClient.PostAsJsonAsync(
+                    $"https://oapi.dingtalk.com/topapi/message/corpconversation/asyncsend_v2?access_token={Uri.EscapeDataString(token)}",
+                    requestBody,
+                    ct);
+                response.EnsureSuccessStatusCode();
+
+                var result = await response.Content.ReadFromJsonAsync<DingTalkWorkNoticeResponse>(cancellationToken: ct);
+                if (result == null || result.ErrorCode != 0)
+                {
+                    throw new InvalidOperationException($"发送钉钉工作通知失败：{result?.ErrorMessage ?? "未知错误"}");
+                }
+            }
+        }
+
+        private async Task<List<long>> GetAllDepartmentIdsAsync(string token, CancellationToken ct)
+        {
+            var result = new List<long> { RootDepartmentId };
+            var queue = new Queue<long>();
+            queue.Enqueue(RootDepartmentId);
+
+            while (queue.Count > 0)
+            {
+                var deptId = queue.Dequeue();
+                var children = await GetSubDepartmentsAsync(token, deptId, ct);
+                foreach (var child in children)
+                {
+                    if (result.Contains(child.DeptId))
+                    {
+                        continue;
+                    }
+
+                    result.Add(child.DeptId);
+                    queue.Enqueue(child.DeptId);
+                }
+            }
+
+            return result;
+        }
+
+        private async Task<IReadOnlyList<DingTalkDepartment>> GetSubDepartmentsAsync(string token, long deptId, CancellationToken ct)
+        {
+            var body = new
+            {
+                dept_id = deptId,
+                language = "zh_CN"
+            };
+
+            var response = await _httpClient.PostAsJsonAsync(
+                $"https://oapi.dingtalk.com/topapi/v2/department/listsub?access_token={Uri.EscapeDataString(token)}",
+                body,
+                ct);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<DingTalkApiResponse<List<DingTalkDepartment>>>(cancellationToken: ct);
+            EnsureDingTalkSuccess(result?.ErrorCode ?? -1, result?.ErrorMessage, "获取钉钉部门列表失败");
+            return result?.Result ?? new List<DingTalkDepartment>();
+        }
+
+        private async Task<IReadOnlyList<string>> GetDepartmentUserIdsAsync(string token, long deptId, CancellationToken ct)
+        {
+            var response = await _httpClient.PostAsJsonAsync(
+                $"https://oapi.dingtalk.com/topapi/user/listid?access_token={Uri.EscapeDataString(token)}",
+                new { dept_id = deptId },
+                ct);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<DingTalkApiResponse<DingTalkDepartmentUserListResult>>(cancellationToken: ct);
+            EnsureDingTalkSuccess(result?.ErrorCode ?? -1, result?.ErrorMessage, "获取钉钉部门成员失败");
+            return result?.Result?.UserIds ?? new List<string>();
+        }
+
+        private async Task<DingTalkUserDetail?> GetUserDetailAsync(string token, string userId, CancellationToken ct)
+        {
+            var response = await _httpClient.PostAsJsonAsync(
+                $"https://oapi.dingtalk.com/topapi/v2/user/get?access_token={Uri.EscapeDataString(token)}",
+                new
+                {
+                    userid = userId,
+                    language = "zh_CN"
+                },
+                ct);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<DingTalkApiResponse<DingTalkUserDetail>>(cancellationToken: ct);
+            EnsureDingTalkSuccess(result?.ErrorCode ?? -1, result?.ErrorMessage, $"获取钉钉用户 {userId} 详情失败");
+            return result?.Result;
+        }
+
+        private static void EnsureDingTalkSuccess(int errorCode, string? errorMessage, string prefix)
+        {
+            if (errorCode != 0)
+            {
+                throw new InvalidOperationException($"{prefix}：{errorMessage ?? errorCode.ToString()}");
+            }
         }
     }
 }

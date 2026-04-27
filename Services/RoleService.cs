@@ -1,6 +1,7 @@
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AuditIt.Api.Services
 {
@@ -128,10 +129,17 @@ namespace AuditIt.Api.Services
     public class UserService : IUserService
     {
         private readonly ApplicationDbContext _context;
+        private readonly IDingTalkService _dingTalkService;
+        private readonly IOptions<AuthOptions> _authOptions;
 
-        public UserService(ApplicationDbContext context)
+        public UserService(
+            ApplicationDbContext context,
+            IDingTalkService dingTalkService,
+            IOptions<AuthOptions> authOptions)
         {
             _context = context;
+            _dingTalkService = dingTalkService;
+            _authOptions = authOptions;
         }
 
         public async Task<IEnumerable<UserDto>> SearchAsync(UserQueryParameters query)
@@ -144,7 +152,10 @@ namespace AuditIt.Api.Services
             if (!string.IsNullOrWhiteSpace(query.Keyword))
             {
                 var k = query.Keyword.Trim();
-                q = q.Where(u => u.Name.Contains(k) || (u.LastDingTalkId ?? "").Contains(k));
+                q = q.Where(u => u.Name.Contains(k)
+                    || (u.LastDingTalkId ?? "").Contains(k)
+                    || (u.DingTalkUserId ?? "").Contains(k)
+                    || (u.Mobile ?? "").Contains(k));
             }
             if (query.Status.HasValue) q = q.Where(u => u.Status == query.Status.Value);
             if (!string.IsNullOrWhiteSpace(query.Role))
@@ -211,6 +222,127 @@ namespace AuditIt.Api.Services
             return await GetAsync(id);
         }
 
+        public async Task<SyncDingTalkUsersResultDto> SyncDingTalkUsersAsync(
+            SyncDingTalkUsersDto dto,
+            string? currentUser,
+            CancellationToken ct = default)
+        {
+            var result = new SyncDingTalkUsersResultDto();
+            var directoryUsers = await _dingTalkService.GetDirectoryUsersAsync(ct);
+            result.Pulled = directoryUsers.Count;
+
+            var defaultRoleName = string.IsNullOrWhiteSpace(dto.DefaultRoleName)
+                ? _authOptions.Value.DefaultRoleForNewUsers
+                : dto.DefaultRoleName.Trim();
+            if (string.IsNullOrWhiteSpace(defaultRoleName))
+            {
+                defaultRoleName = BuiltInRoles.Operator;
+            }
+
+            var defaultRole = await _context.Roles.FirstOrDefaultAsync(r => r.Name == defaultRoleName, ct)
+                ?? await _context.Roles.FirstOrDefaultAsync(r => r.Name == BuiltInRoles.Operator, ct);
+
+            var now = DateTime.UtcNow;
+            var seenUserIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var dingUser in directoryUsers)
+            {
+                if (string.IsNullOrWhiteSpace(dingUser.UserId) || string.IsNullOrWhiteSpace(dingUser.Name))
+                {
+                    result.Skipped++;
+                    continue;
+                }
+
+                var userId = dingUser.UserId.Trim();
+                var name = dingUser.Name.Trim();
+                seenUserIds.Add(userId);
+
+                var user = await _context.Users
+                    .Include(u => u.UserRoles)
+                    .FirstOrDefaultAsync(u =>
+                        u.DingTalkUserId == userId
+                        || u.LastDingTalkId == userId
+                        || u.DingTalkId == userId,
+                        ct);
+
+                if (user == null)
+                {
+                    var byName = await _context.Users
+                        .Include(u => u.UserRoles)
+                        .FirstOrDefaultAsync(u => u.Name == name, ct);
+
+                    if (byName != null
+                        && !string.IsNullOrWhiteSpace(byName.DingTalkUserId)
+                        && !string.Equals(byName.DingTalkUserId, userId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        result.Skipped++;
+                        result.Messages.Add($"姓名重复，已跳过：{name} / {userId}");
+                        continue;
+                    }
+
+                    user = byName;
+                }
+
+                if (user == null)
+                {
+                    user = new User
+                    {
+                        Id = Guid.NewGuid(),
+                        Name = name,
+                        Status = dingUser.Active == false ? UserStatus.Left : UserStatus.Active,
+                        CreatedAt = now
+                    };
+                    _context.Users.Add(user);
+                    result.Created++;
+
+                    if (defaultRole != null && user.Status == UserStatus.Active)
+                    {
+                        _context.UserRoles.Add(new UserRole
+                        {
+                            UserId = user.Id,
+                            RoleId = defaultRole.Id,
+                            AssignedAt = now,
+                            AssignedBy = currentUser ?? "dingtalk-sync"
+                        });
+                    }
+                }
+                else
+                {
+                    result.Updated++;
+                    user.Name = name;
+                    if (dingUser.Active == false)
+                    {
+                        user.Status = UserStatus.Left;
+                    }
+                }
+
+                user.DingTalkId = userId;
+                user.LastDingTalkId = userId;
+                user.DingTalkUserId = userId;
+                user.DingTalkUnionId = dingUser.UnionId;
+                user.Mobile = dingUser.Mobile;
+                user.JobNumber = dingUser.JobNumber;
+                user.JobTitle = dingUser.Title;
+                user.LastDingTalkSyncAt = now;
+            }
+
+            if (dto.DeactivateMissing)
+            {
+                var localDingUsers = await _context.Users
+                    .Where(u => u.Status == UserStatus.Active && u.DingTalkUserId != null)
+                    .ToListAsync(ct);
+
+                foreach (var user in localDingUsers.Where(u => !seenUserIds.Contains(u.DingTalkUserId!)))
+                {
+                    user.Status = UserStatus.Left;
+                    result.Deactivated++;
+                }
+            }
+
+            await _context.SaveChangesAsync(ct);
+            return result;
+        }
+
         internal static UserDto ToDto(User u)
         {
             var perms = u.UserRoles
@@ -228,6 +360,11 @@ namespace AuditIt.Api.Services
                 Name = u.Name,
                 Status = u.Status,
                 LastDingTalkId = u.LastDingTalkId ?? u.DingTalkId,
+                DingTalkUserId = u.DingTalkUserId,
+                Mobile = u.Mobile,
+                JobNumber = u.JobNumber,
+                JobTitle = u.JobTitle,
+                LastDingTalkSyncAt = u.LastDingTalkSyncAt,
                 LastLoginAt = u.LastLoginAt,
                 Notes = u.Notes,
                 CreatedAt = u.CreatedAt,

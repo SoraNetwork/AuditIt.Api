@@ -10,6 +10,11 @@ namespace AuditIt.Api.Models
         public string Name { get; set; } = string.Empty;
         public UserStatus Status { get; set; }
         public string? LastDingTalkId { get; set; }
+        public string? DingTalkUserId { get; set; }
+        public string? Mobile { get; set; }
+        public string? JobNumber { get; set; }
+        public string? JobTitle { get; set; }
+        public DateTime? LastDingTalkSyncAt { get; set; }
         public DateTime? LastLoginAt { get; set; }
         public string? Notes { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -37,6 +42,22 @@ namespace AuditIt.Api.Models
     {
         [Required]
         public List<int> RoleIds { get; set; } = new();
+    }
+
+    public class SyncDingTalkUsersDto
+    {
+        public bool DeactivateMissing { get; set; }
+        public string? DefaultRoleName { get; set; }
+    }
+
+    public class SyncDingTalkUsersResultDto
+    {
+        public int Pulled { get; set; }
+        public int Created { get; set; }
+        public int Updated { get; set; }
+        public int Deactivated { get; set; }
+        public int Skipped { get; set; }
+        public List<string> Messages { get; set; } = new();
     }
 
     public class RoleDto

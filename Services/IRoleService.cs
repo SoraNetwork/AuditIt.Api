@@ -19,5 +19,6 @@ namespace AuditIt.Api.Services
         Task<UserDto?> GetAsync(Guid id);
         Task<UserDto?> UpdateStatusAsync(Guid id, UpdateUserStatusDto dto);
         Task<UserDto?> AssignRolesAsync(Guid id, AssignRolesDto dto, string? currentUser);
+        Task<SyncDingTalkUsersResultDto> SyncDingTalkUsersAsync(SyncDingTalkUsersDto dto, string? currentUser, CancellationToken ct = default);
     }
 }

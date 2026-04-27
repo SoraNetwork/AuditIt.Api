@@ -2,7 +2,9 @@ namespace AuditIt.Api.Models
 {
     public class DingTalkConfiguration
     {
-        public string AppKey { get; set; }
-        public string AppSecret { get; set; }
+        public string AppKey { get; set; } = string.Empty;
+        public string AppSecret { get; set; } = string.Empty;
+        public long? AgentId { get; set; }
+        public bool EnableWorkNotice { get; set; }
     }
 }

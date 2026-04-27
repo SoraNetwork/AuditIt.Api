@@ -73,6 +73,7 @@ builder.Services.AddScoped<IRentalService, RentalService>();
 builder.Services.AddScoped<IItemListingService, ItemListingService>();
 builder.Services.AddScoped<IReminderService, ReminderService>();
 builder.Services.AddScoped<INotificationChannel, InAppNotificationChannel>();
+builder.Services.AddScoped<INotificationChannel, DingTalkNotificationChannel>();
 builder.Services.AddHostedService<ReminderSweeper>();
 
 // 用户/角色/权限服务

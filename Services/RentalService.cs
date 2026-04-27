@@ -168,6 +168,7 @@ namespace AuditIt.Api.Services
                 ExpectedEndDate = dto.ExpectedEndDate,
                 TotalPrice = dto.TotalPrice,
                 Deposit = dto.Deposit,
+                OtherFee = dto.OtherFee,
                 ShippingAddress = NormalizeNullableText(dto.ShippingAddress) ?? renter.DefaultAddress,
                 PlatformOrderNo = NormalizeNullableText(dto.PlatformOrderNo),
                 Notes = NormalizeNullableText(dto.Notes),
@@ -214,6 +215,7 @@ namespace AuditIt.Api.Services
         public async Task<(RentalDto? rental, string? error)> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser)
         {
             var rental = await _context.Rentals
+                .Include(r => r.Renter)
                 .Include(r => r.Items)
                     .ThenInclude(ri => ri.Item)
                         .ThenInclude(i => i!.ItemDefinition)
@@ -235,19 +237,58 @@ namespace AuditIt.Api.Services
 
             var changes = new List<string>();
             var extended = false;
+            var scheduleOrTargetChanged = false;
+            var nextStartDate = dto.StartDate ?? rental.StartDate;
+            var nextExpectedEndDate = dto.ExpectedEndDate ?? rental.ExpectedEndDate;
+
+            if (nextExpectedEndDate < nextStartDate)
+            {
+                return (null, "预计结束时间不能早于开始时间。");
+            }
+
+            if ((dto.StartDate.HasValue && dto.StartDate.Value != rental.StartDate)
+                || (dto.ExpectedEndDate.HasValue && dto.ExpectedEndDate.Value != rental.ExpectedEndDate))
+            {
+                var conflict = await ValidateCreateConflictsAsync(
+                    rental.Items.Where(ri => ri.ReturnedAt == null).Select(ri => ri.ItemId).ToList(),
+                    nextStartDate,
+                    nextExpectedEndDate,
+                    rental.Id);
+                if (conflict != null)
+                {
+                    return (null, conflict.Message);
+                }
+            }
+
+            if (dto.RenterId.HasValue && dto.RenterId.Value != rental.RenterId)
+            {
+                var nextRenter = await _context.Renters.FindAsync(dto.RenterId.Value);
+                if (nextRenter == null)
+                {
+                    return (null, "租客不存在。");
+                }
+
+                changes.Add($"租客：{rental.Renter?.Name ?? rental.RenterId.ToString()} -> {nextRenter.Name}");
+                rental.RenterId = nextRenter.Id;
+                rental.Renter = nextRenter;
+                scheduleOrTargetChanged = true;
+            }
+
+            if (dto.StartDate.HasValue && dto.StartDate.Value != rental.StartDate)
+            {
+                changes.Add($"开始：{rental.StartDate:yyyy-MM-dd} -> {dto.StartDate.Value:yyyy-MM-dd}");
+                rental.StartDate = dto.StartDate.Value;
+                scheduleOrTargetChanged = true;
+            }
 
             if (dto.ExpectedEndDate.HasValue)
             {
-                if (dto.ExpectedEndDate.Value < rental.StartDate)
-                {
-                    return (null, "预计结束时间不能早于开始时间。");
-                }
-
                 if (dto.ExpectedEndDate.Value != rental.ExpectedEndDate)
                 {
                     extended = dto.ExpectedEndDate.Value > rental.ExpectedEndDate;
                     changes.Add($"预计结束：{rental.ExpectedEndDate:yyyy-MM-dd} -> {dto.ExpectedEndDate.Value:yyyy-MM-dd}");
                     rental.ExpectedEndDate = dto.ExpectedEndDate.Value;
+                    scheduleOrTargetChanged = true;
 
                     if (rental.Status == RentalStatus.Overdue && rental.ExpectedEndDate > DateTime.UtcNow)
                     {
@@ -266,6 +307,12 @@ namespace AuditIt.Api.Services
             {
                 changes.Add($"押金：{rental.Deposit?.ToString("0.0") ?? "-"} -> {dto.Deposit.Value:0.0}");
                 rental.Deposit = dto.Deposit.Value;
+            }
+
+            if (dto.OtherFee.HasValue && dto.OtherFee.Value != rental.OtherFee)
+            {
+                changes.Add($"其他费用：{rental.OtherFee:0.0} -> {dto.OtherFee.Value:0.0}");
+                rental.OtherFee = dto.OtherFee.Value;
             }
 
             if (dto.ShippingAddress != null)
@@ -305,6 +352,7 @@ namespace AuditIt.Api.Services
                 {
                     changes.Add($"负责人：{rental.AssignedTo ?? "-"} -> {assignedTo ?? "-"}");
                     rental.AssignedTo = assignedTo;
+                    scheduleOrTargetChanged = true;
                 }
             }
 
@@ -315,6 +363,11 @@ namespace AuditIt.Api.Services
 
             rental.UpdatedAt = DateTime.UtcNow;
             rental.UpdatedBy = currentUser;
+
+            if (scheduleOrTargetChanged)
+            {
+                await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser);
+            }
 
             var summary = string.Join("；", changes);
             foreach (var rentalItem in rental.Items)
@@ -693,12 +746,14 @@ namespace AuditIt.Api.Services
         private async Task<RentalCreateConflictDto?> ValidateCreateConflictsAsync(
             IReadOnlyCollection<Guid> itemIds,
             DateTime startDate,
-            DateTime expectedEndDate)
+            DateTime expectedEndDate,
+            Guid? excludeRentalId = null)
         {
             var overlappingRentals = await _context.Rentals
                 .Include(r => r.Items)
                 .Include(r => r.Shipments)
                 .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled)
+                .Where(r => excludeRentalId == null || r.Id != excludeRentalId.Value)
                 .Where(r => r.StartDate <= expectedEndDate && startDate <= r.ExpectedEndDate)
                 .Where(r => r.Items.Any(ri => itemIds.Contains(ri.ItemId) && ri.ReturnedAt == null))
                 .ToListAsync();
@@ -867,6 +922,30 @@ namespace AuditIt.Api.Services
             }
         }
 
+        private async Task DismissOpenRentalAutoRemindersAsync(Guid rentalId, string? currentUser)
+        {
+            var openAutoReminders = await _context.Reminders
+                .Where(r => r.RelatedEntityType == "Rental"
+                    && r.RelatedEntityId == rentalId.ToString()
+                    && r.DismissedAt == null
+                    && (r.Type == ReminderType.RentalShipmentSoon
+                        || r.Type == ReminderType.RentalDueSoon
+                        || r.Type == ReminderType.RentalOverdue))
+                .ToListAsync();
+
+            if (openAutoReminders.Count == 0)
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            foreach (var reminder in openAutoReminders)
+            {
+                reminder.DismissedAt = now;
+                reminder.DismissedBy = currentUser;
+            }
+        }
+
         private async Task<string> GenerateRentalNumberAsync(DateTime at)
         {
             var datePart = at.ToString("yyyyMMdd");
@@ -942,6 +1021,9 @@ namespace AuditIt.Api.Services
             ActualEndDate = rental.ActualEndDate,
             TotalPrice = rental.TotalPrice,
             Deposit = rental.Deposit,
+            OtherFee = rental.OtherFee,
+            TotalShippingFee = rental.Shipments.Sum(s => s.ShippingFee ?? 0),
+            AccountedAmount = rental.TotalPrice - rental.OtherFee - rental.Shipments.Sum(s => s.ShippingFee ?? 0),
             ShippingAddress = rental.ShippingAddress,
             PlatformOrderNo = rental.PlatformOrderNo,
             Notes = rental.Notes,
