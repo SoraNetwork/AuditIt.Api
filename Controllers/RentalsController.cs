@@ -26,6 +26,17 @@ namespace AuditIt.Api.Controllers
             return Ok(new { items, total });
         }
 
+        [HttpGet("calendar")]
+        [RequirePermission(PermissionCodes.RentalView)]
+        public async Task<ActionResult<IEnumerable<RentalCalendarEventDto>>> Calendar([FromQuery] RentalCalendarQueryParameters query)
+        {
+            return Ok(await _rentals.GetCalendarAsync(
+                query,
+                CurrentUser(),
+                User.HasPermission(PermissionCodes.ReminderView),
+                User.HasPermission(PermissionCodes.ReminderDismissAny)));
+        }
+
         [HttpGet("{id:guid}")]
         [RequirePermission(PermissionCodes.RentalView)]
         public async Task<ActionResult<RentalDto>> Get(Guid id)

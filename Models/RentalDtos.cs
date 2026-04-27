@@ -144,6 +144,42 @@ namespace AuditIt.Api.Models
         public bool HasOutboundShipment { get; set; }
     }
 
+    public enum RentalCalendarEventKind
+    {
+        RentalPeriod,
+        ShipmentRequired,
+        ReturnRequired,
+        OutboundShipment,
+        InboundShipment,
+        Reminder
+    }
+
+    public class RentalCalendarQueryParameters
+    {
+        public DateTime? From { get; set; }
+        public DateTime? To { get; set; }
+        public string? TargetUser { get; set; }
+    }
+
+    public class RentalCalendarEventDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public RentalCalendarEventKind Kind { get; set; }
+        public ReminderType? ReminderType { get; set; }
+        public ReminderLevel Level { get; set; } = ReminderLevel.Info;
+        public Guid? RentalId { get; set; }
+        public string? RentalNumber { get; set; }
+        public string? RenterName { get; set; }
+        public RentalStatus? RentalStatus { get; set; }
+        public int? ReminderId { get; set; }
+        public string Title { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public DateTime StartAt { get; set; }
+        public DateTime EndAt { get; set; }
+        public bool AllDay { get; set; } = true;
+        public bool IsOpen { get; set; } = true;
+    }
+
     public class CreateShipmentDto
     {
         public ShipmentDirection Direction { get; set; } = ShipmentDirection.Outbound;

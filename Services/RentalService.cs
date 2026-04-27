@@ -71,6 +71,167 @@ namespace AuditIt.Api.Services
             return (rows.Select(ToDto), total);
         }
 
+        public async Task<IReadOnlyList<RentalCalendarEventDto>> GetCalendarAsync(
+            RentalCalendarQueryParameters query,
+            string? currentUser,
+            bool includeReminders,
+            bool canSeeAllReminders)
+        {
+            var today = DateTime.UtcNow.Date;
+            var from = (query.From ?? today.AddDays(-7)).Date;
+            var to = (query.To ?? today.AddDays(45)).Date.AddDays(1).AddTicks(-1);
+            if (to < from)
+            {
+                (from, to) = (to.Date, from.Date.AddDays(1).AddTicks(-1));
+            }
+
+            if ((to - from).TotalDays > 120)
+            {
+                to = from.AddDays(120).AddTicks(-1);
+            }
+
+            var targetUser = ResolveCalendarTarget(query.TargetUser, currentUser, canSeeAllReminders);
+            var showAllUsers = string.Equals(targetUser, "all", StringComparison.OrdinalIgnoreCase);
+
+            var rentals = await _context.Rentals
+                .Include(r => r.Renter)
+                .Include(r => r.Items)
+                .Include(r => r.Shipments)
+                    .ThenInclude(s => s.OriginWarehouse)
+                .Where(r => r.Status != RentalStatus.Cancelled)
+                .Where(r => r.StartDate <= to && r.ExpectedEndDate >= from)
+                .ToListAsync();
+
+            var events = new List<RentalCalendarEventDto>();
+            foreach (var rental in rentals.Where(r => showAllUsers || IsRentalForUser(r, targetUser)))
+            {
+                var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+                var hasOpenItems = rental.Status != RentalStatus.Returned
+                    && rental.Items.Any(i => i.ReturnedAt == null);
+
+                events.Add(new RentalCalendarEventDto
+                {
+                    Id = $"rental-period-{rental.Id}",
+                    Kind = RentalCalendarEventKind.RentalPeriod,
+                    Level = rental.Status == RentalStatus.Overdue ? ReminderLevel.Critical : ReminderLevel.Info,
+                    RentalId = rental.Id,
+                    RentalNumber = rental.RentalNumber,
+                    RenterName = rental.Renter?.Name,
+                    RentalStatus = rental.Status,
+                    Title = $"租期 {rental.RentalNumber}",
+                    Description = $"{rental.Renter?.Name ?? "-"} | {rental.Items.Count} 件物品",
+                    StartAt = rental.StartDate,
+                    EndAt = rental.ExpectedEndDate,
+                    AllDay = true,
+                    IsOpen = rental.Status != RentalStatus.Returned
+                });
+
+                if (!hasOutboundShipment && rental.Status == RentalStatus.Pending && IsWithin(rental.StartDate, from, to))
+                {
+                    events.Add(new RentalCalendarEventDto
+                    {
+                        Id = $"shipment-required-{rental.Id}",
+                        Kind = RentalCalendarEventKind.ShipmentRequired,
+                        Level = rental.StartDate.Date < today ? ReminderLevel.Critical : ReminderLevel.Warning,
+                        RentalId = rental.Id,
+                        RentalNumber = rental.RentalNumber,
+                        RenterName = rental.Renter?.Name,
+                        RentalStatus = rental.Status,
+                        Title = $"需要发货 {rental.RentalNumber}",
+                        Description = $"{rental.Renter?.Name ?? "-"} | 租期开始",
+                        StartAt = rental.StartDate,
+                        EndAt = rental.StartDate,
+                        AllDay = true,
+                        IsOpen = true
+                    });
+                }
+
+                if (hasOutboundShipment && hasOpenItems && IsWithin(rental.ExpectedEndDate, from, to))
+                {
+                    events.Add(new RentalCalendarEventDto
+                    {
+                        Id = $"return-required-{rental.Id}",
+                        Kind = RentalCalendarEventKind.ReturnRequired,
+                        Level = rental.ExpectedEndDate.Date < today || rental.Status == RentalStatus.Overdue
+                            ? ReminderLevel.Critical
+                            : ReminderLevel.Warning,
+                        RentalId = rental.Id,
+                        RentalNumber = rental.RentalNumber,
+                        RenterName = rental.Renter?.Name,
+                        RentalStatus = rental.Status,
+                        Title = $"需要收货 {rental.RentalNumber}",
+                        Description = $"{rental.Renter?.Name ?? "-"} | 租期结束",
+                        StartAt = rental.ExpectedEndDate,
+                        EndAt = rental.ExpectedEndDate,
+                        AllDay = true,
+                        IsOpen = true
+                    });
+                }
+
+                foreach (var shipment in rental.Shipments.Where(s => IsWithin(s.ShippedAt, from, to)))
+                {
+                    events.Add(new RentalCalendarEventDto
+                    {
+                        Id = $"shipment-{shipment.Id}",
+                        Kind = shipment.Direction == ShipmentDirection.Outbound
+                            ? RentalCalendarEventKind.OutboundShipment
+                            : RentalCalendarEventKind.InboundShipment,
+                        Level = ReminderLevel.Info,
+                        RentalId = rental.Id,
+                        RentalNumber = rental.RentalNumber,
+                        RenterName = rental.Renter?.Name,
+                        RentalStatus = rental.Status,
+                        Title = shipment.Direction == ShipmentDirection.Outbound
+                            ? $"已发货 {rental.RentalNumber}"
+                            : $"回货物流 {rental.RentalNumber}",
+                        Description = BuildCalendarShipmentDescription(shipment),
+                        StartAt = shipment.ShippedAt,
+                        EndAt = shipment.DeliveredAt ?? shipment.ShippedAt,
+                        AllDay = false,
+                        IsOpen = shipment.DeliveredAt == null
+                    });
+                }
+            }
+
+            if (includeReminders)
+            {
+                var reminderQuery = _context.Reminders
+                    .Where(r => r.DueAt >= from && r.DueAt <= to);
+
+                if (!showAllUsers)
+                {
+                    reminderQuery = reminderQuery.Where(r => r.TargetUser == null || r.TargetUser == targetUser);
+                }
+
+                var reminders = await reminderQuery.ToListAsync();
+                foreach (var reminder in reminders)
+                {
+                    var rentalId = ParseRentalId(reminder);
+                    events.Add(new RentalCalendarEventDto
+                    {
+                        Id = $"reminder-{reminder.Id}",
+                        Kind = RentalCalendarEventKind.Reminder,
+                        ReminderType = reminder.Type,
+                        Level = reminder.Level,
+                        RentalId = rentalId,
+                        ReminderId = reminder.Id,
+                        Title = reminder.Title,
+                        Description = reminder.Message,
+                        StartAt = reminder.DueAt,
+                        EndAt = reminder.DueAt,
+                        AllDay = false,
+                        IsOpen = reminder.DismissedAt == null
+                    });
+                }
+            }
+
+            return events
+                .OrderBy(e => e.StartAt)
+                .ThenBy(e => e.Kind)
+                .ThenBy(e => e.Title)
+                .ToList();
+        }
+
         public async Task<RentalDto?> GetByIdAsync(Guid id)
         {
             var rental = await _context.Rentals
@@ -976,6 +1137,59 @@ namespace AuditIt.Api.Services
 
         private static bool HasOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+
+        private static bool IsWithin(DateTime value, DateTime from, DateTime to) =>
+            value >= from && value <= to;
+
+        private static string ResolveCalendarTarget(string? requestedTarget, string? currentUser, bool canSeeAll)
+        {
+            var requested = requestedTarget?.Trim();
+            if (canSeeAll && !string.IsNullOrWhiteSpace(requested))
+            {
+                return requested;
+            }
+
+            return string.IsNullOrWhiteSpace(currentUser) ? "all" : currentUser.Trim();
+        }
+
+        private static bool IsRentalForUser(Rental rental, string targetUser)
+        {
+            if (string.IsNullOrWhiteSpace(targetUser)
+                || string.Equals(targetUser, "all", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return string.Equals(rental.CreatedBy, targetUser, StringComparison.OrdinalIgnoreCase)
+                || SplitUsers(rental.AssignedTo).Any(user => string.Equals(user, targetUser, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static Guid? ParseRentalId(Reminder reminder)
+        {
+            if (string.Equals(reminder.RelatedEntityType, "Rental", StringComparison.OrdinalIgnoreCase)
+                && Guid.TryParse(reminder.RelatedEntityId, out var rentalId))
+            {
+                return rentalId;
+            }
+
+            return null;
+        }
+
+        private static string BuildCalendarShipmentDescription(RentalShipment shipment)
+        {
+            var parts = new List<string> { shipment.Carrier };
+            if (!string.IsNullOrWhiteSpace(shipment.TrackingNumber))
+            {
+                parts.Add(shipment.TrackingNumber);
+            }
+
+            if (shipment.DeliveredAt.HasValue)
+            {
+                parts.Add("已签收");
+            }
+
+            return string.Join(" | ", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
+        }
 
         private static IEnumerable<string> SplitUsers(string? users) =>
             string.IsNullOrWhiteSpace(users)

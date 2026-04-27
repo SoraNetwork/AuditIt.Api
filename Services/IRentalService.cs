@@ -5,6 +5,11 @@ namespace AuditIt.Api.Services
     public interface IRentalService
     {
         Task<(IEnumerable<RentalDto> items, int total)> ListAsync(RentalQueryParameters query);
+        Task<IReadOnlyList<RentalCalendarEventDto>> GetCalendarAsync(
+            RentalCalendarQueryParameters query,
+            string? currentUser,
+            bool includeReminders,
+            bool canSeeAllReminders);
         Task<RentalDto?> GetByIdAsync(Guid id);
         Task<CreateRentalResult> CreateAsync(CreateRentalDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser);
