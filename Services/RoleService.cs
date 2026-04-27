@@ -261,8 +261,9 @@ namespace AuditIt.Api.Services
                     .Include(u => u.UserRoles)
                     .FirstOrDefaultAsync(u =>
                         u.DingTalkUserId == userId
-                        || u.LastDingTalkId == userId
-                        || u.DingTalkId == userId,
+                        || (u.DingTalkUserId == null
+                            && ((u.LastDingTalkId != null && u.LastDingTalkId == userId)
+                                || (u.DingTalkId != null && u.DingTalkId == userId))),
                         ct);
 
                 if (user == null)
@@ -289,7 +290,7 @@ namespace AuditIt.Api.Services
                     {
                         Id = Guid.NewGuid(),
                         Name = name,
-                        Status = dingUser.Active == false ? UserStatus.Left : UserStatus.Active,
+                        Status = IsDingTalkActive(dingUser) ? UserStatus.Active : UserStatus.Left,
                         CreatedAt = now
                     };
                     _context.Users.Add(user);
@@ -310,10 +311,7 @@ namespace AuditIt.Api.Services
                 {
                     result.Updated++;
                     user.Name = name;
-                    if (dingUser.Active == false)
-                    {
-                        user.Status = UserStatus.Left;
-                    }
+                    user.Status = IsDingTalkActive(dingUser) ? UserStatus.Active : UserStatus.Left;
                 }
 
                 user.DingTalkId = userId;
@@ -342,6 +340,9 @@ namespace AuditIt.Api.Services
             await _context.SaveChangesAsync(ct);
             return result;
         }
+
+        private static bool IsDingTalkActive(DingTalkUserDetail user) =>
+            user.Active != false && user.Status != 2;
 
         internal static UserDto ToDto(User u)
         {

@@ -46,7 +46,7 @@ namespace AuditIt.Api.Models
 
     public class SyncDingTalkUsersDto
     {
-        public bool DeactivateMissing { get; set; }
+        public bool DeactivateMissing { get; set; } = true;
         public string? DefaultRoleName { get; set; }
     }
 
@@ -100,5 +100,13 @@ namespace AuditIt.Api.Models
     {
         public List<string> BootstrapAdminNames { get; set; } = new();
         public string DefaultRoleForNewUsers { get; set; } = BuiltInRoles.Operator;
+    }
+
+    public class DingTalkDirectorySyncOptions
+    {
+        public bool Enabled { get; set; } = true;
+        public bool DeactivateMissing { get; set; } = true;
+        public int IntervalHours { get; set; } = 24;
+        public int InitialDelayMinutes { get; set; } = 5;
     }
 }

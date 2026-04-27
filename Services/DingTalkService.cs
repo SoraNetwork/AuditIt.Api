@@ -143,12 +143,24 @@ namespace AuditIt.Api.Services
                 }
             }
 
+            var dimissionUserIds = await GetDimissionUserIdsAsync(token, ct);
+            foreach (var userId in dimissionUserIds)
+            {
+                userIds.Add(userId);
+            }
+
             var users = new List<DingTalkUserDetail>();
             foreach (var userId in userIds)
             {
                 var user = await GetUserDetailAsync(token, userId, ct);
                 if (user != null && !string.IsNullOrWhiteSpace(user.Name))
                 {
+                    if (dimissionUserIds.Contains(user.UserId))
+                    {
+                        user.Active = false;
+                        user.Status = 2;
+                    }
+
                     users.Add(user);
                 }
             }
@@ -275,6 +287,49 @@ namespace AuditIt.Api.Services
             var result = await response.Content.ReadFromJsonAsync<DingTalkApiResponse<DingTalkUserDetail>>(cancellationToken: ct);
             EnsureDingTalkSuccess(result?.ErrorCode ?? -1, result?.ErrorMessage, $"获取钉钉用户 {userId} 详情失败");
             return result?.Result;
+        }
+
+        private async Task<HashSet<string>> GetDimissionUserIdsAsync(string token, CancellationToken ct)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long offset = 0;
+            const int size = 50;
+
+            while (true)
+            {
+                var response = await _httpClient.PostAsJsonAsync(
+                    $"https://oapi.dingtalk.com/topapi/smartwork/hrm/employee/querydimission?access_token={Uri.EscapeDataString(token)}",
+                    new
+                    {
+                        offset,
+                        size
+                    },
+                    ct);
+                response.EnsureSuccessStatusCode();
+
+                var body = await response.Content.ReadFromJsonAsync<DingTalkApiResponse<DingTalkDimissionUserListResult>>(cancellationToken: ct);
+                EnsureDingTalkSuccess(body?.ErrorCode ?? -1, body?.ErrorMessage, "获取钉钉离职员工列表失败");
+
+                var page = body?.Result;
+                if (page == null || page.UserIds.Count == 0)
+                {
+                    break;
+                }
+
+                foreach (var userId in page.UserIds.Where(id => !string.IsNullOrWhiteSpace(id)))
+                {
+                    result.Add(userId.Trim());
+                }
+
+                if (!page.NextCursor.HasValue || page.NextCursor.Value <= offset)
+                {
+                    break;
+                }
+
+                offset = page.NextCursor.Value;
+            }
+
+            return result;
         }
 
         private static void EnsureDingTalkSuccess(int errorCode, string? errorMessage, string prefix)

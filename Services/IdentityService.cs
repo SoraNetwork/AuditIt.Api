@@ -32,8 +32,6 @@ namespace AuditIt.Api.Services
                 {
                     Id = Guid.NewGuid(),
                     Name = trimmed,
-                    DingTalkId = dingTalkId,
-                    LastDingTalkId = dingTalkId,
                     LastLoginAt = DateTime.UtcNow,
                     Status = UserStatus.Active,
                     CreatedAt = DateTime.UtcNow
@@ -63,8 +61,6 @@ namespace AuditIt.Api.Services
             else
             {
                 if (user.Status == UserStatus.Left) return null;
-                user.LastDingTalkId = dingTalkId ?? user.LastDingTalkId;
-                user.DingTalkId = dingTalkId ?? user.DingTalkId;
                 user.LastLoginAt = DateTime.UtcNow;
 
                 // 已激活但已被踢出所有角色时，不授予任何权限（但允许登录，仅可见基本资料）。

@@ -78,9 +78,11 @@ builder.Services.AddHostedService<ReminderSweeper>();
 
 // 用户/角色/权限服务
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection("Auth"));
+builder.Services.Configure<DingTalkDirectorySyncOptions>(builder.Configuration.GetSection("DingTalkDirectorySync"));
 builder.Services.AddScoped<IIdentityService, IdentityService>();
 builder.Services.AddScoped<IRoleService, RoleService>();
 builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddHostedService<DingTalkDirectorySyncWorker>();
 
 
 builder.Services.AddEndpointsApiExplorer();

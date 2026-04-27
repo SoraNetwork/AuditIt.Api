@@ -57,6 +57,15 @@ namespace AuditIt.Api.Models
         public List<string> UserIds { get; set; } = new();
     }
 
+    public class DingTalkDimissionUserListResult
+    {
+        [JsonPropertyName("next_cursor")]
+        public long? NextCursor { get; set; }
+
+        [JsonPropertyName("data_list")]
+        public List<string> UserIds { get; set; } = new();
+    }
+
     public class DingTalkUserDetail
     {
         [JsonPropertyName("userid")]
@@ -79,6 +88,9 @@ namespace AuditIt.Api.Models
 
         [JsonPropertyName("active")]
         public bool? Active { get; set; }
+
+        [JsonPropertyName("status")]
+        public int? Status { get; set; }
     }
 
     public class DingTalkWorkNoticeResponse
