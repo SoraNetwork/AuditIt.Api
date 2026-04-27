@@ -35,7 +35,7 @@ namespace AuditIt.Api.Controllers
             try
             {
                 var dingTalkUser = await _dingTalkService.GetLegacyUserInfoByCodeAsync(request.Code);
-                return await BuildLoginResponseAsync(dingTalkUser.Name, dingTalkUser.UserId);
+                return await BuildLoginResponseAsync(dingTalkUser.Name, null);
             }
             catch (Exception ex)
             {
@@ -52,7 +52,7 @@ namespace AuditIt.Api.Controllers
             try
             {
                 var dingTalkUser = await _dingTalkService.GetSsoUserInfoByCodeAsync(request.Code);
-                return await BuildLoginResponseAsync(dingTalkUser.Nick, dingTalkUser.UnionId);
+                return await BuildLoginResponseAsync(dingTalkUser.Nick, null);
             }
             catch (Exception ex)
             {
@@ -96,7 +96,7 @@ namespace AuditIt.Api.Controllers
             {
                 new Claim(ClaimTypes.NameIdentifier, user.Name),
                 new Claim("userId", user.Id.ToString()),
-                new Claim("dingTalkId", user.LastDingTalkId ?? user.DingTalkId ?? string.Empty),
+                new Claim("dingTalkId", user.DingTalkUserId ?? string.Empty),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             };
             foreach (var p in permissions)

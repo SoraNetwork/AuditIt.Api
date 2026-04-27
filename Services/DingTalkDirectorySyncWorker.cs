@@ -56,10 +56,9 @@ namespace AuditIt.Api.Services
             {
                 using var scope = _scopeFactory.CreateScope();
                 var users = scope.ServiceProvider.GetRequiredService<IUserService>();
-                var opts = _options.CurrentValue;
                 var result = await users.SyncDingTalkUsersAsync(new SyncDingTalkUsersDto
                 {
-                    DeactivateMissing = opts.DeactivateMissing
+                    DeactivateMissing = false
                 }, "dingtalk-directory-sync", ct);
 
                 _logger.LogInformation(

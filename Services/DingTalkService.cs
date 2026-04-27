@@ -143,7 +143,16 @@ namespace AuditIt.Api.Services
                 }
             }
 
-            var dimissionUserIds = await GetDimissionUserIdsAsync(token, ct);
+            HashSet<string> dimissionUserIds;
+            try
+            {
+                dimissionUserIds = await GetDimissionUserIdsAsync(token, ct);
+            }
+            catch (InvalidOperationException)
+            {
+                dimissionUserIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
             foreach (var userId in dimissionUserIds)
             {
                 userIds.Add(userId);
@@ -152,10 +161,25 @@ namespace AuditIt.Api.Services
             var users = new List<DingTalkUserDetail>();
             foreach (var userId in userIds)
             {
-                var user = await GetUserDetailAsync(token, userId, ct);
+                var isDimissionUser = dimissionUserIds.Contains(userId);
+                DingTalkUserDetail? user;
+                try
+                {
+                    user = await GetUserDetailAsync(token, userId, ct);
+                }
+                catch (InvalidOperationException) when (isDimissionUser)
+                {
+                    continue;
+                }
+
                 if (user != null && !string.IsNullOrWhiteSpace(user.Name))
                 {
-                    if (dimissionUserIds.Contains(user.UserId))
+                    if (string.IsNullOrWhiteSpace(user.UserId))
+                    {
+                        user.UserId = userId;
+                    }
+
+                    if (isDimissionUser || dimissionUserIds.Contains(user.UserId))
                     {
                         user.Active = false;
                         user.Status = 2;
