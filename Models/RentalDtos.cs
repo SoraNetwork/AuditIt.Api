@@ -94,6 +94,8 @@ namespace AuditIt.Api.Models
 
         [StringLength(100)]
         public string? AssignedTo { get; set; }
+
+        public bool AllowScheduleConflict { get; set; }
     }
 
     public class UpdateRentalDto
@@ -118,6 +120,22 @@ namespace AuditIt.Api.Models
     }
 
     public class CreateRentalResult
+    {
+        public RentalDto? Rental { get; set; }
+        public string? Error { get; set; }
+        public RentalCreateConflictDto? Conflict { get; set; }
+    }
+
+    public class UpdateRentalItemsDto
+    {
+        [Required]
+        [MinLength(1)]
+        public List<string> ItemIds { get; set; } = new();
+
+        public bool AllowScheduleConflict { get; set; }
+    }
+
+    public class RentalItemsUpdateResult
     {
         public RentalDto? Rental { get; set; }
         public string? Error { get; set; }

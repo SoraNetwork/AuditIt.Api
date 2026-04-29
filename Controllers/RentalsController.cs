@@ -113,6 +113,17 @@ namespace AuditIt.Api.Controllers
             return Ok(rental);
         }
 
+        [HttpPut("{id:guid}/items")]
+        [RequirePermission(PermissionCodes.RentalUpdate)]
+        public async Task<ActionResult<RentalDto>> UpdateItems(Guid id, [FromBody] UpdateRentalItemsDto dto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+            var result = await _rentals.UpdateRentalItemsAsync(id, dto, CurrentUser());
+            if (result.Conflict != null) return Conflict(result.Conflict);
+            if (result.Error != null) return BadRequest(result.Error);
+            return Ok(result.Rental);
+        }
+
         private string? CurrentUser() => User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
     }
 }

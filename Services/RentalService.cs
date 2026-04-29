@@ -225,7 +225,7 @@ namespace AuditIt.Api.Services
                 }
             }
 
-            return events
+            return DeduplicateCalendarEvents(events)
                 .OrderBy(e => e.StartAt)
                 .ThenBy(e => e.Kind)
                 .ThenBy(e => e.Title)
@@ -306,7 +306,7 @@ namespace AuditIt.Api.Services
             }
 
             var conflict = await ValidateCreateConflictsAsync(distinctItemIds, startDate, dto.ExpectedEndDate);
-            if (conflict != null)
+            if (conflict != null && !dto.AllowScheduleConflict)
             {
                 return new CreateRentalResult
                 {
@@ -855,6 +855,180 @@ namespace AuditIt.Api.Services
             return (await GetByIdAsync(rentalId), null);
         }
 
+        public async Task<RentalItemsUpdateResult> UpdateRentalItemsAsync(Guid rentalId, UpdateRentalItemsDto dto, string? currentUser)
+        {
+            if (dto.ItemIds == null || dto.ItemIds.Count == 0)
+            {
+                return new RentalItemsUpdateResult { Error = "至少保留一件租赁物品。" };
+            }
+
+            var desiredItemIds = new List<Guid>();
+            foreach (var rawItemId in dto.ItemIds)
+            {
+                if (!Guid.TryParse(rawItemId, out var parsedItemId))
+                {
+                    return new RentalItemsUpdateResult { Error = "存在无效的物品 ID。" };
+                }
+
+                if (!desiredItemIds.Contains(parsedItemId))
+                {
+                    desiredItemIds.Add(parsedItemId);
+                }
+            }
+
+            var rental = await _context.Rentals
+                .Include(r => r.Renter)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.ItemDefinition)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.Warehouse)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.Listings)
+                .Include(r => r.Shipments)
+                .FirstOrDefaultAsync(r => r.Id == rentalId);
+
+            if (rental == null)
+            {
+                return new RentalItemsUpdateResult { Error = "租赁单不存在。" };
+            }
+
+            if (rental.Status == RentalStatus.Returned || rental.Status == RentalStatus.Cancelled)
+            {
+                return new RentalItemsUpdateResult { Error = "已结束的租赁单不能修改租赁物品。" };
+            }
+
+            var desiredItems = await _context.Items
+                .Include(i => i.ItemDefinition)
+                .Include(i => i.Warehouse)
+                .Include(i => i.Listings)
+                .Where(i => desiredItemIds.Contains(i.Id))
+                .ToListAsync();
+
+            if (desiredItems.Count != desiredItemIds.Count)
+            {
+                return new RentalItemsUpdateResult { Error = "部分物品不存在。" };
+            }
+
+            var disposedItems = desiredItems
+                .Where(i => i.Status == ItemStatus.Disposed)
+                .Select(i => i.ShortId)
+                .ToList();
+            if (disposedItems.Count > 0)
+            {
+                return new RentalItemsUpdateResult
+                {
+                    Error = $"以下物品已处置，不能加入租赁单：{string.Join("，", disposedItems)}"
+                };
+            }
+
+            var activeRentalItems = rental.Items
+                .Where(ri => ri.ReturnedAt == null)
+                .ToList();
+            var currentItemIds = activeRentalItems
+                .Select(ri => ri.ItemId)
+                .ToHashSet();
+            var desiredSet = desiredItemIds.ToHashSet();
+            var addItemIds = desiredSet.Except(currentItemIds).ToList();
+            var removeRentalItems = activeRentalItems
+                .Where(ri => !desiredSet.Contains(ri.ItemId))
+                .ToList();
+
+            if (addItemIds.Count == 0 && removeRentalItems.Count == 0)
+            {
+                return new RentalItemsUpdateResult { Rental = await GetByIdAsync(rentalId) };
+            }
+
+            if (addItemIds.Count > 0)
+            {
+                var conflict = await ValidateCreateConflictsAsync(
+                    addItemIds,
+                    rental.StartDate,
+                    rental.ExpectedEndDate,
+                    rental.Id);
+                if (conflict != null && !dto.AllowScheduleConflict)
+                {
+                    return new RentalItemsUpdateResult { Conflict = conflict };
+                }
+            }
+
+            var now = DateTime.UtcNow;
+            var hasOutboundShipment = HasOutboundShipment(rental);
+            var addedItems = desiredItems
+                .Where(i => addItemIds.Contains(i.Id))
+                .ToList();
+
+            foreach (var rentalItem in removeRentalItems)
+            {
+                rentalItem.ReturnedAt = now;
+                rentalItem.ReturnCondition = ReturnCondition.Good;
+                rentalItem.ReturnNotes = "Removed from rental item list.";
+
+                if (rentalItem.Item != null)
+                {
+                    if (hasOutboundShipment
+                        && rentalItem.Item.Status == ItemStatus.LoanedOut
+                        && string.Equals(rentalItem.Item.CurrentDestination, $"租赁 {rental.RentalNumber}", StringComparison.OrdinalIgnoreCase))
+                    {
+                        rentalItem.Item.Status = ItemStatus.InStock;
+                        rentalItem.Item.CurrentDestination = null;
+                    }
+
+                    rentalItem.Item.LastUpdated = now;
+                    LogAudit(rentalItem.Item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, "Removed from rental");
+                }
+            }
+
+            foreach (var item in addedItems)
+            {
+                var listingRemarks = BuildListingRemarks(item);
+                _context.RentalItems.Add(new RentalItem
+                {
+                    RentalId = rental.Id,
+                    ItemId = item.Id,
+                    ItemShortIdSnapshot = item.ShortId,
+                    ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty,
+                    ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks
+                });
+
+                if (hasOutboundShipment)
+                {
+                    item.Status = ItemStatus.LoanedOut;
+                    item.CurrentDestination = $"租赁 {rental.RentalNumber}";
+                }
+
+                item.LastUpdated = now;
+                LogAudit(item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, "Added to rental");
+            }
+
+            rental.UpdatedAt = now;
+            rental.UpdatedBy = currentUser;
+            await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser);
+
+            await _context.SaveChangesAsync();
+
+            var summaryParts = new List<string>();
+            if (addedItems.Count > 0)
+            {
+                summaryParts.Add($"新增 {addedItems.Count} 件");
+            }
+
+            if (removeRentalItems.Count > 0)
+            {
+                summaryParts.Add($"移出 {removeRentalItems.Count} 件");
+            }
+
+            await NotifyStatusChangeAsync(
+                rental,
+                "已修改租赁物品",
+                currentUser,
+                string.Join("，", summaryParts));
+
+            return new RentalItemsUpdateResult { Rental = await GetByIdAsync(rentalId) };
+        }
+
         public async Task<(RentalDto? rental, string? error)> BulkUpdateItemsAsync(Guid rentalId, BulkUpdateRentalItemsDto dto, string? currentUser)
         {
             var rental = await _context.Rentals
@@ -1141,6 +1315,74 @@ namespace AuditIt.Api.Services
         private static bool IsWithin(DateTime value, DateTime from, DateTime to) =>
             value >= from && value <= to;
 
+        private static IEnumerable<RentalCalendarEventDto> DeduplicateCalendarEvents(
+            IEnumerable<RentalCalendarEventDto> events)
+        {
+            var list = events.ToList();
+            var syntheticKeys = list
+                .Where(e => e.Kind != RentalCalendarEventKind.Reminder)
+                .Select(BuildCalendarDedupeKey)
+                .Where(key => key != null)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in list)
+            {
+                var key = BuildCalendarDedupeKey(item);
+                if (key == null)
+                {
+                    yield return item;
+                    continue;
+                }
+
+                if (item.Kind == RentalCalendarEventKind.Reminder
+                    && IsRentalAutoReminder(item)
+                    && syntheticKeys.Contains(key))
+                {
+                    continue;
+                }
+
+                if (!seen.Add(key))
+                {
+                    continue;
+                }
+
+                yield return item;
+            }
+        }
+
+        private static string? BuildCalendarDedupeKey(RentalCalendarEventDto item)
+        {
+            if (item.Kind == RentalCalendarEventKind.Reminder && IsRentalAutoReminder(item))
+            {
+                var syntheticKind = item.ReminderType == ReminderType.RentalShipmentSoon
+                    ? RentalCalendarEventKind.ShipmentRequired
+                    : RentalCalendarEventKind.ReturnRequired;
+
+                return item.RentalId.HasValue
+                    ? $"rental:{item.RentalId}:{syntheticKind}:{item.StartAt.Date:O}"
+                    : null;
+            }
+
+            return item.Kind switch
+            {
+                RentalCalendarEventKind.ShipmentRequired or RentalCalendarEventKind.ReturnRequired =>
+                    item.RentalId.HasValue ? $"rental:{item.RentalId}:{item.Kind}:{item.StartAt.Date:O}" : null,
+                RentalCalendarEventKind.RentalPeriod =>
+                    item.RentalId.HasValue
+                        ? $"rental:{item.RentalId}:{item.Kind}:{item.StartAt.Date:O}:{item.EndAt.Date:O}"
+                        : null,
+                RentalCalendarEventKind.OutboundShipment or RentalCalendarEventKind.InboundShipment =>
+                    item.Id,
+                _ => item.Id
+            };
+        }
+
+        private static bool IsRentalAutoReminder(RentalCalendarEventDto item) =>
+            item.ReminderType == ReminderType.RentalShipmentSoon
+            || item.ReminderType == ReminderType.RentalDueSoon
+            || item.ReminderType == ReminderType.RentalOverdue;
+
         private static string ResolveCalendarTarget(string? requestedTarget, string? currentUser, bool canSeeAll)
         {
             var requested = requestedTarget?.Trim();
@@ -1190,6 +1432,11 @@ namespace AuditIt.Api.Services
 
             return string.Join(" | ", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
         }
+
+        private static string BuildListingRemarks(Item item) =>
+            string.Join("; ", item.Listings
+                .Where(l => l.Status == ListingStatus.Listed)
+                .Select(l => $"{l.Platform}: {l.Remarks ?? "无备注"}"));
 
         private static IEnumerable<string> SplitUsers(string? users) =>
             string.IsNullOrWhiteSpace(users)

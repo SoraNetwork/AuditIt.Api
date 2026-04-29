@@ -103,6 +103,72 @@ namespace AuditIt.Api.Controllers
             return Ok(items.Select(ToItemDto));
         }
 
+        [HttpGet("{id:guid}/availability")]
+        [RequirePermission(PermissionCodes.ItemView)]
+        public async Task<ActionResult<ItemAvailabilityCalendarDto>> GetAvailability(Guid id, [FromQuery] DateTime? from, [FromQuery] DateTime? to)
+        {
+            var item = await _context.Items
+                .Include(i => i.ItemDefinition)
+                .Include(i => i.Warehouse)
+                .FirstOrDefaultAsync(i => i.Id == id);
+
+            if (item == null)
+            {
+                return NotFound();
+            }
+
+            var rangeStart = (from ?? DateTime.UtcNow.Date.AddDays(-7)).Date;
+            var rangeEnd = (to ?? DateTime.UtcNow.Date.AddDays(60)).Date.AddDays(1).AddTicks(-1);
+            if (rangeEnd < rangeStart)
+            {
+                (rangeStart, rangeEnd) = (rangeEnd.Date, rangeStart.Date.AddDays(1).AddTicks(-1));
+            }
+
+            if ((rangeEnd - rangeStart).TotalDays > 180)
+            {
+                rangeEnd = rangeStart.AddDays(180).AddTicks(-1);
+            }
+
+            var rentals = await _context.Rentals
+                .Include(r => r.Renter)
+                .Include(r => r.Items)
+                .Where(r => r.Status != RentalStatus.Cancelled)
+                .Where(r => r.Items.Any(ri => ri.ItemId == id))
+                .Where(r => r.StartDate <= rangeEnd && r.ExpectedEndDate >= rangeStart)
+                .ToListAsync();
+
+            var busy = rentals
+                .SelectMany(r => r.Items
+                    .Where(ri => ri.ItemId == id)
+                    .Select(ri =>
+                    {
+                        var periodEnd = ri.ReturnedAt ?? r.ActualEndDate ?? r.ExpectedEndDate;
+                        return new ItemBusyPeriodDto
+                        {
+                            RentalId = r.Id,
+                            RentalNumber = r.RentalNumber,
+                            RentalStatus = r.Status,
+                            RenterName = r.Renter?.Name,
+                            StartAt = r.StartDate < rangeStart ? rangeStart : r.StartDate,
+                            EndAt = periodEnd > rangeEnd ? rangeEnd : periodEnd,
+                            IsOpen = ri.ReturnedAt == null && r.Status != RentalStatus.Returned
+                        };
+                    }))
+                .Where(p => p.EndAt >= rangeStart && p.StartAt <= rangeEnd)
+                .OrderBy(p => p.StartAt)
+                .ThenBy(p => p.EndAt)
+                .ToList();
+
+            return Ok(new ItemAvailabilityCalendarDto
+            {
+                Item = ToItemDto(item),
+                From = rangeStart,
+                To = rangeEnd,
+                BusyPeriods = busy,
+                FreePeriods = BuildFreePeriods(rangeStart, rangeEnd, busy)
+            });
+        }
+
         // POST: api/Items/create
         [HttpPost("create")]
         [Consumes("multipart/form-data")]
@@ -458,6 +524,50 @@ namespace AuditIt.Api.Controllers
             {
                 System.IO.File.Delete(filePath);
             }
+        }
+
+        private static List<ItemFreePeriodDto> BuildFreePeriods(
+            DateTime rangeStart,
+            DateTime rangeEnd,
+            IReadOnlyList<ItemBusyPeriodDto> busyPeriods)
+        {
+            var free = new List<ItemFreePeriodDto>();
+            var cursor = rangeStart;
+
+            foreach (var period in busyPeriods
+                .OrderBy(p => p.StartAt)
+                .ThenBy(p => p.EndAt))
+            {
+                if (period.EndAt < cursor)
+                {
+                    continue;
+                }
+
+                if (period.StartAt > cursor)
+                {
+                    free.Add(new ItemFreePeriodDto
+                    {
+                        StartAt = cursor,
+                        EndAt = period.StartAt.AddTicks(-1)
+                    });
+                }
+
+                if (period.EndAt > cursor)
+                {
+                    cursor = period.EndAt.AddTicks(1);
+                }
+            }
+
+            if (cursor <= rangeEnd)
+            {
+                free.Add(new ItemFreePeriodDto
+                {
+                    StartAt = cursor,
+                    EndAt = rangeEnd
+                });
+            }
+
+            return free;
         }
     }
 }
