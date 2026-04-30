@@ -18,7 +18,16 @@ namespace AuditIt.Api.Models
         public decimal TotalShippingFee { get; set; }
         public decimal TotalOtherFee { get; set; }
         public decimal AccountedAmount { get; set; }
+        public List<FinanceReportCategorySummaryDto> Categories { get; set; } = new();
         public List<FinanceReportStatusSummaryDto> Statuses { get; set; } = new();
+    }
+
+    public class FinanceReportCategorySummaryDto
+    {
+        public string Category { get; set; } = string.Empty;
+        public int Count { get; set; }
+        public decimal TotalOrderAmount { get; set; }
+        public decimal AccountedAmount { get; set; }
     }
 
     public class FinanceReportStatusSummaryDto

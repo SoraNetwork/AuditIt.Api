@@ -31,14 +31,15 @@ namespace AuditIt.Api.Controllers
             {
                 From = from,
                 To = to,
-                RentalCount = rentals.Count,
-                ActiveRentalCount = rentals.Count(r => r.Status is RentalStatus.Pending or RentalStatus.Active or RentalStatus.Overdue),
-                ClosedRentalCount = rentals.Count(r => r.Status is RentalStatus.Returned or RentalStatus.Cancelled),
+                RentalCount = details.Count,
+                ActiveRentalCount = details.Count(d => IsInRent(d.Status)),
+                ClosedRentalCount = details.Count(d => d.Status == RentalStatus.Returned),
                 TotalOrderAmount = details.Sum(d => d.TotalPrice),
                 TotalDeposit = details.Sum(d => d.Deposit),
                 TotalShippingFee = details.Sum(d => d.TotalShippingFee),
                 TotalOtherFee = details.Sum(d => d.OtherFee),
                 AccountedAmount = details.Sum(d => d.AccountedAmount),
+                Categories = BuildCategorySummaries(details),
                 Statuses = details
                     .GroupBy(d => d.Status)
                     .OrderBy(g => g.Key)
@@ -69,6 +70,7 @@ namespace AuditIt.Api.Controllers
                 .Include(r => r.Renter)
                 .Include(r => r.Items)
                 .Include(r => r.Shipments)
+                .Where(r => r.Status != RentalStatus.Cancelled)
                 .Where(r => r.CreatedAt >= from && r.CreatedAt <= to);
 
         private static (DateTime from, DateTime to) ResolveRange(FinanceReportQueryParameters query)
@@ -112,5 +114,32 @@ namespace AuditIt.Api.Controllers
                 PlatformOrderNo = rental.PlatformOrderNo
             };
         }
+
+        private static List<FinanceReportCategorySummaryDto> BuildCategorySummaries(IReadOnlyCollection<FinanceReportDetailDto> details)
+        {
+            var categories = new[]
+            {
+                ("已完成", details.Where(d => d.Status == RentalStatus.Returned)),
+                ("在租", details.Where(d => IsInRent(d.Status))),
+                ("未开始", details.Where(d => d.Status == RentalStatus.Pending))
+            };
+
+            return categories
+                .Select(group =>
+                {
+                    var rows = group.Item2.ToList();
+                    return new FinanceReportCategorySummaryDto
+                    {
+                        Category = group.Item1,
+                        Count = rows.Count,
+                        TotalOrderAmount = rows.Sum(d => d.TotalPrice),
+                        AccountedAmount = rows.Sum(d => d.AccountedAmount)
+                    };
+                })
+                .ToList();
+        }
+
+        private static bool IsInRent(RentalStatus status) =>
+            status is RentalStatus.Active or RentalStatus.Overdue;
     }
 }
