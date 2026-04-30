@@ -81,9 +81,12 @@ namespace AuditIt.Api.Services
                 await db.SaveChangesAsync(ct);
             }
 
+            await DismissCompletedAutoRemindersAsync(db, ct);
+
             var candidates = await db.Rentals
                 .Include(r => r.Renter)
                 .Include(r => r.Shipments)
+                .Include(r => r.Items)
                 .Where(r => r.Status == RentalStatus.Pending
                          || r.Status == RentalStatus.Active
                          || r.Status == RentalStatus.Overdue)
@@ -95,6 +98,7 @@ namespace AuditIt.Api.Services
             foreach (var rental in candidates)
             {
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+                var hasDeliveredOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
                 ReminderType? type = null;
 
                 if (!hasOutboundShipment
@@ -103,6 +107,12 @@ namespace AuditIt.Api.Services
                     && rental.StartDate <= leadUntil)
                 {
                     type = ReminderType.RentalShipmentSoon;
+                }
+                else if (hasOutboundShipment
+                         && !hasDeliveredOutboundShipment
+                         && rental.StartDate.Date.AddDays(1) <= now)
+                {
+                    type = ReminderType.RentalDeliveryUnsigned;
                 }
                 else if (hasOutboundShipment && rental.ExpectedEndDate < now)
                 {
@@ -216,6 +226,18 @@ namespace AuditIt.Api.Services
                     DueAt = rental.StartDate,
                     CreatedAt = now
                 },
+                ReminderType.RentalDeliveryUnsigned => new Reminder
+                {
+                    Type = type,
+                    Level = ReminderLevel.Warning,
+                    RelatedEntityType = "Rental",
+                    RelatedEntityId = rental.Id.ToString(),
+                    TargetUser = target,
+                    Title = $"租赁 {rental.RentalNumber} 发货物流未签收",
+                    Message = $"{renterName} 的订单租期已于 {rental.StartDate:yyyy-MM-dd HH:mm} 开始，发货物流仍未登记签收，请及时确认。",
+                    DueAt = rental.StartDate.Date.AddDays(1),
+                    CreatedAt = now
+                },
                 ReminderType.RentalOverdue => new Reminder
                 {
                     Type = type,
@@ -240,6 +262,76 @@ namespace AuditIt.Api.Services
                     DueAt = rental.ExpectedEndDate,
                     CreatedAt = now
                 }
+            };
+        }
+
+        private static async Task DismissCompletedAutoRemindersAsync(ApplicationDbContext db, CancellationToken ct)
+        {
+            var reminders = await db.Reminders
+                .Where(r => r.RelatedEntityType == "Rental"
+                    && r.DismissedAt == null
+                    && (r.Type == ReminderType.RentalShipmentSoon
+                        || r.Type == ReminderType.RentalDueSoon
+                        || r.Type == ReminderType.RentalOverdue
+                        || r.Type == ReminderType.RentalDeliveryUnsigned))
+                .ToListAsync(ct);
+
+            if (reminders.Count == 0)
+            {
+                return;
+            }
+
+            var rentalIds = reminders
+                .Select(r => Guid.TryParse(r.RelatedEntityId, out var id) ? id : (Guid?)null)
+                .Where(id => id.HasValue)
+                .Select(id => id!.Value)
+                .Distinct()
+                .ToList();
+
+            var rentals = await db.Rentals
+                .Include(r => r.Items)
+                .Include(r => r.Shipments)
+                .Where(r => rentalIds.Contains(r.Id))
+                .ToDictionaryAsync(r => r.Id, ct);
+
+            var now = DateTime.UtcNow;
+            var changed = false;
+            foreach (var reminder in reminders)
+            {
+                if (!Guid.TryParse(reminder.RelatedEntityId, out var rentalId)
+                    || !rentals.TryGetValue(rentalId, out var rental)
+                    || !IsCompleted(reminder.Type, rental))
+                {
+                    continue;
+                }
+
+                reminder.DismissedAt = now;
+                reminder.DismissedBy = "system";
+                changed = true;
+            }
+
+            if (changed)
+            {
+                await db.SaveChangesAsync(ct);
+            }
+        }
+
+        private static bool IsCompleted(ReminderType type, Rental rental)
+        {
+            if (rental.Status == RentalStatus.Cancelled || rental.Status == RentalStatus.Returned)
+            {
+                return true;
+            }
+
+            return type switch
+            {
+                ReminderType.RentalShipmentSoon =>
+                    rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound),
+                ReminderType.RentalDeliveryUnsigned =>
+                    rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue),
+                ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
+                    !rental.Items.Any(i => i.ReturnedAt == null),
+                _ => false
             };
         }
     }

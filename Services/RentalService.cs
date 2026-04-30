@@ -204,9 +204,29 @@ namespace AuditIt.Api.Services
                 }
 
                 var reminders = await reminderQuery.ToListAsync();
+                var reminderRentalIds = reminders
+                    .Select(ParseRentalId)
+                    .Where(id => id.HasValue)
+                    .Select(id => id!.Value)
+                    .Distinct()
+                    .ToList();
+                var reminderRentals = reminderRentalIds.Count == 0
+                    ? new Dictionary<Guid, Rental>()
+                    : await _context.Rentals
+                        .Include(r => r.Items)
+                        .Include(r => r.Shipments)
+                        .Where(r => reminderRentalIds.Contains(r.Id))
+                        .ToDictionaryAsync(r => r.Id);
+
                 foreach (var reminder in reminders)
                 {
                     var rentalId = ParseRentalId(reminder);
+                    if (IsCompletedAutoReminder(reminder, rentalId, reminderRentals))
+                    {
+                        continue;
+                    }
+
+                    var endAt = ResolveReminderCalendarEnd(reminder, to);
                     events.Add(new RentalCalendarEventDto
                     {
                         Id = $"reminder-{reminder.Id}",
@@ -218,7 +238,7 @@ namespace AuditIt.Api.Services
                         Title = reminder.Title,
                         Description = reminder.Message,
                         StartAt = reminder.DueAt,
-                        EndAt = reminder.DueAt,
+                        EndAt = endAt,
                         AllDay = false,
                         IsOpen = reminder.DismissedAt == null
                     });
@@ -630,6 +650,8 @@ namespace AuditIt.Api.Services
                     rentalItem.Item.LastUpdated = shippedAt;
                     LogAudit(rentalItem.Item, AuditAction.RentalShipped, rental.RentalNumber, currentUser, logisticsSummary);
                 }
+
+                await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalShipmentSoon);
             }
             else
             {
@@ -646,6 +668,11 @@ namespace AuditIt.Api.Services
 
             rental.UpdatedAt = DateTime.UtcNow;
             rental.UpdatedBy = currentUser;
+
+            if (shipment.Direction == ShipmentDirection.Outbound)
+            {
+                await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalDeliveryUnsigned);
+            }
 
             await _context.SaveChangesAsync();
             await _context.Entry(shipment).Reference(s => s.OriginWarehouse).LoadAsync();
@@ -770,6 +797,7 @@ namespace AuditIt.Api.Services
             {
                 rental.Status = RentalStatus.Returned;
                 rental.ActualEndDate = now;
+                await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser);
             }
             else
             {
@@ -832,6 +860,7 @@ namespace AuditIt.Api.Services
 
             rental.Status = RentalStatus.Cancelled;
             rental.ActualEndDate = now;
+            await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser);
 
             var reason = NormalizeNullableText(dto.Reason);
             if (!string.IsNullOrWhiteSpace(reason))
@@ -1257,15 +1286,23 @@ namespace AuditIt.Api.Services
             }
         }
 
-        private async Task DismissOpenRentalAutoRemindersAsync(Guid rentalId, string? currentUser)
+        private async Task DismissOpenRentalAutoRemindersAsync(Guid rentalId, string? currentUser, params ReminderType[] types)
         {
+            var targetTypes = types.Length == 0
+                ? new[]
+                {
+                    ReminderType.RentalShipmentSoon,
+                    ReminderType.RentalDueSoon,
+                    ReminderType.RentalOverdue,
+                    ReminderType.RentalDeliveryUnsigned
+                }
+                : types;
+
             var openAutoReminders = await _context.Reminders
                 .Where(r => r.RelatedEntityType == "Rental"
                     && r.RelatedEntityId == rentalId.ToString()
                     && r.DismissedAt == null
-                    && (r.Type == ReminderType.RentalShipmentSoon
-                        || r.Type == ReminderType.RentalDueSoon
-                        || r.Type == ReminderType.RentalOverdue))
+                    && targetTypes.Contains(r.Type))
                 .ToListAsync();
 
             if (openAutoReminders.Count == 0)
@@ -1312,6 +1349,9 @@ namespace AuditIt.Api.Services
         private static bool HasOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
 
+        private static bool HasDeliveredOutboundShipment(Rental rental) =>
+            rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
+
         private static bool IsWithin(DateTime value, DateTime from, DateTime to) =>
             value >= from && value <= to;
 
@@ -1355,13 +1395,21 @@ namespace AuditIt.Api.Services
         {
             if (item.Kind == RentalCalendarEventKind.Reminder && IsRentalAutoReminder(item))
             {
+                if (!item.RentalId.HasValue)
+                {
+                    return null;
+                }
+
+                if (item.ReminderType == ReminderType.RentalDeliveryUnsigned)
+                {
+                    return $"rental:{item.RentalId}:DeliveryUnsigned:{item.StartAt.Date:O}";
+                }
+
                 var syntheticKind = item.ReminderType == ReminderType.RentalShipmentSoon
                     ? RentalCalendarEventKind.ShipmentRequired
                     : RentalCalendarEventKind.ReturnRequired;
 
-                return item.RentalId.HasValue
-                    ? $"rental:{item.RentalId}:{syntheticKind}:{item.StartAt.Date:O}"
-                    : null;
+                return $"rental:{item.RentalId}:{syntheticKind}:{item.StartAt.Date:O}";
             }
 
             return item.Kind switch
@@ -1381,7 +1429,57 @@ namespace AuditIt.Api.Services
         private static bool IsRentalAutoReminder(RentalCalendarEventDto item) =>
             item.ReminderType == ReminderType.RentalShipmentSoon
             || item.ReminderType == ReminderType.RentalDueSoon
-            || item.ReminderType == ReminderType.RentalOverdue;
+            || item.ReminderType == ReminderType.RentalOverdue
+            || item.ReminderType == ReminderType.RentalDeliveryUnsigned;
+
+        private static bool IsCompletedAutoReminder(
+            Reminder reminder,
+            Guid? rentalId,
+            IReadOnlyDictionary<Guid, Rental> rentals)
+        {
+            if (!IsRentalAutoReminder(reminder.Type))
+            {
+                return false;
+            }
+
+            if (!rentalId.HasValue || !rentals.TryGetValue(rentalId.Value, out var rental))
+            {
+                return false;
+            }
+
+            if (rental.Status == RentalStatus.Cancelled || rental.Status == RentalStatus.Returned)
+            {
+                return true;
+            }
+
+            return reminder.Type switch
+            {
+                ReminderType.RentalShipmentSoon => HasOutboundShipment(rental),
+                ReminderType.RentalDeliveryUnsigned => HasDeliveredOutboundShipment(rental),
+                ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
+                    !rental.Items.Any(i => i.ReturnedAt == null),
+                _ => false
+            };
+        }
+
+        private static DateTime ResolveReminderCalendarEnd(Reminder reminder, DateTime rangeEnd)
+        {
+            if (reminder.DismissedAt != null
+                || !IsRentalAutoReminder(reminder.Type)
+                || reminder.DueAt.Date >= DateTime.UtcNow.Date)
+            {
+                return reminder.DueAt;
+            }
+
+            var todayEnd = DateTime.UtcNow.Date.AddDays(1).AddTicks(-1);
+            return todayEnd > rangeEnd ? rangeEnd : todayEnd;
+        }
+
+        private static bool IsRentalAutoReminder(ReminderType type) =>
+            type == ReminderType.RentalShipmentSoon
+            || type == ReminderType.RentalDueSoon
+            || type == ReminderType.RentalOverdue
+            || type == ReminderType.RentalDeliveryUnsigned;
 
         private static string ResolveCalendarTarget(string? requestedTarget, string? currentUser, bool canSeeAll)
         {

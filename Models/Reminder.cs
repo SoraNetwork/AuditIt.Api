@@ -8,7 +8,8 @@ namespace AuditIt.Api.Models
         RentalShipmentSoon,
         RentalDueSoon,
         RentalOverdue,
-        Manual
+        Manual,
+        RentalDeliveryUnsigned
     }
 
     public enum ReminderLevel
