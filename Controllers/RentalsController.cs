@@ -54,6 +54,13 @@ namespace AuditIt.Api.Controllers
             return Ok(result);
         }
 
+        [HttpPost("sf-routes/refresh-pending")]
+        [RequirePermission(PermissionCodes.RentalShip)]
+        public async Task<ActionResult<SfPendingRouteRefreshResultDto>> RefreshPendingSfRoutes(CancellationToken ct = default)
+        {
+            return Ok(await _rentals.SyncPendingSfRoutesAsync(CurrentUser(), ct));
+        }
+
         [HttpPost]
         [RequirePermission(PermissionCodes.RentalCreate)]
         public async Task<ActionResult<RentalDto>> Create([FromBody] CreateRentalDto dto)

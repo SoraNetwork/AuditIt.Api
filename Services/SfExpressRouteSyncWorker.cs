@@ -45,8 +45,15 @@ namespace AuditIt.Api.Services
                 {
                     using var scope = _scopeFactory.CreateScope();
                     var rentals = scope.ServiceProvider.GetRequiredService<IRentalService>();
-                    var count = await rentals.SyncPendingSfRoutesAsync("sf-express-daily-sync", stoppingToken);
-                    _logger.LogInformation("SF Express daily route sync completed. Synced shipments: {Count}", count);
+                    var result = await rentals.SyncPendingSfRoutesAsync("sf-express-daily-sync", stoppingToken);
+                    _logger.LogInformation(
+                        "SF Express daily route sync completed. Rentals: {RentalCount}, synced shipments: {Synced}, auto delivered: {AutoDelivered}, exceptions: {ExceptionCount}, errors: {ErrorCount}, skipped: {SkippedCount}",
+                        result.RentalCount,
+                        result.Synced,
+                        result.AutoDelivered,
+                        result.ExceptionCount,
+                        result.ErrorCount,
+                        result.SkippedCount);
                 }
                 catch (OperationCanceledException)
                 {

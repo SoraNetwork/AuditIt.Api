@@ -93,6 +93,16 @@ namespace AuditIt.Api.Models
         public List<SfShipmentRouteDto> Shipments { get; set; } = new();
     }
 
+    public class SfPendingRouteRefreshResultDto
+    {
+        public int RentalCount { get; set; }
+        public int Synced { get; set; }
+        public int AutoDelivered { get; set; }
+        public int ExceptionCount { get; set; }
+        public int ErrorCount { get; set; }
+        public int SkippedCount { get; set; }
+    }
+
     public static class SfExpressConstants
     {
         public const string RouteServiceCode = "EXP_RECE_SEARCH_ROUTES";

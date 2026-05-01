@@ -33,6 +33,9 @@ namespace AuditIt.Api.Services
 
         public static string Format(DateTime value) => ToBusinessDate(value).ToString("yyyy-MM-dd");
 
+        public static string FormatDateTime(DateTime value) =>
+            value.Add(BusinessOffset).ToString("yyyy-MM-dd HH:mm");
+
         public static int LeadDaysFromHours(int hours) =>
             Math.Max(1, (int)Math.Ceiling(Math.Max(1, hours) / 24d));
     }

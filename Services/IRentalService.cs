@@ -24,6 +24,6 @@ namespace AuditIt.Api.Services
             bool forceRefresh,
             string? currentUser,
             CancellationToken ct = default);
-        Task<int> SyncPendingSfRoutesAsync(string? currentUser, CancellationToken ct = default);
+        Task<SfPendingRouteRefreshResultDto> SyncPendingSfRoutesAsync(string? currentUser, CancellationToken ct = default);
     }
 }

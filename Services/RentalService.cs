@@ -893,7 +893,7 @@ namespace AuditIt.Api.Services
                         rental,
                         "顺丰已签收，系统已自动签收",
                         currentUser,
-                        $"运单：{route.TrackingNumber}，签收时间：{route.DeliveredAt.Value:yyyy-MM-dd HH:mm}");
+                        $"运单：{route.TrackingNumber}，签收时间：{RentalDateRules.FormatDateTime(route.DeliveredAt.Value)}");
                 }
 
                 if (route.HasException)
@@ -913,7 +913,7 @@ namespace AuditIt.Api.Services
             return (result, null);
         }
 
-        public async Task<int> SyncPendingSfRoutesAsync(string? currentUser, CancellationToken ct = default)
+        public async Task<SfPendingRouteRefreshResultDto> SyncPendingSfRoutesAsync(string? currentUser, CancellationToken ct = default)
         {
             var rentals = await _context.Rentals
                 .Include(r => r.Shipments)
@@ -931,18 +931,26 @@ namespace AuditIt.Api.Services
                 .Distinct()
                 .ToList();
 
-            var synced = 0;
+            var summary = new SfPendingRouteRefreshResultDto
+            {
+                RentalCount = rentalIds.Count
+            };
+
             foreach (var id in rentalIds)
             {
                 ct.ThrowIfCancellationRequested();
                 var (result, error) = await SyncSfRoutesAsync(id, forceRefresh: true, currentUser, ct);
                 if (error == null && result != null)
                 {
-                    synced += result.Shipments.Count(s => s.Queryable);
+                    summary.Synced += result.Shipments.Count(s => s.Queryable);
+                    summary.AutoDelivered += result.Shipments.Count(s => s.AutoDelivered);
+                    summary.ExceptionCount += result.Shipments.Count(s => s.HasException);
+                    summary.ErrorCount += result.Shipments.Count(s => s.Queryable && !string.IsNullOrWhiteSpace(s.Error));
+                    summary.SkippedCount += result.Shipments.Count(s => !s.Queryable);
                 }
             }
 
-            return synced;
+            return summary;
         }
 
         public async Task<(RentalDto? rental, string? error)> ReturnAsync(Guid rentalId, ReturnRentalDto dto, string? currentUser)
