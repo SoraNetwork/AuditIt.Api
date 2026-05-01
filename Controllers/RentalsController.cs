@@ -45,6 +45,15 @@ namespace AuditIt.Api.Controllers
             return rental == null ? NotFound() : Ok(rental);
         }
 
+        [HttpGet("{id:guid}/sf-routes")]
+        [RequirePermission(PermissionCodes.RentalView)]
+        public async Task<ActionResult<SfRouteSyncResultDto>> SfRoutes(Guid id, [FromQuery] bool refresh = false, CancellationToken ct = default)
+        {
+            var (result, error) = await _rentals.SyncSfRoutesAsync(id, refresh, CurrentUser(), ct);
+            if (error != null) return BadRequest(error);
+            return Ok(result);
+        }
+
         [HttpPost]
         [RequirePermission(PermissionCodes.RentalCreate)]
         public async Task<ActionResult<RentalDto>> Create([FromBody] CreateRentalDto dto)

@@ -1,0 +1,39 @@
+using System;
+
+namespace AuditIt.Api.Services
+{
+    internal static class RentalDateRules
+    {
+        private static readonly TimeSpan BusinessOffset = TimeSpan.FromHours(8);
+
+        public static DateTime ToBusinessDate(DateTime value)
+        {
+            if (value.TimeOfDay == TimeSpan.Zero)
+            {
+                return value.Date;
+            }
+
+            // Date picker values were historically stored as UTC instants for China-local dates.
+            return value.Add(BusinessOffset).Date;
+        }
+
+        public static DateTime Today(DateTime utcNow) => utcNow.Add(BusinessOffset).Date;
+
+        public static DateTime EndOfBusinessDay(DateTime value) =>
+            ToBusinessDate(value).AddDays(1).AddTicks(-1);
+
+        public static bool IsBusinessDateWithin(DateTime value, DateTime from, DateTime to)
+        {
+            var date = ToBusinessDate(value);
+            return date >= from.Date && date <= to.Date;
+        }
+
+        public static bool Overlaps(DateTime startDate, DateTime expectedEndDate, DateTime from, DateTime to) =>
+            ToBusinessDate(startDate) <= to.Date && ToBusinessDate(expectedEndDate) >= from.Date;
+
+        public static string Format(DateTime value) => ToBusinessDate(value).ToString("yyyy-MM-dd");
+
+        public static int LeadDaysFromHours(int hours) =>
+            Math.Max(1, (int)Math.Ceiling(Math.Max(1, hours) / 24d));
+    }
+}

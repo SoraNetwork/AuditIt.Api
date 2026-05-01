@@ -59,6 +59,8 @@ builder.Services.Configure<DingTalkConfiguration>(builder.Configuration.GetSecti
 builder.Services.AddMemoryCache();
 
 builder.Services.AddHttpClient<IDingTalkService, DingTalkService>();
+builder.Services.Configure<SfExpressOptions>(builder.Configuration.GetSection("SfExpress"));
+builder.Services.AddHttpClient<ISfExpressService, SfExpressService>();
 
 
 
@@ -75,6 +77,7 @@ builder.Services.AddScoped<IReminderService, ReminderService>();
 builder.Services.AddScoped<INotificationChannel, InAppNotificationChannel>();
 builder.Services.AddScoped<INotificationChannel, DingTalkNotificationChannel>();
 builder.Services.AddHostedService<ReminderSweeper>();
+builder.Services.AddHostedService<SfExpressRouteSyncWorker>();
 
 // 用户/角色/权限服务
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection("Auth"));

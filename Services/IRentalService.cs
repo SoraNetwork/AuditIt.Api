@@ -19,5 +19,11 @@ namespace AuditIt.Api.Services
         Task<(RentalDto? rental, string? error)> CancelAsync(Guid rentalId, CancelRentalDto dto, string? currentUser);
         Task<RentalItemsUpdateResult> UpdateRentalItemsAsync(Guid rentalId, UpdateRentalItemsDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> BulkUpdateItemsAsync(Guid rentalId, BulkUpdateRentalItemsDto dto, string? currentUser);
+        Task<(SfRouteSyncResultDto? result, string? error)> SyncSfRoutesAsync(
+            Guid rentalId,
+            bool forceRefresh,
+            string? currentUser,
+            CancellationToken ct = default);
+        Task<int> SyncPendingSfRoutesAsync(string? currentUser, CancellationToken ct = default);
     }
 }

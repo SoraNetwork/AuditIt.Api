@@ -117,8 +117,9 @@ namespace AuditIt.Api.Controllers
                 return NotFound();
             }
 
-            var rangeStart = (from ?? DateTime.UtcNow.Date.AddDays(-7)).Date;
-            var rangeEnd = (to ?? DateTime.UtcNow.Date.AddDays(60)).Date.AddDays(1).AddTicks(-1);
+            var today = RentalDateRules.Today(DateTime.UtcNow);
+            var rangeStart = (from ?? today.AddDays(-7)).Date;
+            var rangeEnd = (to ?? today.AddDays(60)).Date.AddDays(1).AddTicks(-1);
             if (rangeEnd < rangeStart)
             {
                 (rangeStart, rangeEnd) = (rangeEnd.Date, rangeStart.Date.AddDays(1).AddTicks(-1));
@@ -134,23 +135,26 @@ namespace AuditIt.Api.Controllers
                 .Include(r => r.Items)
                 .Where(r => r.Status != RentalStatus.Cancelled)
                 .Where(r => r.Items.Any(ri => ri.ItemId == id))
-                .Where(r => r.StartDate <= rangeEnd && r.ExpectedEndDate >= rangeStart)
+                .Where(r => r.StartDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
                 .ToListAsync();
 
             var busy = rentals
+                .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, rangeStart, rangeEnd))
                 .SelectMany(r => r.Items
                     .Where(ri => ri.ItemId == id)
                     .Select(ri =>
                     {
                         var periodEnd = ri.ReturnedAt ?? r.ActualEndDate ?? r.ExpectedEndDate;
+                        var startAt = RentalDateRules.ToBusinessDate(r.StartDate);
+                        var endAt = RentalDateRules.EndOfBusinessDay(periodEnd);
                         return new ItemBusyPeriodDto
                         {
                             RentalId = r.Id,
                             RentalNumber = r.RentalNumber,
                             RentalStatus = r.Status,
                             RenterName = r.Renter?.Name,
-                            StartAt = r.StartDate < rangeStart ? rangeStart : r.StartDate,
-                            EndAt = periodEnd > rangeEnd ? rangeEnd : periodEnd,
+                            StartAt = startAt < rangeStart ? rangeStart : startAt,
+                            EndAt = endAt > rangeEnd ? rangeEnd : endAt,
                             IsOpen = ri.ReturnedAt == null && r.Status != RentalStatus.Returned
                         };
                     }))

@@ -63,13 +63,17 @@ namespace AuditIt.Api.Services
             var channels = scope.ServiceProvider.GetServices<INotificationChannel>().ToList();
 
             var now = DateTime.UtcNow;
+            var today = RentalDateRules.Today(now);
             var leadHours = Math.Max(1, _options.CurrentValue.DueSoonLeadHours);
-            var leadUntil = now.AddHours(leadHours);
+            var leadUntil = today.AddDays(RentalDateRules.LeadDaysFromHours(leadHours));
 
             var newlyOverdue = await db.Rentals
                 .Include(r => r.Shipments)
-                .Where(r => r.Status == RentalStatus.Active && r.ExpectedEndDate < now)
+                .Where(r => r.Status == RentalStatus.Active)
                 .ToListAsync(ct);
+            newlyOverdue = newlyOverdue
+                .Where(r => RentalDateRules.ToBusinessDate(r.ExpectedEndDate) < today)
+                .ToList();
 
             foreach (var rental in newlyOverdue)
             {
@@ -97,30 +101,32 @@ namespace AuditIt.Api.Services
 
             foreach (var rental in candidates)
             {
+                var startDate = RentalDateRules.ToBusinessDate(rental.StartDate);
+                var expectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
                 var hasDeliveredOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
                 ReminderType? type = null;
 
                 if (!hasOutboundShipment
                     && rental.Status == RentalStatus.Pending
-                    && rental.StartDate >= now
-                    && rental.StartDate <= leadUntil)
+                    && startDate >= today
+                    && startDate <= leadUntil)
                 {
                     type = ReminderType.RentalShipmentSoon;
                 }
                 else if (hasOutboundShipment
                          && !hasDeliveredOutboundShipment
-                         && rental.StartDate.Date.AddDays(1) <= now)
+                         && startDate.AddDays(1) <= today)
                 {
                     type = ReminderType.RentalDeliveryUnsigned;
                 }
-                else if (hasOutboundShipment && rental.ExpectedEndDate < now)
+                else if (hasOutboundShipment && expectedEndDate < today)
                 {
                     type = ReminderType.RentalOverdue;
                 }
                 else if (hasOutboundShipment
-                         && rental.ExpectedEndDate >= now
-                         && rental.ExpectedEndDate <= leadUntil)
+                         && expectedEndDate >= today
+                         && expectedEndDate <= leadUntil)
                 {
                     type = ReminderType.RentalDueSoon;
                 }
@@ -221,9 +227,9 @@ namespace AuditIt.Api.Services
                     RelatedEntityType = "Rental",
                     RelatedEntityId = rental.Id.ToString(),
                     TargetUser = target,
-                    Title = $"租赁 {rental.RentalNumber} 明天开始，请及时发货",
-                    Message = $"{renterName} 的订单将于 {rental.StartDate:yyyy-MM-dd HH:mm} 开始，请提前确认物流信息。",
-                    DueAt = rental.StartDate,
+                    Title = $"租赁 {rental.RentalNumber} 即将开始，请及时发货",
+                    Message = $"{renterName} 的订单将于 {RentalDateRules.Format(rental.StartDate)} 开始，请提前确认物流信息。",
+                    DueAt = RentalDateRules.ToBusinessDate(rental.StartDate),
                     CreatedAt = now
                 },
                 ReminderType.RentalDeliveryUnsigned => new Reminder
@@ -234,8 +240,8 @@ namespace AuditIt.Api.Services
                     RelatedEntityId = rental.Id.ToString(),
                     TargetUser = target,
                     Title = $"租赁 {rental.RentalNumber} 发货物流未签收",
-                    Message = $"{renterName} 的订单租期已于 {rental.StartDate:yyyy-MM-dd HH:mm} 开始，发货物流仍未登记签收，请及时确认。",
-                    DueAt = rental.StartDate.Date.AddDays(1),
+                    Message = $"{renterName} 的订单租期已于 {RentalDateRules.Format(rental.StartDate)} 开始，发货物流仍未登记签收，请及时确认。",
+                    DueAt = RentalDateRules.ToBusinessDate(rental.StartDate).AddDays(1),
                     CreatedAt = now
                 },
                 ReminderType.RentalOverdue => new Reminder
@@ -246,8 +252,8 @@ namespace AuditIt.Api.Services
                     RelatedEntityId = rental.Id.ToString(),
                     TargetUser = target,
                     Title = $"租赁 {rental.RentalNumber} 已逾期",
-                    Message = $"{renterName} 的订单应于 {rental.ExpectedEndDate:yyyy-MM-dd HH:mm} 结束，目前已逾期。",
-                    DueAt = rental.ExpectedEndDate,
+                    Message = $"{renterName} 的订单应于 {RentalDateRules.Format(rental.ExpectedEndDate)} 结束，目前已逾期。",
+                    DueAt = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
                     CreatedAt = now
                 },
                 _ => new Reminder
@@ -257,9 +263,9 @@ namespace AuditIt.Api.Services
                     RelatedEntityType = "Rental",
                     RelatedEntityId = rental.Id.ToString(),
                     TargetUser = target,
-                    Title = $"租赁 {rental.RentalNumber} 明天到期",
-                    Message = $"{renterName} 的订单将于 {rental.ExpectedEndDate:yyyy-MM-dd HH:mm} 到期，请提前跟进。",
-                    DueAt = rental.ExpectedEndDate,
+                    Title = $"租赁 {rental.RentalNumber} 即将到期",
+                    Message = $"{renterName} 的订单将于 {RentalDateRules.Format(rental.ExpectedEndDate)} 到期，请提前跟进。",
+                    DueAt = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
                     CreatedAt = now
                 }
             };
