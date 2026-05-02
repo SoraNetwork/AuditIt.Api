@@ -22,6 +22,12 @@ namespace AuditIt.Api.Models
         public decimal AccountedAmount { get; set; }
         public string? ShippingAddress { get; set; }
         public string? PlatformOrderNo { get; set; }
+        public Guid? RenewedFromRentalId { get; set; }
+        public string? RenewedFromRentalNumber { get; set; }
+        public Guid? RenewedToRentalId { get; set; }
+        public string? RenewedToRentalNumber { get; set; }
+        public int? RenewalSequence { get; set; }
+        public bool IsRenewal { get; set; }
         public string? Notes { get; set; }
         public DateTime CreatedAt { get; set; }
         public string? CreatedBy { get; set; }
@@ -126,6 +132,36 @@ namespace AuditIt.Api.Models
     public class CreateRentalResult
     {
         public RentalDto? Rental { get; set; }
+        public string? Error { get; set; }
+        public RentalCreateConflictDto? Conflict { get; set; }
+    }
+
+    public class RenewRentalDto
+    {
+        public DateTime? StartDate { get; set; }
+
+        [Required]
+        public DateTime ExpectedEndDate { get; set; }
+
+        [Range(0, double.MaxValue)]
+        public decimal TotalPrice { get; set; }
+
+        [Range(0, double.MaxValue)]
+        public decimal? Deposit { get; set; }
+
+        [Range(0, double.MaxValue)]
+        public decimal OtherFee { get; set; }
+
+        [StringLength(500)]
+        public string? Notes { get; set; }
+
+        public bool AllowScheduleConflict { get; set; }
+    }
+
+    public class RenewRentalResult
+    {
+        public RentalDto? OriginalRental { get; set; }
+        public RentalDto? RenewalRental { get; set; }
         public string? Error { get; set; }
         public RentalCreateConflictDto? Conflict { get; set; }
     }

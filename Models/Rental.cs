@@ -11,7 +11,8 @@ namespace AuditIt.Api.Models
         Active,
         Overdue,
         Returned,
-        Cancelled
+        Cancelled,
+        Renewed
     }
 
     public class Rental
@@ -51,6 +52,18 @@ namespace AuditIt.Api.Models
 
         [StringLength(100)]
         public string? PlatformOrderNo { get; set; }
+
+        public Guid? RenewedFromRentalId { get; set; }
+
+        [StringLength(30)]
+        public string? RenewedFromRentalNumber { get; set; }
+
+        public Guid? RenewedToRentalId { get; set; }
+
+        [StringLength(30)]
+        public string? RenewedToRentalNumber { get; set; }
+
+        public int? RenewalSequence { get; set; }
 
         [StringLength(500)]
         public string? Notes { get; set; }

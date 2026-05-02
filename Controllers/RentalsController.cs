@@ -82,6 +82,17 @@ namespace AuditIt.Api.Controllers
             return Ok(rental);
         }
 
+        [HttpPost("{id:guid}/renew")]
+        [RequirePermission(PermissionCodes.RentalCreate)]
+        public async Task<ActionResult<RenewRentalResult>> Renew(Guid id, [FromBody] RenewRentalDto dto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+            var result = await _rentals.RenewAsync(id, dto, CurrentUser());
+            if (result.Conflict != null) return Conflict(result.Conflict);
+            if (result.Error != null) return BadRequest(result.Error);
+            return Ok(result);
+        }
+
         [HttpPost("{id:guid}/ship")]
         [RequirePermission(PermissionCodes.RentalShip)]
         public async Task<ActionResult<RentalDto>> Ship(Guid id, [FromBody] CreateShipmentDto dto)

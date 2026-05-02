@@ -132,10 +132,13 @@ namespace AuditIt.Api.Services
                 .Where(r => (r.StartDate <= queryTo && r.ExpectedEndDate >= queryFrom)
                     || (r.ExpectedShipDate <= queryTo
                         && r.Status == RentalStatus.Pending
+                        && r.RenewedFromRentalId == null
                         && !r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound))
                     || (r.ExpectedEndDate <= queryTo
                         && r.Status != RentalStatus.Returned
-                        && r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound)
+                        && r.Status != RentalStatus.Renewed
+                        && r.RenewedToRentalId == null
+                        && (r.RenewedFromRentalId != null || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound))
                         && !r.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound)))
                 .ToListAsync();
 
@@ -147,7 +150,8 @@ namespace AuditIt.Api.Services
                 var expectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
                 var hasInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
-                var hasOpenItems = rental.Status != RentalStatus.Returned
+                var hasRentalStarted = HasRentalStarted(rental);
+                var hasOpenItems = !IsClosedStatus(rental.Status)
                     && rental.Items.Any(i => i.ReturnedAt == null);
                 var rentalPeriodOverlaps = RentalDateRules.Overlaps(rental.StartDate, rental.ExpectedEndDate, from, to);
 
@@ -167,11 +171,12 @@ namespace AuditIt.Api.Services
                         StartAt = startDate,
                         EndAt = expectedEndDate,
                         AllDay = true,
-                        IsOpen = rental.Status != RentalStatus.Returned
+                        IsOpen = !IsClosedStatus(rental.Status)
                     });
                 }
 
                 if (!hasOutboundShipment
+                    && !IsRenewal(rental)
                     && rental.Status == RentalStatus.Pending)
                 {
                     var shipmentRequiredEnd = expectedShipDate < today
@@ -198,8 +203,9 @@ namespace AuditIt.Api.Services
                     }
                 }
 
-                if (hasOutboundShipment
+                if (hasRentalStarted
                     && !hasInboundShipment
+                    && !rental.RenewedToRentalId.HasValue
                     && hasOpenItems)
                 {
                     var returnRequiredEnd = expectedEndDate < today
@@ -475,6 +481,173 @@ namespace AuditIt.Api.Services
             };
         }
 
+        public async Task<RenewRentalResult> RenewAsync(Guid id, RenewRentalDto dto, string? currentUser)
+        {
+            var source = await _context.Rentals
+                .Include(r => r.Renter)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.ItemDefinition)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.Warehouse)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.Listings)
+                .Include(r => r.Shipments)
+                .FirstOrDefaultAsync(r => r.Id == id);
+
+            if (source == null)
+            {
+                return new RenewRentalResult { Error = "租赁单不存在。" };
+            }
+
+            if (IsClosedStatus(source.Status))
+            {
+                return new RenewRentalResult { Error = "已结束的租赁单不能续租。" };
+            }
+
+            if (source.RenewedToRentalId.HasValue)
+            {
+                return new RenewRentalResult { Error = $"该租赁单已续租到 {source.RenewedToRentalNumber}。" };
+            }
+
+            if (source.Status == RentalStatus.Pending && !HasRentalStarted(source))
+            {
+                return new RenewRentalResult { Error = "租赁尚未开始，不能续租。" };
+            }
+
+            var activeItems = source.Items.Where(ri => ri.ReturnedAt == null).ToList();
+            if (activeItems.Count == 0)
+            {
+                return new RenewRentalResult { Error = "没有可续租的物品。" };
+            }
+
+            var missingItems = activeItems
+                .Where(ri => ri.Item == null)
+                .Select(ri => ri.ItemShortIdSnapshot)
+                .ToList();
+            if (missingItems.Count > 0)
+            {
+                return new RenewRentalResult { Error = $"部分续租物品不存在：{string.Join("，", missingItems)}" };
+            }
+
+            var disposedItems = activeItems
+                .Where(ri => ri.Item?.Status == ItemStatus.Disposed)
+                .Select(ri => ri.ItemShortIdSnapshot)
+                .ToList();
+            if (disposedItems.Count > 0)
+            {
+                return new RenewRentalResult { Error = $"以下物品已处置，不能续租：{string.Join("，", disposedItems)}" };
+            }
+
+            var sourceEndDate = RentalDateRules.ToBusinessDate(source.ExpectedEndDate);
+            var startDate = dto.StartDate.HasValue
+                ? RentalDateRules.ToBusinessDate(dto.StartDate.Value)
+                : sourceEndDate.AddDays(1);
+            var expectedEndDate = RentalDateRules.ToBusinessDate(dto.ExpectedEndDate);
+
+            if (startDate <= sourceEndDate)
+            {
+                return new RenewRentalResult { Error = "续租开始日期必须晚于原租赁预计结束日期。" };
+            }
+
+            if (expectedEndDate < startDate)
+            {
+                return new RenewRentalResult { Error = "续租结束日期不能早于续租开始日期。" };
+            }
+
+            var itemIds = activeItems.Select(ri => ri.ItemId).Distinct().ToList();
+            var conflict = await ValidateCreateConflictsAsync(itemIds, startDate, expectedEndDate, source.Id);
+            if (conflict != null && !dto.AllowScheduleConflict)
+            {
+                return new RenewRentalResult { Conflict = conflict };
+            }
+
+            var now = DateTime.UtcNow;
+            var renewalId = Guid.NewGuid();
+            var (renewalNumber, sequence) = await GenerateRenewalRentalNumberAsync(source);
+            var notes = NormalizeNullableText(dto.Notes);
+            var renewal = new Rental
+            {
+                Id = renewalId,
+                RentalNumber = renewalNumber,
+                RenterId = source.RenterId,
+                Renter = source.Renter,
+                Status = RentalStatus.Active,
+                StartDate = startDate,
+                ExpectedShipDate = startDate,
+                ExpectedEndDate = expectedEndDate,
+                TotalPrice = dto.TotalPrice,
+                Deposit = dto.Deposit ?? source.Deposit,
+                OtherFee = dto.OtherFee,
+                ShippingAddress = source.ShippingAddress,
+                PlatformOrderNo = source.PlatformOrderNo,
+                Notes = string.IsNullOrWhiteSpace(notes)
+                    ? $"续租自 {source.RentalNumber}"
+                    : $"续租自 {source.RentalNumber}\n{notes}",
+                CreatedAt = now,
+                CreatedBy = currentUser,
+                UpdatedAt = now,
+                UpdatedBy = currentUser,
+                AssignedTo = source.AssignedTo,
+                RenewedFromRentalId = source.Id,
+                RenewedFromRentalNumber = source.RentalNumber,
+                RenewalSequence = sequence
+            };
+
+            _context.Rentals.Add(renewal);
+
+            foreach (var sourceItem in activeItems)
+            {
+                _context.RentalItems.Add(new RentalItem
+                {
+                    RentalId = renewalId,
+                    ItemId = sourceItem.ItemId,
+                    ItemShortIdSnapshot = sourceItem.ItemShortIdSnapshot,
+                    ItemNameSnapshot = sourceItem.ItemNameSnapshot,
+                    ListingRemarksSnapshot = sourceItem.ListingRemarksSnapshot,
+                    PerItemPrice = sourceItem.PerItemPrice
+                });
+
+                if (sourceItem.Item != null)
+                {
+                    sourceItem.Item.Status = ItemStatus.LoanedOut;
+                    sourceItem.Item.CurrentDestination = $"租赁 {renewalNumber}";
+                    sourceItem.Item.LastUpdated = now;
+                    LogAudit(sourceItem.Item, AuditAction.RentalExtended, renewalNumber, currentUser, $"续租自 {source.RentalNumber}");
+                }
+            }
+
+            source.Status = RentalStatus.Renewed;
+            source.ActualEndDate = sourceEndDate;
+            source.RenewedToRentalId = renewalId;
+            source.RenewedToRentalNumber = renewalNumber;
+            source.UpdatedAt = now;
+            source.UpdatedBy = currentUser;
+            await DismissOpenRentalAutoRemindersAsync(source.Id, currentUser);
+
+            await _context.SaveChangesAsync();
+
+            await NotifyStatusChangeAsync(
+                source,
+                "已续租",
+                currentUser,
+                $"续租单：{renewalNumber}，续租至 {RentalDateRules.Format(expectedEndDate)}，金额 {dto.TotalPrice:F1}");
+
+            await NotifyStatusChangeAsync(
+                renewal,
+                "续租已创建",
+                currentUser,
+                $"来源单：{source.RentalNumber}，租期 {RentalDateRules.Format(startDate)} - {RentalDateRules.Format(expectedEndDate)}");
+
+            return new RenewRentalResult
+            {
+                OriginalRental = await GetByIdAsync(source.Id),
+                RenewalRental = await GetByIdAsync(renewalId)
+            };
+        }
+
         public async Task<(RentalDto? rental, string? error)> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser)
         {
             var rental = await _context.Rentals
@@ -493,7 +666,7 @@ namespace AuditIt.Api.Services
                 return (null, "租赁单不存在。");
             }
 
-            if (rental.Status == RentalStatus.Returned || rental.Status == RentalStatus.Cancelled)
+            if (IsClosedStatus(rental.Status))
             {
                 return (null, "已结束的租赁单不可修改。");
             }
@@ -574,7 +747,7 @@ namespace AuditIt.Api.Services
                     if (rental.Status == RentalStatus.Overdue
                         && !RentalDateRules.IsOverdue(rental.ExpectedEndDate, DateTime.UtcNow))
                     {
-                        rental.Status = HasOutboundShipment(rental) ? RentalStatus.Active : RentalStatus.Pending;
+                        rental.Status = HasRentalStarted(rental) ? RentalStatus.Active : RentalStatus.Pending;
                     }
                 }
             }
@@ -691,12 +864,12 @@ namespace AuditIt.Api.Services
                 return (null, "租赁单不存在。");
             }
 
-            if (rental.Status == RentalStatus.Cancelled || rental.Status == RentalStatus.Returned)
+            if (IsClosedStatus(rental.Status))
             {
                 return (null, "租赁单已结束，不能继续登记物流。");
             }
 
-            if (dto.Direction == ShipmentDirection.Inbound && !HasOutboundShipment(rental))
+            if (dto.Direction == ShipmentDirection.Inbound && !HasRentalStarted(rental))
             {
                 return (null, "租赁尚未发货，不能登记回货物流。");
             }
@@ -1018,7 +1191,7 @@ namespace AuditIt.Api.Services
                 return (null, "租赁单不存在。");
             }
 
-            if (rental.Status == RentalStatus.Returned)
+            if (rental.Status == RentalStatus.Returned || rental.Status == RentalStatus.Renewed)
             {
                 return (null, "租赁单已归还。");
             }
@@ -1028,7 +1201,7 @@ namespace AuditIt.Api.Services
                 return (null, "已取消的租赁单不能登记归还。");
             }
 
-            if (!HasOutboundShipment(rental))
+            if (!HasRentalStarted(rental))
             {
                 return (null, "租赁尚未发货，请直接取消租赁。");
             }
@@ -1107,7 +1280,7 @@ namespace AuditIt.Api.Services
                 return (null, "租赁单不存在。");
             }
 
-            if (rental.Status == RentalStatus.Returned || rental.Status == RentalStatus.Cancelled)
+            if (IsClosedStatus(rental.Status))
             {
                 return (null, "租赁单已结束。");
             }
@@ -1196,7 +1369,7 @@ namespace AuditIt.Api.Services
                 return new RentalItemsUpdateResult { Error = "租赁单不存在。" };
             }
 
-            if (rental.Status == RentalStatus.Returned || rental.Status == RentalStatus.Cancelled)
+            if (IsClosedStatus(rental.Status))
             {
                 return new RentalItemsUpdateResult { Error = "已结束的租赁单不能修改租赁物品。" };
             }
@@ -1341,9 +1514,9 @@ namespace AuditIt.Api.Services
                 return (null, "租赁单不存在。");
             }
 
-            if (rental.Status == RentalStatus.Cancelled)
+            if (IsClosedStatus(rental.Status))
             {
-                return (null, "已取消的租赁单不可修改商品信息。");
+                return (null, "已结束的租赁单不可修改商品信息。");
             }
 
             var itemMap = rental.Items.ToDictionary(ri => ri.Id);
@@ -1390,7 +1563,7 @@ namespace AuditIt.Api.Services
             var candidateRentals = await _context.Rentals
                 .Include(r => r.Items)
                 .Include(r => r.Shipments)
-                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled)
+                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
                 .Where(r => excludeRentalId == null || r.Id != excludeRentalId.Value)
                 .Where(r => r.Items.Any(ri => itemIds.Contains(ri.ItemId) && ri.ReturnedAt == null))
                 .ToListAsync();
@@ -1403,7 +1576,7 @@ namespace AuditIt.Api.Services
 
             foreach (var rental in overlappingRentals)
             {
-                var hasOutboundShipment = HasOutboundShipment(rental);
+                var hasRentalStarted = HasRentalStarted(rental);
 
                 foreach (var rentalItem in rental.Items.Where(ri => itemIds.Contains(ri.ItemId) && ri.ReturnedAt == null))
                 {
@@ -1417,10 +1590,10 @@ namespace AuditIt.Api.Services
                         ItemName = rentalItem.ItemNameSnapshot,
                         StartDate = RentalDateRules.ToBusinessDate(rental.StartDate),
                         ExpectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
-                        HasOutboundShipment = hasOutboundShipment
+                        HasOutboundShipment = hasRentalStarted
                     };
 
-                    if (hasOutboundShipment)
+                    if (hasRentalStarted)
                     {
                         shippedConflicts.Add(conflict);
                     }
@@ -1478,8 +1651,8 @@ namespace AuditIt.Api.Services
 
             return await _context.Rentals
                 .Where(r => r.Id != rentalId)
-                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled)
-                .Where(r => r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound))
+                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
+                .Where(r => r.RenewedFromRentalId != null || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound))
                 .SelectMany(r => r.Items
                     .Where(ri => itemIds.Contains(ri.ItemId) && ri.ReturnedAt == null)
                     .Select(ri => ri.ItemShortIdSnapshot))
@@ -1676,6 +1849,65 @@ namespace AuditIt.Api.Services
             return $"{prefix}{(todayCount + 1):D4}";
         }
 
+        private async Task<(string rentalNumber, int sequence)> GenerateRenewalRentalNumberAsync(Rental source)
+        {
+            var rootNumber = GetRenewalRootNumber(source);
+            var prefix = $"{rootNumber}-";
+            var relatedNumbers = await _context.Rentals
+                .Where(r => r.RentalNumber == rootNumber || r.RentalNumber.StartsWith(prefix))
+                .Select(r => r.RentalNumber)
+                .ToListAsync();
+
+            var maxSequence = relatedNumbers
+                .Select(number => TryReadRenewalSequence(rootNumber, number))
+                .DefaultIfEmpty(0)
+                .Max();
+            var nextSequence = maxSequence + 1;
+            return ($"{rootNumber}-{nextSequence:D2}", nextSequence);
+        }
+
+        private static int TryReadRenewalSequence(string rootNumber, string rentalNumber)
+        {
+            if (!rentalNumber.StartsWith($"{rootNumber}-", StringComparison.OrdinalIgnoreCase))
+            {
+                return 0;
+            }
+
+            var suffix = rentalNumber[(rootNumber.Length + 1)..];
+            return int.TryParse(suffix, out var sequence) ? sequence : 0;
+        }
+
+        private static string GetRenewalRootNumber(Rental source)
+        {
+            if (source.RenewalSequence is > 0)
+            {
+                var suffix = $"-{source.RenewalSequence.Value:D2}";
+                if (source.RentalNumber.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return source.RentalNumber[..^suffix.Length];
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(source.RenewedFromRentalNumber))
+            {
+                return TrimRenewalSuffix(source.RenewedFromRentalNumber);
+            }
+
+            return TrimRenewalSuffix(source.RentalNumber);
+        }
+
+        private static string TrimRenewalSuffix(string rentalNumber)
+        {
+            var index = rentalNumber.LastIndexOf('-');
+            if (index <= 0 || rentalNumber.Length - index - 1 != 2)
+            {
+                return rentalNumber;
+            }
+
+            var suffix = rentalNumber[(index + 1)..];
+            return int.TryParse(suffix, out _) ? rentalNumber[..index] : rentalNumber;
+        }
+
         private void LogAudit(Item item, AuditAction action, string rentalNumber, string? user, string? extra = null)
         {
             var destination = string.IsNullOrEmpty(extra)
@@ -1698,6 +1930,15 @@ namespace AuditIt.Api.Services
 
         private static bool HasOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+
+        private static bool IsRenewal(Rental rental) =>
+            rental.RenewedFromRentalId.HasValue;
+
+        private static bool HasRentalStarted(Rental rental) =>
+            IsRenewal(rental) || HasOutboundShipment(rental);
+
+        private static bool IsClosedStatus(RentalStatus status) =>
+            status is RentalStatus.Returned or RentalStatus.Cancelled or RentalStatus.Renewed;
 
         private static bool HasInboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
@@ -1810,14 +2051,14 @@ namespace AuditIt.Api.Services
                 return false;
             }
 
-            if (rental.Status == RentalStatus.Cancelled || rental.Status == RentalStatus.Returned)
+            if (IsClosedStatus(rental.Status) || rental.RenewedToRentalId.HasValue)
             {
                 return true;
             }
 
             return reminder.Type switch
             {
-                ReminderType.RentalShipmentSoon => HasOutboundShipment(rental),
+                ReminderType.RentalShipmentSoon => HasOutboundShipment(rental) || IsRenewal(rental),
                 ReminderType.RentalDeliveryUnsigned => HasDeliveredOutboundShipment(rental),
                 ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
                     HasInboundShipment(rental) || !rental.Items.Any(i => i.ReturnedAt == null),
@@ -1972,6 +2213,12 @@ namespace AuditIt.Api.Services
             AccountedAmount = rental.TotalPrice - rental.OtherFee - rental.Shipments.Sum(s => s.ShippingFee ?? 0),
             ShippingAddress = rental.ShippingAddress,
             PlatformOrderNo = rental.PlatformOrderNo,
+            RenewedFromRentalId = rental.RenewedFromRentalId,
+            RenewedFromRentalNumber = rental.RenewedFromRentalNumber,
+            RenewedToRentalId = rental.RenewedToRentalId,
+            RenewedToRentalNumber = rental.RenewedToRentalNumber,
+            RenewalSequence = rental.RenewalSequence,
+            IsRenewal = rental.RenewedFromRentalId.HasValue,
             Notes = rental.Notes,
             CreatedAt = rental.CreatedAt,
             CreatedBy = rental.CreatedBy,

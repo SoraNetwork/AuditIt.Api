@@ -12,6 +12,7 @@ namespace AuditIt.Api.Services
             bool canSeeAllReminders);
         Task<RentalDto?> GetByIdAsync(Guid id);
         Task<CreateRentalResult> CreateAsync(CreateRentalDto dto, string? currentUser);
+        Task<RenewRentalResult> RenewAsync(Guid id, RenewRentalDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> MarkDeliveredAsync(Guid rentalId, int shipmentId, DeliverShipmentDto dto, string? currentUser);

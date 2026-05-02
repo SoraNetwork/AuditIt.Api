@@ -73,6 +73,8 @@ namespace AuditIt.Api.Services
                 .ToListAsync(ct);
             newlyOverdue = newlyOverdue
                 .Where(r => !r.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound)
+                    && !r.RenewedToRentalId.HasValue
+                    && HasRentalStarted(r)
                     && RentalDateRules.IsOverdue(r.ExpectedEndDate, now))
                 .ToList();
 
@@ -108,9 +110,13 @@ namespace AuditIt.Api.Services
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
                 var hasInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
                 var hasDeliveredOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
+                var isRenewal = rental.RenewedFromRentalId.HasValue;
+                var hasRentalStarted = hasOutboundShipment || isRenewal;
+                var isRenewedForward = rental.RenewedToRentalId.HasValue;
                 ReminderType? type = null;
 
                 if (!hasOutboundShipment
+                    && !isRenewal
                     && rental.Status == RentalStatus.Pending
                     && expectedShipDate <= leadUntil)
                 {
@@ -122,13 +128,15 @@ namespace AuditIt.Api.Services
                 {
                     type = ReminderType.RentalDeliveryUnsigned;
                 }
-                else if (hasOutboundShipment
+                else if (hasRentalStarted
+                         && !isRenewedForward
                          && !hasInboundShipment
                          && expectedEndDate.AddDays(1) < today)
                 {
                     type = ReminderType.RentalOverdue;
                 }
-                else if (hasOutboundShipment
+                else if (hasRentalStarted
+                         && !isRenewedForward
                          && !hasInboundShipment
                          && expectedEndDate >= today
                          && expectedEndDate <= leadUntil)
@@ -329,7 +337,10 @@ namespace AuditIt.Api.Services
 
         private static bool IsCompleted(ReminderType type, Rental rental)
         {
-            if (rental.Status == RentalStatus.Cancelled || rental.Status == RentalStatus.Returned)
+            if (rental.Status == RentalStatus.Cancelled
+                || rental.Status == RentalStatus.Returned
+                || rental.Status == RentalStatus.Renewed
+                || rental.RenewedToRentalId.HasValue)
             {
                 return true;
             }
@@ -337,7 +348,8 @@ namespace AuditIt.Api.Services
             return type switch
             {
                 ReminderType.RentalShipmentSoon =>
-                    rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound),
+                    rental.RenewedFromRentalId.HasValue
+                    || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound),
                 ReminderType.RentalDeliveryUnsigned =>
                     rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue),
                 ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
@@ -346,5 +358,9 @@ namespace AuditIt.Api.Services
                 _ => false
             };
         }
+
+        private static bool HasRentalStarted(Rental rental) =>
+            rental.RenewedFromRentalId.HasValue
+            || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
     }
 }

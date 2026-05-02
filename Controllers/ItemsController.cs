@@ -155,7 +155,9 @@ namespace AuditIt.Api.Controllers
                             RenterName = r.Renter?.Name,
                             StartAt = startAt < rangeStart ? rangeStart : startAt,
                             EndAt = endAt > rangeEnd ? rangeEnd : endAt,
-                            IsOpen = ri.ReturnedAt == null && r.Status != RentalStatus.Returned
+                            IsOpen = ri.ReturnedAt == null
+                                && r.Status != RentalStatus.Returned
+                                && r.Status != RentalStatus.Renewed
                         };
                     }))
                 .Where(p => p.EndAt >= rangeStart && p.StartAt <= rangeEnd)

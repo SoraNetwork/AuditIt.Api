@@ -33,7 +33,7 @@ namespace AuditIt.Api.Controllers
                 To = to,
                 RentalCount = details.Count,
                 ActiveRentalCount = details.Count(d => IsInRent(d.Status)),
-                ClosedRentalCount = details.Count(d => d.Status == RentalStatus.Returned),
+                ClosedRentalCount = details.Count(d => IsCompleted(d.Status)),
                 TotalOrderAmount = details.Sum(d => d.TotalPrice),
                 TotalDeposit = details.Sum(d => d.Deposit),
                 TotalShippingFee = details.Sum(d => d.TotalShippingFee),
@@ -119,7 +119,7 @@ namespace AuditIt.Api.Controllers
         {
             var categories = new[]
             {
-                ("已完成", details.Where(d => d.Status == RentalStatus.Returned)),
+                ("已完成", details.Where(d => IsCompleted(d.Status))),
                 ("在租", details.Where(d => IsInRent(d.Status))),
                 ("未开始", details.Where(d => d.Status == RentalStatus.Pending))
             };
@@ -141,5 +141,8 @@ namespace AuditIt.Api.Controllers
 
         private static bool IsInRent(RentalStatus status) =>
             status is RentalStatus.Active or RentalStatus.Overdue;
+
+        private static bool IsCompleted(RentalStatus status) =>
+            status is RentalStatus.Returned or RentalStatus.Renewed;
     }
 }
