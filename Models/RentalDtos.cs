@@ -12,6 +12,7 @@ namespace AuditIt.Api.Models
         public Guid RenterId { get; set; }
         public RenterDto? Renter { get; set; }
         public DateTime StartDate { get; set; }
+        public DateTime ExpectedShipDate { get; set; }
         public DateTime ExpectedEndDate { get; set; }
         public DateTime? ActualEndDate { get; set; }
         public decimal TotalPrice { get; set; }
@@ -71,6 +72,8 @@ namespace AuditIt.Api.Models
 
         public DateTime? StartDate { get; set; }
 
+        public DateTime? ExpectedShipDate { get; set; }
+
         [Required]
         public DateTime ExpectedEndDate { get; set; }
 
@@ -102,6 +105,7 @@ namespace AuditIt.Api.Models
     {
         public Guid? RenterId { get; set; }
         public DateTime? StartDate { get; set; }
+        public DateTime? ExpectedShipDate { get; set; }
         public DateTime? ExpectedEndDate { get; set; }
         [Range(0, double.MaxValue)]
         public decimal? TotalPrice { get; set; }

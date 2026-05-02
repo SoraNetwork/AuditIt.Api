@@ -36,6 +36,12 @@ namespace AuditIt.Api.Services
         public static string FormatDateTime(DateTime value) =>
             value.Add(BusinessOffset).ToString("yyyy-MM-dd HH:mm");
 
+        public static DateTime DefaultExpectedShipDate(DateTime startDate) =>
+            ToBusinessDate(startDate).AddDays(-1);
+
+        public static bool IsOverdue(DateTime expectedEndDate, DateTime utcNow) =>
+            ToBusinessDate(expectedEndDate).AddDays(1) < Today(utcNow);
+
         public static int LeadDaysFromHours(int hours) =>
             Math.Max(1, (int)Math.Ceiling(Math.Max(1, hours) / 24d));
     }

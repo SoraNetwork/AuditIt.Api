@@ -129,82 +129,103 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Shipments)
                     .ThenInclude(s => s.OriginWarehouse)
                 .Where(r => r.Status != RentalStatus.Cancelled)
-                .Where(r => r.StartDate <= queryTo && r.ExpectedEndDate >= queryFrom)
+                .Where(r => (r.StartDate <= queryTo && r.ExpectedEndDate >= queryFrom)
+                    || (r.ExpectedShipDate <= queryTo
+                        && r.Status == RentalStatus.Pending
+                        && !r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound))
+                    || (r.ExpectedEndDate <= queryTo
+                        && r.Status != RentalStatus.Returned
+                        && r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound)
+                        && !r.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound)))
                 .ToListAsync();
 
             var events = new List<RentalCalendarEventDto>();
-            foreach (var rental in rentals.Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, from, to))
-                         .Where(r => showAllUsers || IsRentalForUser(r, targetUser)))
+            foreach (var rental in rentals.Where(r => showAllUsers || IsRentalForUser(r, targetUser)))
             {
                 var startDate = RentalDateRules.ToBusinessDate(rental.StartDate);
+                var expectedShipDate = RentalDateRules.ToBusinessDate(rental.ExpectedShipDate);
                 var expectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+                var hasInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
                 var hasOpenItems = rental.Status != RentalStatus.Returned
                     && rental.Items.Any(i => i.ReturnedAt == null);
+                var rentalPeriodOverlaps = RentalDateRules.Overlaps(rental.StartDate, rental.ExpectedEndDate, from, to);
 
-                events.Add(new RentalCalendarEventDto
+                if (rentalPeriodOverlaps)
                 {
-                    Id = $"rental-period-{rental.Id}",
-                    Kind = RentalCalendarEventKind.RentalPeriod,
-                    Level = rental.Status == RentalStatus.Overdue ? ReminderLevel.Critical : ReminderLevel.Info,
-                    RentalId = rental.Id,
-                    RentalNumber = rental.RentalNumber,
-                    RenterName = rental.Renter?.Name,
-                    RentalStatus = rental.Status,
-                    Title = $"租期 {rental.RentalNumber}",
-                    Description = $"{rental.Renter?.Name ?? "-"} | {rental.Items.Count} 件物品",
-                    StartAt = startDate,
-                    EndAt = expectedEndDate,
-                    AllDay = true,
-                    IsOpen = rental.Status != RentalStatus.Returned
-                });
-
-                if (!hasOutboundShipment && rental.Status == RentalStatus.Pending && RentalDateRules.IsBusinessDateWithin(rental.StartDate, from, to))
-                {
-                    var shipmentRequiredEnd = startDate < today
-                        ? (today > to.Date ? to.Date : today)
-                        : startDate;
                     events.Add(new RentalCalendarEventDto
                     {
-                        Id = $"shipment-required-{rental.Id}",
-                        Kind = RentalCalendarEventKind.ShipmentRequired,
-                        Level = startDate < today ? ReminderLevel.Critical : ReminderLevel.Warning,
+                        Id = $"rental-period-{rental.Id}",
+                        Kind = RentalCalendarEventKind.RentalPeriod,
+                        Level = rental.Status == RentalStatus.Overdue ? ReminderLevel.Critical : ReminderLevel.Info,
                         RentalId = rental.Id,
                         RentalNumber = rental.RentalNumber,
                         RenterName = rental.Renter?.Name,
                         RentalStatus = rental.Status,
-                        Title = $"需要发货 {rental.RentalNumber}",
-                        Description = $"{rental.Renter?.Name ?? "-"} | 租期开始",
+                        Title = $"租期 {rental.RentalNumber}",
+                        Description = $"{rental.Renter?.Name ?? "-"} | {rental.Items.Count} 件物品",
                         StartAt = startDate,
-                        EndAt = shipmentRequiredEnd,
+                        EndAt = expectedEndDate,
                         AllDay = true,
-                        IsOpen = true
+                        IsOpen = rental.Status != RentalStatus.Returned
                     });
                 }
 
-                if (hasOutboundShipment && hasOpenItems && RentalDateRules.IsBusinessDateWithin(rental.ExpectedEndDate, from, to))
+                if (!hasOutboundShipment
+                    && rental.Status == RentalStatus.Pending)
+                {
+                    var shipmentRequiredEnd = expectedShipDate < today
+                        ? (today > to.Date ? to.Date : today)
+                        : expectedShipDate;
+                    if (RentalDateRules.Overlaps(expectedShipDate, shipmentRequiredEnd, from, to))
+                    {
+                        events.Add(new RentalCalendarEventDto
+                        {
+                            Id = $"shipment-required-{rental.Id}",
+                            Kind = RentalCalendarEventKind.ShipmentRequired,
+                            Level = expectedShipDate < today ? ReminderLevel.Critical : ReminderLevel.Warning,
+                            RentalId = rental.Id,
+                            RentalNumber = rental.RentalNumber,
+                            RenterName = rental.Renter?.Name,
+                            RentalStatus = rental.Status,
+                            Title = $"需要发货 {rental.RentalNumber}",
+                            Description = $"{rental.Renter?.Name ?? "-"} | 预计发货",
+                            StartAt = expectedShipDate,
+                            EndAt = shipmentRequiredEnd,
+                            AllDay = true,
+                            IsOpen = true
+                        });
+                    }
+                }
+
+                if (hasOutboundShipment
+                    && !hasInboundShipment
+                    && hasOpenItems)
                 {
                     var returnRequiredEnd = expectedEndDate < today
                         ? (today > to.Date ? to.Date : today)
                         : expectedEndDate;
-                    events.Add(new RentalCalendarEventDto
+                    if (RentalDateRules.Overlaps(expectedEndDate, returnRequiredEnd, from, to))
                     {
-                        Id = $"return-required-{rental.Id}",
-                        Kind = RentalCalendarEventKind.ReturnRequired,
-                        Level = expectedEndDate < today || rental.Status == RentalStatus.Overdue
-                            ? ReminderLevel.Critical
-                            : ReminderLevel.Warning,
-                        RentalId = rental.Id,
-                        RentalNumber = rental.RentalNumber,
-                        RenterName = rental.Renter?.Name,
-                        RentalStatus = rental.Status,
-                        Title = $"需要收货 {rental.RentalNumber}",
-                        Description = $"{rental.Renter?.Name ?? "-"} | 租期结束",
-                        StartAt = expectedEndDate,
-                        EndAt = returnRequiredEnd,
-                        AllDay = true,
-                        IsOpen = true
-                    });
+                        events.Add(new RentalCalendarEventDto
+                        {
+                            Id = $"return-required-{rental.Id}",
+                            Kind = RentalCalendarEventKind.ReturnRequired,
+                            Level = expectedEndDate.AddDays(1) < today || rental.Status == RentalStatus.Overdue
+                                ? ReminderLevel.Critical
+                                : ReminderLevel.Warning,
+                            RentalId = rental.Id,
+                            RentalNumber = rental.RentalNumber,
+                            RenterName = rental.Renter?.Name,
+                            RentalStatus = rental.Status,
+                            Title = $"需要收货 {rental.RentalNumber}",
+                            Description = $"{rental.Renter?.Name ?? "-"} | 租期结束，登记回货物流后消除",
+                            StartAt = expectedEndDate,
+                            EndAt = returnRequiredEnd,
+                            AllDay = true,
+                            IsOpen = true
+                        });
+                    }
                 }
 
                 foreach (var shipment in rental.Shipments.Where(s => IsWithin(s.ShippedAt, from, to)))
@@ -346,6 +367,9 @@ namespace AuditIt.Api.Services
 
             var now = DateTime.UtcNow;
             var startDate = RentalDateRules.ToBusinessDate(dto.StartDate ?? now);
+            var expectedShipDate = dto.ExpectedShipDate.HasValue
+                ? RentalDateRules.ToBusinessDate(dto.ExpectedShipDate.Value)
+                : RentalDateRules.DefaultExpectedShipDate(startDate);
             var expectedEndDate = RentalDateRules.ToBusinessDate(dto.ExpectedEndDate);
             if (expectedEndDate < startDate)
             {
@@ -403,6 +427,7 @@ namespace AuditIt.Api.Services
                 Renter = renter,
                 Status = RentalStatus.Pending,
                 StartDate = startDate,
+                ExpectedShipDate = expectedShipDate,
                 ExpectedEndDate = expectedEndDate,
                 TotalPrice = dto.TotalPrice,
                 Deposit = dto.Deposit,
@@ -477,10 +502,14 @@ namespace AuditIt.Api.Services
             var extended = false;
             var scheduleOrTargetChanged = false;
             var currentStartDate = RentalDateRules.ToBusinessDate(rental.StartDate);
+            var currentExpectedShipDate = RentalDateRules.ToBusinessDate(rental.ExpectedShipDate);
             var currentExpectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
             var nextStartDate = dto.StartDate.HasValue
                 ? RentalDateRules.ToBusinessDate(dto.StartDate.Value)
                 : currentStartDate;
+            var nextExpectedShipDate = dto.ExpectedShipDate.HasValue
+                ? RentalDateRules.ToBusinessDate(dto.ExpectedShipDate.Value)
+                : currentExpectedShipDate;
             var nextExpectedEndDate = dto.ExpectedEndDate.HasValue
                 ? RentalDateRules.ToBusinessDate(dto.ExpectedEndDate.Value)
                 : currentExpectedEndDate;
@@ -491,6 +520,7 @@ namespace AuditIt.Api.Services
             }
 
             if ((dto.StartDate.HasValue && nextStartDate != currentStartDate)
+                || (dto.ExpectedShipDate.HasValue && nextExpectedShipDate != currentExpectedShipDate)
                 || (dto.ExpectedEndDate.HasValue && nextExpectedEndDate != currentExpectedEndDate))
             {
                 var conflict = await ValidateCreateConflictsAsync(
@@ -525,6 +555,13 @@ namespace AuditIt.Api.Services
                 scheduleOrTargetChanged = true;
             }
 
+            if (dto.ExpectedShipDate.HasValue && nextExpectedShipDate != currentExpectedShipDate)
+            {
+                changes.Add($"预计发货：{RentalDateRules.Format(rental.ExpectedShipDate)} -> {nextExpectedShipDate:yyyy-MM-dd}");
+                rental.ExpectedShipDate = nextExpectedShipDate;
+                scheduleOrTargetChanged = true;
+            }
+
             if (dto.ExpectedEndDate.HasValue)
             {
                 if (nextExpectedEndDate != currentExpectedEndDate)
@@ -535,7 +572,7 @@ namespace AuditIt.Api.Services
                     scheduleOrTargetChanged = true;
 
                     if (rental.Status == RentalStatus.Overdue
-                        && RentalDateRules.ToBusinessDate(rental.ExpectedEndDate) >= RentalDateRules.Today(DateTime.UtcNow))
+                        && !RentalDateRules.IsOverdue(rental.ExpectedEndDate, DateTime.UtcNow))
                     {
                         rental.Status = HasOutboundShipment(rental) ? RentalStatus.Active : RentalStatus.Pending;
                     }
@@ -700,7 +737,7 @@ namespace AuditIt.Api.Services
             var logisticsSummary = BuildShipmentSummary(dto.Carrier, shipment.TrackingNumber);
             if (dto.Direction == ShipmentDirection.Outbound)
             {
-                rental.Status = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate) < RentalDateRules.ToBusinessDate(shippedAt)
+                rental.Status = RentalDateRules.IsOverdue(rental.ExpectedEndDate, shippedAt)
                     ? RentalStatus.Overdue
                     : RentalStatus.Active;
 
@@ -721,6 +758,17 @@ namespace AuditIt.Api.Services
             }
             else
             {
+                if (rental.Status == RentalStatus.Overdue)
+                {
+                    rental.Status = RentalStatus.Active;
+                }
+
+                await DismissOpenRentalAutoRemindersAsync(
+                    rental.Id,
+                    currentUser,
+                    ReminderType.RentalDueSoon,
+                    ReminderType.RentalOverdue);
+
                 foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null))
                 {
                     if (rentalItem.Item == null)
@@ -1023,7 +1071,7 @@ namespace AuditIt.Api.Services
             }
             else
             {
-                rental.Status = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate) < RentalDateRules.ToBusinessDate(now)
+                rental.Status = RentalDateRules.IsOverdue(rental.ExpectedEndDate, now)
                     ? RentalStatus.Overdue
                     : RentalStatus.Active;
             }
@@ -1651,6 +1699,9 @@ namespace AuditIt.Api.Services
         private static bool HasOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
 
+        private static bool HasInboundShipment(Rental rental) =>
+            rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
+
         private static bool HasDeliveredOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
 
@@ -1769,7 +1820,7 @@ namespace AuditIt.Api.Services
                 ReminderType.RentalShipmentSoon => HasOutboundShipment(rental),
                 ReminderType.RentalDeliveryUnsigned => HasDeliveredOutboundShipment(rental),
                 ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
-                    !rental.Items.Any(i => i.ReturnedAt == null),
+                    HasInboundShipment(rental) || !rental.Items.Any(i => i.ReturnedAt == null),
                 _ => false
             };
         }
@@ -1911,6 +1962,7 @@ namespace AuditIt.Api.Services
             RenterId = rental.RenterId,
             Renter = rental.Renter == null ? null : RenterService.ToDto(rental.Renter),
             StartDate = RentalDateRules.ToBusinessDate(rental.StartDate),
+            ExpectedShipDate = RentalDateRules.ToBusinessDate(rental.ExpectedShipDate),
             ExpectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
             ActualEndDate = rental.ActualEndDate,
             TotalPrice = rental.TotalPrice,
