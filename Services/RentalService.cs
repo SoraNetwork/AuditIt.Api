@@ -269,7 +269,8 @@ namespace AuditIt.Api.Services
                     ReminderType.RentalShipmentSoon,
                     ReminderType.RentalDueSoon,
                     ReminderType.RentalOverdue,
-                    ReminderType.RentalDeliveryUnsigned
+                    ReminderType.RentalDeliveryUnsigned,
+                    ReminderType.RentalReturnUnsigned
                 };
                 var reminderQuery = _context.Reminders
                     .Where(r => (r.DueAt >= queryFrom && r.DueAt <= to)
@@ -1010,6 +1011,10 @@ namespace AuditIt.Api.Services
             {
                 await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalDeliveryUnsigned);
             }
+            else
+            {
+                await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalReturnUnsigned);
+            }
 
             await _context.SaveChangesAsync();
 
@@ -1125,6 +1130,7 @@ namespace AuditIt.Api.Services
                     else
                     {
                         shouldTrySendSettlement = true;
+                        await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalReturnUnsigned);
                     }
 
                     await NotifyStatusChangeAsync(
@@ -1867,7 +1873,8 @@ namespace AuditIt.Api.Services
                     ReminderType.RentalShipmentSoon,
                     ReminderType.RentalDueSoon,
                     ReminderType.RentalOverdue,
-                    ReminderType.RentalDeliveryUnsigned
+                    ReminderType.RentalDeliveryUnsigned,
+                    ReminderType.RentalReturnUnsigned
                 }
                 : types;
 
@@ -1996,6 +2003,9 @@ namespace AuditIt.Api.Services
         private static bool HasDeliveredOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
 
+        private static bool HasDeliveredInboundShipment(Rental rental) =>
+            rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue);
+
         private static bool IsSfTrackingNumber(string? trackingNumber) =>
             !string.IsNullOrWhiteSpace(trackingNumber)
             && trackingNumber.Trim().StartsWith("SF", StringComparison.OrdinalIgnoreCase);
@@ -2059,6 +2069,11 @@ namespace AuditIt.Api.Services
                     return $"rental:{item.RentalId}:DeliveryUnsigned:{item.StartAt.Date:O}";
                 }
 
+                if (item.ReminderType == ReminderType.RentalReturnUnsigned)
+                {
+                    return $"rental:{item.RentalId}:ReturnUnsigned:{item.StartAt.Date:O}";
+                }
+
                 var syntheticKind = item.ReminderType == ReminderType.RentalShipmentSoon
                     ? RentalCalendarEventKind.ShipmentRequired
                     : RentalCalendarEventKind.ReturnRequired;
@@ -2084,7 +2099,8 @@ namespace AuditIt.Api.Services
             item.ReminderType == ReminderType.RentalShipmentSoon
             || item.ReminderType == ReminderType.RentalDueSoon
             || item.ReminderType == ReminderType.RentalOverdue
-            || item.ReminderType == ReminderType.RentalDeliveryUnsigned;
+            || item.ReminderType == ReminderType.RentalDeliveryUnsigned
+            || item.ReminderType == ReminderType.RentalReturnUnsigned;
 
         private static bool IsCompletedAutoReminder(
             Reminder reminder,
@@ -2101,7 +2117,13 @@ namespace AuditIt.Api.Services
                 return false;
             }
 
-            if (IsClosedStatus(rental.Status) || rental.RenewedToRentalId.HasValue)
+            if (rental.Status is RentalStatus.Cancelled or RentalStatus.Renewed
+                || rental.RenewedToRentalId.HasValue)
+            {
+                return true;
+            }
+
+            if (rental.Status == RentalStatus.Returned && reminder.Type != ReminderType.RentalReturnUnsigned)
             {
                 return true;
             }
@@ -2112,6 +2134,7 @@ namespace AuditIt.Api.Services
                 ReminderType.RentalDeliveryUnsigned => HasDeliveredOutboundShipment(rental),
                 ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
                     HasInboundShipment(rental) || !rental.Items.Any(i => i.ReturnedAt == null),
+                ReminderType.RentalReturnUnsigned => HasDeliveredInboundShipment(rental),
                 _ => false
             };
         }
@@ -2137,7 +2160,8 @@ namespace AuditIt.Api.Services
             type == ReminderType.RentalShipmentSoon
             || type == ReminderType.RentalDueSoon
             || type == ReminderType.RentalOverdue
-            || type == ReminderType.RentalDeliveryUnsigned;
+            || type == ReminderType.RentalDeliveryUnsigned
+            || type == ReminderType.RentalReturnUnsigned;
 
         private static string ResolveCalendarTarget(string? requestedTarget, string? currentUser, bool canSeeAll)
         {

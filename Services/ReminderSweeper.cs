@@ -96,7 +96,8 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Items)
                 .Where(r => r.Status == RentalStatus.Pending
                          || r.Status == RentalStatus.Active
-                         || r.Status == RentalStatus.Overdue)
+                         || r.Status == RentalStatus.Overdue
+                         || r.Status == RentalStatus.Returned)
                 .ToListAsync(ct);
 
             List<string>? managers = null;
@@ -110,12 +111,18 @@ namespace AuditIt.Api.Services
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
                 var hasInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
                 var hasDeliveredOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
+                var hasDeliveredInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue);
                 var isRenewal = rental.RenewedFromRentalId.HasValue;
                 var hasRentalStarted = hasOutboundShipment || isRenewal;
                 var isRenewedForward = rental.RenewedToRentalId.HasValue;
                 ReminderType? type = null;
 
-                if (!hasOutboundShipment
+                if (rental.Status == RentalStatus.Returned
+                    && !hasDeliveredInboundShipment)
+                {
+                    type = ReminderType.RentalReturnUnsigned;
+                }
+                else if (!hasOutboundShipment
                     && !isRenewal
                     && rental.Status == RentalStatus.Pending
                     && expectedShipDate <= leadUntil)
@@ -155,7 +162,7 @@ namespace AuditIt.Api.Services
                     targets.Add(rental.CreatedBy.Trim());
                 }
 
-                if (!string.IsNullOrWhiteSpace(rental.AssignedTo))
+                if (type != ReminderType.RentalReturnUnsigned && !string.IsNullOrWhiteSpace(rental.AssignedTo))
                 {
                     foreach (var name in rental.AssignedTo.Split(new[] { ',', ';', '，', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                     {
@@ -179,7 +186,10 @@ namespace AuditIt.Api.Services
 
                 foreach (var target in targets)
                 {
-                    if (await HasOpenReminderAsync(db, rental.Id.ToString(), type.Value, target, ct))
+                    var reminderDate = type == ReminderType.RentalReturnUnsigned
+                        ? today
+                        : (DateTime?)null;
+                    if (await HasOpenReminderAsync(db, rental.Id.ToString(), type.Value, target, reminderDate, ct))
                     {
                         continue;
                     }
@@ -217,6 +227,7 @@ namespace AuditIt.Api.Services
             string entityId,
             ReminderType type,
             string? target,
+            DateTime? dueDate,
             CancellationToken ct)
         {
             return db.Reminders.AnyAsync(r =>
@@ -224,7 +235,9 @@ namespace AuditIt.Api.Services
                 && r.RelatedEntityId == entityId
                 && r.Type == type
                 && r.TargetUser == target
-                && r.DismissedAt == null, ct);
+                && (dueDate.HasValue
+                    ? r.DueAt.Date == dueDate.Value.Date
+                    : r.DismissedAt == null), ct);
         }
 
         private static Reminder BuildReminder(Rental rental, ReminderType type, string? target, DateTime now)
@@ -269,6 +282,18 @@ namespace AuditIt.Api.Services
                     DueAt = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
                     CreatedAt = now
                 },
+                ReminderType.RentalReturnUnsigned => new Reminder
+                {
+                    Type = type,
+                    Level = ReminderLevel.Warning,
+                    RelatedEntityType = "Rental",
+                    RelatedEntityId = rental.Id.ToString(),
+                    TargetUser = target,
+                    Title = $"租赁 {rental.RentalNumber} 回货物流未签收",
+                    Message = $"{renterName} 的订单已登记归还，但回货物流还没有确认签收，请今天跟进。",
+                    DueAt = RentalDateRules.Today(now),
+                    CreatedAt = now
+                },
                 _ => new Reminder
                 {
                     Type = ReminderType.RentalDueSoon,
@@ -292,7 +317,8 @@ namespace AuditIt.Api.Services
                     && (r.Type == ReminderType.RentalShipmentSoon
                         || r.Type == ReminderType.RentalDueSoon
                         || r.Type == ReminderType.RentalOverdue
-                        || r.Type == ReminderType.RentalDeliveryUnsigned))
+                        || r.Type == ReminderType.RentalDeliveryUnsigned
+                        || r.Type == ReminderType.RentalReturnUnsigned))
                 .ToListAsync(ct);
 
             if (reminders.Count == 0)
@@ -338,9 +364,13 @@ namespace AuditIt.Api.Services
         private static bool IsCompleted(ReminderType type, Rental rental)
         {
             if (rental.Status == RentalStatus.Cancelled
-                || rental.Status == RentalStatus.Returned
                 || rental.Status == RentalStatus.Renewed
                 || rental.RenewedToRentalId.HasValue)
+            {
+                return true;
+            }
+
+            if (rental.Status == RentalStatus.Returned && type != ReminderType.RentalReturnUnsigned)
             {
                 return true;
             }
@@ -355,6 +385,8 @@ namespace AuditIt.Api.Services
                 ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
                     rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound)
                     || !rental.Items.Any(i => i.ReturnedAt == null),
+                ReminderType.RentalReturnUnsigned =>
+                    rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue),
                 _ => false
             };
         }

@@ -9,7 +9,8 @@ namespace AuditIt.Api.Models
         RentalDueSoon,
         RentalOverdue,
         Manual,
-        RentalDeliveryUnsigned
+        RentalDeliveryUnsigned,
+        RentalReturnUnsigned
     }
 
     public enum ReminderLevel
