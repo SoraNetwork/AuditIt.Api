@@ -1,0 +1,317 @@
+using System.Globalization;
+using AuditIt.Api.Data;
+using AuditIt.Api.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace AuditIt.Api.Services
+{
+    public class SettlementService : ISettlementService
+    {
+        private const int SettingsId = 1;
+
+        private readonly ApplicationDbContext _context;
+        private readonly IDingTalkService _dingTalkService;
+        private readonly ILogger<SettlementService> _logger;
+
+        public SettlementService(
+            ApplicationDbContext context,
+            IDingTalkService dingTalkService,
+            ILogger<SettlementService> logger)
+        {
+            _context = context;
+            _dingTalkService = dingTalkService;
+            _logger = logger;
+        }
+
+        public async Task<SettlementSettingDto> GetSettingsAsync(CancellationToken ct = default)
+        {
+            var settings = await GetSettingsEntityAsync(ct);
+            return ToDto(settings);
+        }
+
+        public async Task<(SettlementSettingDto? settings, string? error)> UpdateSettingsAsync(
+            UpdateSettlementSettingDto dto,
+            string? currentUser,
+            CancellationToken ct = default)
+        {
+            var totalPercent = dto.TechnicianPercent + dto.CreatorPercent + dto.ItemOwnerPercent;
+            if (totalPercent > 100m)
+            {
+                return (null, "结算比例合计不能超过 100%。");
+            }
+
+            var settings = await _context.SettlementSettings.FirstOrDefaultAsync(s => s.Id == SettingsId, ct);
+            if (settings == null)
+            {
+                settings = new SettlementSetting { Id = SettingsId };
+                _context.SettlementSettings.Add(settings);
+            }
+
+            settings.TechnicianPercent = dto.TechnicianPercent;
+            settings.CreatorPercent = dto.CreatorPercent;
+            settings.ItemOwnerPercent = dto.ItemOwnerPercent;
+            settings.UpdatedAt = DateTime.UtcNow;
+            settings.UpdatedBy = currentUser;
+
+            await _context.SaveChangesAsync(ct);
+            return (ToDto(settings), null);
+        }
+
+        public async Task<SettlementPreviewDto?> GetPreviewAsync(Guid rentalId, CancellationToken ct = default)
+        {
+            var rental = await LoadRentalAsync(rentalId, ct);
+            if (rental == null)
+            {
+                return null;
+            }
+
+            var settings = await GetSettingsEntityAsync(ct);
+            return BuildPreview(rental, settings);
+        }
+
+        public async Task<(SettlementPreviewDto? preview, string? error)> SendForRentalAsync(
+            Guid rentalId,
+            string? currentUser,
+            bool force = false,
+            CancellationToken ct = default)
+        {
+            var rental = await LoadRentalAsync(rentalId, ct);
+            if (rental == null)
+            {
+                return (null, "租赁单不存在。");
+            }
+
+            var settings = await GetSettingsEntityAsync(ct);
+            var preview = BuildPreview(rental, settings);
+            if (!preview.CanSend)
+            {
+                return (preview, preview.IneligibleReason ?? "当前租赁单不能发送结算信息。");
+            }
+
+            if (!force && rental.SettlementNotifiedAt.HasValue)
+            {
+                return (preview, null);
+            }
+
+            var msgUuid = force
+                ? $"settlement-manual-{rental.Id}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"
+                : $"settlement-{rental.Id}-{rental.Status}";
+
+            var sent = await _dingTalkService.SendRobotMarkdownAsync(
+                $"结算单 {rental.RentalNumber}",
+                preview.MarkdownText,
+                msgUuid,
+                ct);
+
+            if (!sent)
+            {
+                return (preview, "钉钉机器人 Webhook 未配置或发送失败。");
+            }
+
+            rental.SettlementNotifiedAt = DateTime.UtcNow;
+            rental.SettlementNotifiedStatus = FormatStatus(rental.Status);
+            rental.UpdatedBy = currentUser ?? rental.UpdatedBy;
+            await _context.SaveChangesAsync(ct);
+
+            preview.SettlementNotifiedAt = rental.SettlementNotifiedAt;
+            preview.SettlementNotifiedStatus = rental.SettlementNotifiedStatus;
+            return (preview, null);
+        }
+
+        public async Task TrySendForRentalAsync(Guid rentalId, string? currentUser, CancellationToken ct = default)
+        {
+            try
+            {
+                await SendForRentalAsync(rentalId, currentUser, force: false, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to send settlement message for rental {RentalId}.", rentalId);
+            }
+        }
+
+        private async Task<Rental?> LoadRentalAsync(Guid rentalId, CancellationToken ct)
+        {
+            return await _context.Rentals
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.OwnerUser)
+                .Include(r => r.Shipments)
+                .FirstOrDefaultAsync(r => r.Id == rentalId, ct);
+        }
+
+        private async Task<SettlementSetting> GetSettingsEntityAsync(CancellationToken ct)
+        {
+            return await _context.SettlementSettings.FirstOrDefaultAsync(s => s.Id == SettingsId, ct)
+                ?? new SettlementSetting { Id = SettingsId };
+        }
+
+        private static SettlementPreviewDto BuildPreview(Rental rental, SettlementSetting settings)
+        {
+            var accountedAmount = AccountedAmount(rental);
+            var technicianAmount = PercentAmount(accountedAmount, settings.TechnicianPercent);
+            var creatorAmount = PercentAmount(accountedAmount, settings.CreatorPercent);
+            var ownerShares = BuildOwnerShares(rental, accountedAmount, settings.ItemOwnerPercent);
+            var ownerTotal = RoundMoney(ownerShares.Sum(i => i.Amount));
+            var ineligibleReason = ResolveIneligibleReason(rental);
+            var markdown = BuildSettlementMarkdown(rental, accountedAmount, technicianAmount, creatorAmount, ownerShares);
+
+            return new SettlementPreviewDto
+            {
+                RentalId = rental.Id,
+                RentalNumber = rental.RentalNumber,
+                Status = rental.Status,
+                TotalPrice = rental.TotalPrice,
+                AccountedAmount = accountedAmount,
+                TechnicianPercent = settings.TechnicianPercent,
+                TechnicianAmount = technicianAmount,
+                CreatorPercent = settings.CreatorPercent,
+                CreatorAmount = string.IsNullOrWhiteSpace(rental.CreatedBy) ? 0m : creatorAmount,
+                CreatorName = string.IsNullOrWhiteSpace(rental.CreatedBy) ? null : rental.CreatedBy.Trim(),
+                ItemOwnerPercent = settings.ItemOwnerPercent,
+                ItemOwnerAmount = ownerTotal,
+                OwnerShares = ownerShares
+                    .Select(i => new SettlementOwnerShareDto { OwnerName = i.OwnerName, Amount = i.Amount })
+                    .ToList(),
+                MarkdownText = markdown,
+                CanSend = ineligibleReason == null,
+                IneligibleReason = ineligibleReason,
+                SettlementNotifiedAt = rental.SettlementNotifiedAt,
+                SettlementNotifiedStatus = rental.SettlementNotifiedStatus
+            };
+        }
+
+        private static string? ResolveIneligibleReason(Rental rental)
+        {
+            if (rental.Status is not (RentalStatus.Returned or RentalStatus.Overdue))
+            {
+                return "只有 Returned / OverDue 的租赁单可以发送结算信息。";
+            }
+
+            if (!HasDeliveredInboundShipment(rental))
+            {
+                return "回货物流入库签收后才能发送结算信息。";
+            }
+
+            return null;
+        }
+
+        private static bool HasDeliveredInboundShipment(Rental rental) =>
+            rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue);
+
+        private static decimal AccountedAmount(Rental rental)
+        {
+            var shippingFee = rental.Shipments.Sum(s => s.ShippingFee ?? 0m);
+            var accountedAmount = rental.TotalPrice - rental.OtherFee - shippingFee;
+            return accountedAmount < 0 ? 0 : accountedAmount;
+        }
+
+        private static string BuildSettlementMarkdown(
+            Rental rental,
+            decimal accountedAmount,
+            decimal technicianAmount,
+            decimal creatorAmount,
+            IReadOnlyList<(string OwnerName, decimal Amount)> ownerShares)
+        {
+            var lines = new List<string>
+            {
+                $"{rental.RentalNumber}\t{FormatStatus(rental.Status)}",
+                BuildItemSummary(rental),
+                $"{FormatDate(rental.StartDate)}\t{FormatDate(rental.ExpectedEndDate)}",
+                $"{FormatMoney(rental.TotalPrice)}\t{FormatMoney(accountedAmount)}"
+            };
+
+            if (technicianAmount > 0)
+            {
+                lines.Add($"技术{FormatAmount(technicianAmount)}");
+            }
+
+            if (creatorAmount > 0 && !string.IsNullOrWhiteSpace(rental.CreatedBy))
+            {
+                lines.Add($"建单{FormatAmount(creatorAmount)} {rental.CreatedBy.Trim()}");
+            }
+
+            foreach (var ownerShare in ownerShares)
+            {
+                lines.Add($"物品{FormatAmount(ownerShare.Amount)} {ownerShare.OwnerName}");
+            }
+
+            return string.Join("\n", lines);
+        }
+
+        private static string BuildItemSummary(Rental rental)
+        {
+            var items = rental.Items
+                .OrderBy(i => i.Id)
+                .Select(i => $"{i.ItemShortIdSnapshot} / {i.ItemNameSnapshot}".Trim())
+                .Where(text => !string.IsNullOrWhiteSpace(text))
+                .ToList();
+
+            return items.Count == 0 ? "-" : string.Join("\n", items);
+        }
+
+        private static IReadOnlyList<(string OwnerName, decimal Amount)> BuildOwnerShares(
+            Rental rental,
+            decimal accountedAmount,
+            decimal itemOwnerPercent)
+        {
+            var ownerPool = PercentAmount(accountedAmount, itemOwnerPercent);
+            if (ownerPool <= 0 || rental.Items.Count == 0)
+            {
+                return Array.Empty<(string OwnerName, decimal Amount)>();
+            }
+
+            var pricedTotal = rental.Items.Sum(i => i.PerItemPrice ?? 0m);
+            var equalWeight = pricedTotal <= 0 ? 1m / rental.Items.Count : 0m;
+            var rows = rental.Items
+                .Where(i => i.Item?.OwnerUser != null)
+                .Select(i =>
+                {
+                    var weight = pricedTotal > 0
+                        ? (i.PerItemPrice ?? 0m) / pricedTotal
+                        : equalWeight;
+                    return new
+                    {
+                        OwnerName = i.Item!.OwnerUser!.Name,
+                        Amount = ownerPool * weight
+                    };
+                })
+                .Where(i => !string.IsNullOrWhiteSpace(i.OwnerName) && i.Amount > 0)
+                .GroupBy(i => i.OwnerName.Trim(), StringComparer.OrdinalIgnoreCase)
+                .Select(g => (OwnerName: g.Key, Amount: RoundMoney(g.Sum(i => i.Amount))))
+                .Where(i => i.Amount > 0)
+                .OrderByDescending(i => i.Amount)
+                .ThenBy(i => i.OwnerName)
+                .ToList();
+
+            return rows;
+        }
+
+        private static decimal PercentAmount(decimal amount, decimal percent) =>
+            RoundMoney(amount * percent / 100m);
+
+        private static decimal RoundMoney(decimal value) =>
+            Math.Round(value, 1, MidpointRounding.AwayFromZero);
+
+        private static string FormatMoney(decimal value) =>
+            $"￥{value.ToString("0.0", CultureInfo.InvariantCulture)}";
+
+        private static string FormatAmount(decimal value) =>
+            value.ToString("0.0", CultureInfo.InvariantCulture);
+
+        private static string FormatDate(DateTime value) =>
+            RentalDateRules.ToBusinessDate(value).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+        private static string FormatStatus(RentalStatus status) =>
+            status == RentalStatus.Overdue ? "OverDue" : status.ToString();
+
+        private static SettlementSettingDto ToDto(SettlementSetting settings) => new()
+        {
+            TechnicianPercent = settings.TechnicianPercent,
+            CreatorPercent = settings.CreatorPercent,
+            ItemOwnerPercent = settings.ItemOwnerPercent,
+            UpdatedAt = settings.UpdatedAt,
+            UpdatedBy = settings.UpdatedBy
+        };
+    }
+}

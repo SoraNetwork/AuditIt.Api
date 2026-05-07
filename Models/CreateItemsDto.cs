@@ -9,6 +9,9 @@ namespace AuditIt.Api.Models
 
         [Required]
         public int WarehouseId { get; set; }
+
+        public Guid? OwnerUserId { get; set; }
+
         [Required]
         public List<Item> Items { get; set; } = [];
         public class Item

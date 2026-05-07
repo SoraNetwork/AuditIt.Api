@@ -23,6 +23,7 @@ namespace AuditIt.Api.Data
         public DbSet<RentalShipment> RentalShipments { get; set; }
         public DbSet<ItemListing> ItemListings { get; set; }
         public DbSet<Reminder> Reminders { get; set; }
+        public DbSet<SettlementSetting> SettlementSettings { get; set; }
 
         public DbSet<Role> Roles { get; set; }
         public DbSet<Permission> Permissions { get; set; }
@@ -41,6 +42,15 @@ namespace AuditIt.Api.Data
                 .HasIndex(i => i.SerialNumber)
                 .IsUnique()
                 .HasFilter("\"SerialNumber\" IS NOT NULL");
+
+            modelBuilder.Entity<Item>()
+                .HasIndex(i => i.OwnerUserId);
+
+            modelBuilder.Entity<Item>()
+                .HasOne(i => i.OwnerUser)
+                .WithMany()
+                .HasForeignKey(i => i.OwnerUserId)
+                .OnDelete(DeleteBehavior.SetNull);
 
             modelBuilder.Entity<Renter>()
                 .HasIndex(r => r.Phone);

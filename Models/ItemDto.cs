@@ -12,6 +12,9 @@ namespace AuditIt.Api.Models
         public int WarehouseId { get; set; }
         public string WarehouseName { get; set; } = string.Empty;
 
+        public Guid? OwnerUserId { get; set; }
+        public string? OwnerUserName { get; set; }
+
         public ItemStatus Status { get; set; }
         public string? CurrentDestination { get; set; }
         public string? Remarks { get; set; }

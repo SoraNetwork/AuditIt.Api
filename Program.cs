@@ -72,6 +72,7 @@ builder.Services.AddScoped<IQuickRemarkService, QuickRemarkService>();
 builder.Services.Configure<ReminderOptions>(builder.Configuration.GetSection("Reminders"));
 builder.Services.AddScoped<IRenterService, RenterService>();
 builder.Services.AddScoped<IRentalService, RentalService>();
+builder.Services.AddScoped<ISettlementService, SettlementService>();
 builder.Services.AddScoped<IItemListingService, ItemListingService>();
 builder.Services.AddScoped<IReminderService, ReminderService>();
 builder.Services.AddScoped<INotificationChannel, InAppNotificationChannel>();

@@ -33,6 +33,8 @@ namespace AuditIt.Api.Models
         public string? CreatedBy { get; set; }
         public DateTime UpdatedAt { get; set; }
         public string? UpdatedBy { get; set; }
+        public DateTime? SettlementNotifiedAt { get; set; }
+        public string? SettlementNotifiedStatus { get; set; }
         public string? AssignedTo { get; set; }
         public List<RentalItemDto> Items { get; set; } = new();
         public List<RentalShipmentDto> Shipments { get; set; } = new();

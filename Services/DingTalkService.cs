@@ -2,6 +2,9 @@ using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using AuditIt.Api.Models;
 using Microsoft.Extensions.Caching.Memory;
@@ -239,6 +242,59 @@ namespace AuditIt.Api.Services
             }
         }
 
+        public async Task<bool> SendRobotMarkdownAsync(string title, string markdownText, string? msgUuid = null, CancellationToken ct = default)
+        {
+            var webhookUrl = BuildRobotWebhookUrl();
+            if (string.IsNullOrWhiteSpace(webhookUrl))
+            {
+                return false;
+            }
+
+            var requestBody = new
+            {
+                msgtype = "markdown",
+                msgUuid,
+                markdown = new
+                {
+                    title,
+                    text = markdownText
+                }
+            };
+
+            var response = await _httpClient.PostAsJsonAsync(webhookUrl, requestBody, ct);
+            response.EnsureSuccessStatusCode();
+
+            var result = await response.Content.ReadFromJsonAsync<DingTalkRobotSendResponse>(cancellationToken: ct);
+            if (result == null || result.ErrorCode != 0)
+            {
+                throw new InvalidOperationException($"发送钉钉群机器人消息失败：{result?.ErrorMessage ?? "未知错误"}");
+            }
+
+            return true;
+        }
+
+        private string? BuildRobotWebhookUrl()
+        {
+            var webhookUrl = _dingTalkConfig.RobotWebhookUrl?.Trim();
+            if (string.IsNullOrWhiteSpace(webhookUrl))
+            {
+                return null;
+            }
+
+            var secret = _dingTalkConfig.RobotSecret?.Trim();
+            if (string.IsNullOrWhiteSpace(secret))
+            {
+                return webhookUrl;
+            }
+
+            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+            var signSource = $"{timestamp}\n{secret}";
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+            var sign = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(signSource)));
+            var separator = webhookUrl.Contains('?') ? '&' : '?';
+            return $"{webhookUrl}{separator}timestamp={Uri.EscapeDataString(timestamp)}&sign={Uri.EscapeDataString(sign)}";
+        }
+
         private async Task<List<long>> GetAllDepartmentIdsAsync(string token, CancellationToken ct)
         {
             var result = new List<long> { RootDepartmentId };
@@ -362,6 +418,15 @@ namespace AuditIt.Api.Services
             {
                 throw new InvalidOperationException($"{prefix}：{errorMessage ?? errorCode.ToString()}");
             }
+        }
+
+        private sealed class DingTalkRobotSendResponse
+        {
+            [JsonPropertyName("errcode")]
+            public int ErrorCode { get; set; }
+
+            [JsonPropertyName("errmsg")]
+            public string? ErrorMessage { get; set; }
         }
     }
 }

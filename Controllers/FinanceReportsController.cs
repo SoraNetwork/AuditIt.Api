@@ -4,6 +4,7 @@ using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace AuditIt.Api.Controllers
 {
@@ -14,10 +15,12 @@ namespace AuditIt.Api.Controllers
     public class FinanceReportsController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private readonly ISettlementService _settlements;
 
-        public FinanceReportsController(ApplicationDbContext context)
+        public FinanceReportsController(ApplicationDbContext context, ISettlementService settlements)
         {
             _context = context;
+            _settlements = settlements;
         }
 
         [HttpGet("summary")]
@@ -63,6 +66,23 @@ namespace AuditIt.Api.Controllers
                 .ToListAsync();
 
             return Ok(rentals.Select(ToDetail));
+        }
+
+        [HttpGet("settlement-settings")]
+        public async Task<ActionResult<SettlementSettingDto>> GetSettlementSettings(CancellationToken ct)
+        {
+            return Ok(await _settlements.GetSettingsAsync(ct));
+        }
+
+        [HttpPut("settlement-settings")]
+        public async Task<ActionResult<SettlementSettingDto>> UpdateSettlementSettings(
+            [FromBody] UpdateSettlementSettingDto dto,
+            CancellationToken ct)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+            var (settings, error) = await _settlements.UpdateSettingsAsync(dto, CurrentUser(), ct);
+            if (error != null) return BadRequest(error);
+            return Ok(settings);
         }
 
         private IQueryable<Rental> BuildQuery(DateTime from, DateTime to) =>
@@ -144,5 +164,7 @@ namespace AuditIt.Api.Controllers
 
         private static bool IsCompleted(RentalStatus status) =>
             status is RentalStatus.Returned or RentalStatus.Renewed;
+
+        private string? CurrentUser() => User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
     }
 }

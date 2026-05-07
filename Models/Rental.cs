@@ -78,6 +78,11 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? UpdatedBy { get; set; }
 
+        public DateTime? SettlementNotifiedAt { get; set; }
+
+        [StringLength(30)]
+        public string? SettlementNotifiedStatus { get; set; }
+
         // 订单负责人（员工姓名），提醒会定向推送给此人；空则仅推给 CreatedBy。
         [StringLength(100)]
         public string? AssignedTo { get; set; }

@@ -11,19 +11,22 @@ namespace AuditIt.Api.Services
         private readonly IIdentityService _identityService;
         private readonly IEnumerable<INotificationChannel> _notificationChannels;
         private readonly ISfExpressService _sfExpressService;
+        private readonly ISettlementService _settlementService;
 
         public RentalService(
             ApplicationDbContext context,
             IRenterService renterService,
             IIdentityService identityService,
             IEnumerable<INotificationChannel> notificationChannels,
-            ISfExpressService sfExpressService)
+            ISfExpressService sfExpressService,
+            ISettlementService settlementService)
         {
             _context = context;
             _renterService = renterService;
             _identityService = identityService;
             _notificationChannels = notificationChannels;
             _sfExpressService = sfExpressService;
+            _settlementService = settlementService;
         }
 
         public async Task<(IEnumerable<RentalDto> items, int total)> ListAsync(RentalQueryParameters query)
@@ -1015,6 +1018,11 @@ namespace AuditIt.Api.Services
                 shipment.Direction == ShipmentDirection.Outbound ? "出库物流已签收" : "回库物流已签收",
                 currentUser);
 
+            if (shipment.Direction == ShipmentDirection.Inbound)
+            {
+                await _settlementService.TrySendForRentalAsync(rentalId, currentUser);
+            }
+
             return (await GetByIdAsync(rentalId), null);
         }
 
@@ -1259,6 +1267,8 @@ namespace AuditIt.Api.Services
                 allReturned ? "已全部归还" : "部分归还",
                 currentUser,
                 $"归还 {targets.Count} 件");
+
+            await _settlementService.TrySendForRentalAsync(rentalId, currentUser);
 
             return (await GetByIdAsync(rentalId), null);
         }
@@ -1670,6 +1680,12 @@ namespace AuditIt.Api.Services
                     ? $"状态：{rental.Status}"
                     : $"状态：{rental.Status}；{extra}";
 
+                var itemSummary = await BuildRentalNotificationItemSummaryAsync(rental.Id);
+                if (!string.IsNullOrWhiteSpace(itemSummary))
+                {
+                    content = $"{content}\n物品：{itemSummary}";
+                }
+
                 var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 if (!string.IsNullOrWhiteSpace(rental.CreatedBy))
                 {
@@ -1733,6 +1749,24 @@ namespace AuditIt.Api.Services
             {
                 // Reminder failures should not block the main workflow.
             }
+        }
+
+        private async Task<string?> BuildRentalNotificationItemSummaryAsync(Guid rentalId)
+        {
+            var items = await _context.RentalItems
+                .Where(i => i.RentalId == rentalId)
+                .OrderBy(i => i.Id)
+                .Select(i => new { i.ItemShortIdSnapshot, i.ItemNameSnapshot })
+                .ToListAsync();
+
+            if (items.Count == 0)
+            {
+                return null;
+            }
+
+            return string.Join("；", items
+                .Select(i => $"{i.ItemShortIdSnapshot} / {i.ItemNameSnapshot}".Trim())
+                .Where(text => !string.IsNullOrWhiteSpace(text)));
         }
 
         private async Task NotifyShipmentExceptionAsync(
@@ -2224,6 +2258,8 @@ namespace AuditIt.Api.Services
             CreatedBy = rental.CreatedBy,
             UpdatedAt = rental.UpdatedAt,
             UpdatedBy = rental.UpdatedBy,
+            SettlementNotifiedAt = rental.SettlementNotifiedAt,
+            SettlementNotifiedStatus = rental.SettlementNotifiedStatus,
             AssignedTo = rental.AssignedTo,
             Items = rental.Items.Select(ToItemDto).ToList(),
             Shipments = rental.Shipments.Select(ToShipmentDto).ToList()

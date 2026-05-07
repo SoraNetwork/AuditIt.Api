@@ -6,5 +6,7 @@ namespace AuditIt.Api.Models
         public string AppSecret { get; set; } = string.Empty;
         public long? AgentId { get; set; }
         public bool EnableWorkNotice { get; set; }
+        public string? RobotWebhookUrl { get; set; }
+        public string? RobotSecret { get; set; }
     }
 }

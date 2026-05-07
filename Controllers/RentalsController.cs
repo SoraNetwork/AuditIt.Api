@@ -12,10 +12,12 @@ namespace AuditIt.Api.Controllers
     public class RentalsController : ControllerBase
     {
         private readonly IRentalService _rentals;
+        private readonly ISettlementService _settlements;
 
-        public RentalsController(IRentalService rentals)
+        public RentalsController(IRentalService rentals, ISettlementService settlements)
         {
             _rentals = rentals;
+            _settlements = settlements;
         }
 
         [HttpGet]
@@ -52,6 +54,24 @@ namespace AuditIt.Api.Controllers
             var (result, error) = await _rentals.SyncSfRoutesAsync(id, refresh, CurrentUser(), ct);
             if (error != null) return BadRequest(error);
             return Ok(result);
+        }
+
+        [HttpGet("{id:guid}/settlement")]
+        [RequirePermission(PermissionCodes.RentalView)]
+        public async Task<ActionResult<SettlementPreviewDto>> Settlement(Guid id, CancellationToken ct = default)
+        {
+            var preview = await _settlements.GetPreviewAsync(id, ct);
+            return preview == null ? NotFound() : Ok(preview);
+        }
+
+        [HttpPost("{id:guid}/settlement/send")]
+        [RequirePermission(PermissionCodes.RentalReturn)]
+        public async Task<ActionResult<SettlementPreviewDto>> SendSettlement(Guid id, CancellationToken ct = default)
+        {
+            var (preview, error) = await _settlements.SendForRentalAsync(id, CurrentUser(), force: true, ct);
+            if (preview == null && error != null) return NotFound(error);
+            if (error != null) return BadRequest(error);
+            return Ok(preview);
         }
 
         [HttpPost("sf-routes/refresh-pending")]
