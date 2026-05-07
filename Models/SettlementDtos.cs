@@ -47,7 +47,7 @@ namespace AuditIt.Api.Models
 
     public class SettlementOwnerShareDto
     {
-        public string OwnerName { get; set; } = string.Empty;
+        public string? OwnerName { get; set; }
         public decimal Amount { get; set; }
     }
 }

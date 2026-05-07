@@ -19,6 +19,9 @@ namespace AuditIt.Api.Services
         private readonly IMemoryCache _cache;
         private const string AppAccessTokenCacheKey = "DingTalkAppAccessToken";
         private const long RootDepartmentId = 1;
+        private static readonly SemaphoreSlim RobotSendGate = new(1, 1);
+        private static readonly TimeSpan RobotSendInterval = TimeSpan.FromMilliseconds(3200);
+        private static DateTimeOffset _lastRobotSentAt = DateTimeOffset.MinValue;
 
         public DingTalkService(HttpClient httpClient, IOptions<DingTalkConfiguration> dingTalkConfigOptions, IMemoryCache cache)
         {
@@ -261,10 +264,27 @@ namespace AuditIt.Api.Services
                 }
             };
 
-            var response = await _httpClient.PostAsJsonAsync(webhookUrl, requestBody, ct);
-            response.EnsureSuccessStatusCode();
+            DingTalkRobotSendResponse? result;
+            await RobotSendGate.WaitAsync(ct);
+            try
+            {
+                var wait = RobotSendInterval - (DateTimeOffset.UtcNow - _lastRobotSentAt);
+                if (wait > TimeSpan.Zero)
+                {
+                    await Task.Delay(wait, ct);
+                }
 
-            var result = await response.Content.ReadFromJsonAsync<DingTalkRobotSendResponse>(cancellationToken: ct);
+                var response = await _httpClient.PostAsJsonAsync(webhookUrl, requestBody, ct);
+                response.EnsureSuccessStatusCode();
+                _lastRobotSentAt = DateTimeOffset.UtcNow;
+
+                result = await response.Content.ReadFromJsonAsync<DingTalkRobotSendResponse>(cancellationToken: ct);
+            }
+            finally
+            {
+                RobotSendGate.Release();
+            }
+
             if (result == null || result.ErrorCode != 0)
             {
                 throw new InvalidOperationException($"发送钉钉群机器人消息失败：{result?.ErrorMessage ?? "未知错误"}");

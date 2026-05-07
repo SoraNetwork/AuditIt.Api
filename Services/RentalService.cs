@@ -1050,7 +1050,7 @@ namespace AuditIt.Api.Services
             }
 
             var sfShipments = rental.Shipments
-                .Where(s => s.Direction == ShipmentDirection.Outbound && IsSfTrackingNumber(s.TrackingNumber))
+                .Where(s => IsSfTrackingNumber(s.TrackingNumber))
                 .OrderByDescending(s => s.ShippedAt)
                 .ToList();
 
@@ -1090,6 +1090,7 @@ namespace AuditIt.Api.Services
                 : await _sfExpressService.QueryRoutesAsync(queryItems, forceRefresh, ct);
 
             var changed = false;
+            var shouldTrySendSettlement = false;
             foreach (var route in routeResults)
             {
                 var shipment = sfShipments.FirstOrDefault(s => s.Id == route.ShipmentId);
@@ -1107,20 +1108,30 @@ namespace AuditIt.Api.Services
                     changed = true;
                     autoDelivered = true;
 
-                    foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null && ri.Item != null))
+                    if (shipment.Direction == ShipmentDirection.Outbound)
                     {
-                        LogAudit(
-                            rentalItem.Item!,
-                            AuditAction.RentalDelivered,
-                            rental.RentalNumber,
-                            currentUser,
-                            $"顺丰自动签收 {route.TrackingNumber}");
+                        foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null && ri.Item != null))
+                        {
+                            LogAudit(
+                                rentalItem.Item!,
+                                AuditAction.RentalDelivered,
+                                rental.RentalNumber,
+                                currentUser,
+                                $"顺丰自动签收 {route.TrackingNumber}");
+                        }
+
+                        await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalDeliveryUnsigned);
+                    }
+                    else
+                    {
+                        shouldTrySendSettlement = true;
                     }
 
-                    await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalDeliveryUnsigned);
                     await NotifyStatusChangeAsync(
                         rental,
-                        "顺丰已签收，系统已自动签收",
+                        shipment.Direction == ShipmentDirection.Outbound
+                            ? "顺丰发货已签收，系统已自动签收"
+                            : "顺丰回货已签收，系统已自动签收",
                         currentUser,
                         $"运单：{route.TrackingNumber}，签收时间：{RentalDateRules.FormatDateTime(route.DeliveredAt.Value)}");
                 }
@@ -1138,6 +1149,11 @@ namespace AuditIt.Api.Services
                 await _context.SaveChangesAsync(ct);
             }
 
+            if (shouldTrySendSettlement)
+            {
+                await _settlementService.TrySendForRentalAsync(rental.Id, currentUser, ct);
+            }
+
             result.Rental = ToDto(rental);
             return (result, null);
         }
@@ -1148,13 +1164,13 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Shipments)
                 .Where(r => r.Status == RentalStatus.Pending
                     || r.Status == RentalStatus.Active
-                    || r.Status == RentalStatus.Overdue)
+                    || r.Status == RentalStatus.Overdue
+                    || r.Status == RentalStatus.Returned)
                 .ToListAsync(ct);
 
             var rentalIds = rentals
                 .Where(r => r.Shipments.Any(s =>
-                    s.Direction == ShipmentDirection.Outbound
-                    && s.DeliveredAt == null
+                    s.DeliveredAt == null
                     && IsSfTrackingNumber(s.TrackingNumber)))
                 .Select(r => r.Id)
                 .Distinct()

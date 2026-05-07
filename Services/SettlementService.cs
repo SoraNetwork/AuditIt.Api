@@ -151,8 +151,8 @@ namespace AuditIt.Api.Services
             var accountedAmount = AccountedAmount(rental);
             var technicianAmount = PercentAmount(accountedAmount, settings.TechnicianPercent);
             var creatorAmount = PercentAmount(accountedAmount, settings.CreatorPercent);
+            var ownerPool = PercentAmount(accountedAmount, settings.ItemOwnerPercent);
             var ownerShares = BuildOwnerShares(rental, accountedAmount, settings.ItemOwnerPercent);
-            var ownerTotal = RoundMoney(ownerShares.Sum(i => i.Amount));
             var ineligibleReason = ResolveIneligibleReason(rental);
             var markdown = BuildSettlementMarkdown(rental, accountedAmount, technicianAmount, creatorAmount, ownerShares);
 
@@ -169,7 +169,7 @@ namespace AuditIt.Api.Services
                 CreatorAmount = string.IsNullOrWhiteSpace(rental.CreatedBy) ? 0m : creatorAmount,
                 CreatorName = string.IsNullOrWhiteSpace(rental.CreatedBy) ? null : rental.CreatedBy.Trim(),
                 ItemOwnerPercent = settings.ItemOwnerPercent,
-                ItemOwnerAmount = ownerTotal,
+                ItemOwnerAmount = ownerPool,
                 OwnerShares = ownerShares
                     .Select(i => new SettlementOwnerShareDto { OwnerName = i.OwnerName, Amount = i.Amount })
                     .ToList(),
@@ -211,14 +211,14 @@ namespace AuditIt.Api.Services
             decimal accountedAmount,
             decimal technicianAmount,
             decimal creatorAmount,
-            IReadOnlyList<(string OwnerName, decimal Amount)> ownerShares)
+            IReadOnlyList<(string? OwnerName, decimal Amount)> ownerShares)
         {
             var lines = new List<string>
             {
-                $"{rental.RentalNumber}\t{FormatStatus(rental.Status)}",
+                $"{rental.RentalNumber}    {FormatStatus(rental.Status)}",
                 BuildItemSummary(rental),
-                $"{FormatDate(rental.StartDate)}\t{FormatDate(rental.ExpectedEndDate)}",
-                $"{FormatMoney(rental.TotalPrice)}\t{FormatMoney(accountedAmount)}"
+                $"{FormatDate(rental.StartDate)}    {FormatDate(rental.ExpectedEndDate)}",
+                $"{FormatMoney(rental.TotalPrice)}    {FormatMoney(accountedAmount)}"
             };
 
             if (technicianAmount > 0)
@@ -228,15 +228,18 @@ namespace AuditIt.Api.Services
 
             if (creatorAmount > 0 && !string.IsNullOrWhiteSpace(rental.CreatedBy))
             {
-                lines.Add($"建单{FormatAmount(creatorAmount)} {rental.CreatedBy.Trim()}");
+                lines.Add($"建单（{rental.CreatedBy.Trim()}）{FormatAmount(creatorAmount)}");
             }
 
             foreach (var ownerShare in ownerShares)
             {
-                lines.Add($"物品{FormatAmount(ownerShare.Amount)} {ownerShare.OwnerName}");
+                var ownerLabel = string.IsNullOrWhiteSpace(ownerShare.OwnerName)
+                    ? string.Empty
+                    : $"（{ownerShare.OwnerName}）";
+                lines.Add($"物品所有{ownerLabel}{FormatAmount(ownerShare.Amount)}");
             }
 
-            return string.Join("\n", lines);
+            return $"```text\n{string.Join("\n", lines)}\n```";
         }
 
         private static string BuildItemSummary(Rental rental)
@@ -250,7 +253,7 @@ namespace AuditIt.Api.Services
             return items.Count == 0 ? "-" : string.Join("\n", items);
         }
 
-        private static IReadOnlyList<(string OwnerName, decimal Amount)> BuildOwnerShares(
+        private static IReadOnlyList<(string? OwnerName, decimal Amount)> BuildOwnerShares(
             Rental rental,
             decimal accountedAmount,
             decimal itemOwnerPercent)
@@ -258,13 +261,12 @@ namespace AuditIt.Api.Services
             var ownerPool = PercentAmount(accountedAmount, itemOwnerPercent);
             if (ownerPool <= 0 || rental.Items.Count == 0)
             {
-                return Array.Empty<(string OwnerName, decimal Amount)>();
+                return Array.Empty<(string? OwnerName, decimal Amount)>();
             }
 
             var pricedTotal = rental.Items.Sum(i => i.PerItemPrice ?? 0m);
             var equalWeight = pricedTotal <= 0 ? 1m / rental.Items.Count : 0m;
             var rows = rental.Items
-                .Where(i => i.Item?.OwnerUser != null)
                 .Select(i =>
                 {
                     var weight = pricedTotal > 0
@@ -272,16 +274,20 @@ namespace AuditIt.Api.Services
                         : equalWeight;
                     return new
                     {
-                        OwnerName = i.Item!.OwnerUser!.Name,
+                        OwnerName = string.IsNullOrWhiteSpace(i.Item?.OwnerUser?.Name)
+                            ? null
+                            : i.Item.OwnerUser.Name.Trim(),
                         Amount = ownerPool * weight
                     };
                 })
-                .Where(i => !string.IsNullOrWhiteSpace(i.OwnerName) && i.Amount > 0)
-                .GroupBy(i => i.OwnerName.Trim(), StringComparer.OrdinalIgnoreCase)
+                .Where(i => i.Amount > 0)
+                .GroupBy(i => i.OwnerName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
                 .Select(g => (OwnerName: g.Key, Amount: RoundMoney(g.Sum(i => i.Amount))))
                 .Where(i => i.Amount > 0)
-                .OrderByDescending(i => i.Amount)
+                .OrderBy(i => string.IsNullOrWhiteSpace(i.OwnerName))
+                .ThenByDescending(i => i.Amount)
                 .ThenBy(i => i.OwnerName)
+                .Select(i => (OwnerName: string.IsNullOrWhiteSpace(i.OwnerName) ? null : i.OwnerName, Amount: i.Amount))
                 .ToList();
 
             return rows;
