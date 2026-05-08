@@ -56,11 +56,41 @@ namespace AuditIt.Api.Services
                 return;
             }
 
-            var content = string.IsNullOrWhiteSpace(reminder.Message)
-                ? reminder.Title
-                : $"{reminder.Title}\n{reminder.Message}";
+            var lines = new List<string>
+            {
+                $"【{FormatReminderType(reminder.Type)}】{reminder.Title}"
+            };
+
+            if (!string.IsNullOrWhiteSpace(reminder.Message))
+            {
+                lines.Add(reminder.Message.Trim());
+            }
+
+            lines.Add($"级别：{FormatReminderLevel(reminder.Level)}");
+            lines.Add($"提醒日期：{RentalDateRules.FormatDateTime(reminder.DueAt)}");
+
+            var content = string.Join("\n", lines);
 
             await _dingTalkService.SendWorkNoticeAsync(new[] { dingTalkUserId }, content, ct);
         }
+
+        private static string FormatReminderType(ReminderType type) => type switch
+        {
+            ReminderType.RentalShipmentSoon => "发货提醒",
+            ReminderType.RentalDeliveryUnsigned => "发货待签收",
+            ReminderType.RentalReturnUnsigned => "回货待签收",
+            ReminderType.RentalDueSoon => "到期提醒",
+            ReminderType.RentalOverdue => "逾期提醒",
+            ReminderType.Manual => "工作通知",
+            _ => type.ToString()
+        };
+
+        private static string FormatReminderLevel(ReminderLevel level) => level switch
+        {
+            ReminderLevel.Critical => "紧急",
+            ReminderLevel.Warning => "重要",
+            ReminderLevel.Info => "普通",
+            _ => level.ToString()
+        };
     }
 }

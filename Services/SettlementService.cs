@@ -154,7 +154,13 @@ namespace AuditIt.Api.Services
             var ownerPool = PercentAmount(accountedAmount, settings.ItemOwnerPercent);
             var ownerShares = BuildOwnerShares(rental, accountedAmount, settings.ItemOwnerPercent);
             var ineligibleReason = ResolveIneligibleReason(rental);
-            var markdown = BuildSettlementMarkdown(rental, accountedAmount, technicianAmount, creatorAmount, ownerShares);
+            var markdown = BuildSettlementMarkdown(
+                rental,
+                settings,
+                accountedAmount,
+                technicianAmount,
+                creatorAmount,
+                ownerShares);
 
             return new SettlementPreviewDto
             {
@@ -185,7 +191,7 @@ namespace AuditIt.Api.Services
         {
             if (rental.Status is not (RentalStatus.Returned or RentalStatus.Overdue))
             {
-                return "只有 Returned / OverDue 的租赁单可以发送结算信息。";
+                return "只有已归还 / 逾期的租赁单可以发送结算信息。";
             }
 
             if (!HasDeliveredInboundShipment(rental))
@@ -208,6 +214,7 @@ namespace AuditIt.Api.Services
 
         private static string BuildSettlementMarkdown(
             Rental rental,
+            SettlementSetting settings,
             decimal accountedAmount,
             decimal technicianAmount,
             decimal creatorAmount,
@@ -215,20 +222,23 @@ namespace AuditIt.Api.Services
         {
             var lines = new List<string>
             {
-                $"{rental.RentalNumber}    {FormatStatus(rental.Status)}",
+                $"结算单：{rental.RentalNumber}",
+                $"状态：{FormatStatus(rental.Status)}",
+                $"日期：{FormatDate(rental.StartDate)} - {FormatDate(rental.ExpectedEndDate)}",
+                "物品：",
                 BuildItemSummary(rental),
-                $"{FormatDate(rental.StartDate)}    {FormatDate(rental.ExpectedEndDate)}",
-                $"{FormatMoney(rental.TotalPrice)}    {FormatMoney(accountedAmount)}"
+                $"总价：{FormatMoney(rental.TotalPrice)}",
+                $"核算：{FormatMoney(accountedAmount)}"
             };
 
             if (technicianAmount > 0)
             {
-                lines.Add($"技术{FormatAmount(technicianAmount)}");
+                lines.Add($"技术：{FormatAmount(technicianAmount)}（{FormatPercent(settings.TechnicianPercent)}）");
             }
 
             if (creatorAmount > 0 && !string.IsNullOrWhiteSpace(rental.CreatedBy))
             {
-                lines.Add($"建单（{rental.CreatedBy.Trim()}）{FormatAmount(creatorAmount)}");
+                lines.Add($"建单（{rental.CreatedBy.Trim()}）：{FormatAmount(creatorAmount)}（{FormatPercent(settings.CreatorPercent)}）");
             }
 
             foreach (var ownerShare in ownerShares)
@@ -236,7 +246,7 @@ namespace AuditIt.Api.Services
                 var ownerLabel = string.IsNullOrWhiteSpace(ownerShare.OwnerName)
                     ? string.Empty
                     : $"（{ownerShare.OwnerName}）";
-                lines.Add($"物品所有{ownerLabel}{FormatAmount(ownerShare.Amount)}");
+                lines.Add($"物品所有{ownerLabel}：{FormatAmount(ownerShare.Amount)}（{FormatPercent(settings.ItemOwnerPercent)}）");
             }
 
             return $"```text\n{string.Join("\n", lines)}\n```";
@@ -305,11 +315,22 @@ namespace AuditIt.Api.Services
         private static string FormatAmount(decimal value) =>
             value.ToString("0.0", CultureInfo.InvariantCulture);
 
+        private static string FormatPercent(decimal value) =>
+            $"{value.ToString("0.#", CultureInfo.InvariantCulture)}%";
+
         private static string FormatDate(DateTime value) =>
             RentalDateRules.ToBusinessDate(value).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
-        private static string FormatStatus(RentalStatus status) =>
-            status == RentalStatus.Overdue ? "OverDue" : status.ToString();
+        private static string FormatStatus(RentalStatus status) => status switch
+        {
+            RentalStatus.Pending => "待发货",
+            RentalStatus.Active => "进行中",
+            RentalStatus.Overdue => "逾期",
+            RentalStatus.Returned => "已归还",
+            RentalStatus.Cancelled => "已取消",
+            RentalStatus.Renewed => "已续租",
+            _ => status.ToString()
+        };
 
         private static SettlementSettingDto ToDto(SettlementSetting settings) => new()
         {
