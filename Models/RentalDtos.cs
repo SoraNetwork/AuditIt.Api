@@ -184,11 +184,19 @@ namespace AuditIt.Api.Models
         public RentalCreateConflictDto? Conflict { get; set; }
     }
 
+    public class RentalShipmentResult
+    {
+        public RentalDto? Rental { get; set; }
+        public string? Error { get; set; }
+        public RentalCreateConflictDto? Conflict { get; set; }
+    }
+
     public class RentalCreateConflictDto
     {
         public string Message { get; set; } = "Selected items have rental time conflicts.";
         public List<RentalScheduleConflictDto> PendingShipmentConflicts { get; set; } = new();
         public List<RentalScheduleConflictDto> ShippedConflicts { get; set; } = new();
+        public List<RentalScheduleConflictDto> ReturnPendingConflicts { get; set; } = new();
     }
 
     public class RentalScheduleConflictDto
@@ -202,6 +210,7 @@ namespace AuditIt.Api.Models
         public DateTime StartDate { get; set; }
         public DateTime ExpectedEndDate { get; set; }
         public bool HasOutboundShipment { get; set; }
+        public string? ConflictReason { get; set; }
     }
 
     public enum RentalCalendarEventKind
@@ -261,6 +270,8 @@ namespace AuditIt.Api.Models
 
         [StringLength(500)]
         public string? Notes { get; set; }
+
+        public bool AllowOpenItemConflict { get; set; }
     }
 
     public class DeliverShipmentDto

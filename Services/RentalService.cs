@@ -852,7 +852,7 @@ namespace AuditIt.Api.Services
             return (await GetByIdAsync(id), null);
         }
 
-        public async Task<(RentalDto? rental, string? error)> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser)
+        public async Task<RentalShipmentResult> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser)
         {
             var rental = await _context.Rentals
                 .Include(r => r.Items)
@@ -866,34 +866,34 @@ namespace AuditIt.Api.Services
 
             if (rental == null)
             {
-                return (null, "租赁单不存在。");
+                return new RentalShipmentResult { Error = "租赁单不存在。" };
             }
 
             if (IsClosedStatus(rental.Status))
             {
-                return (null, "租赁单已结束，不能继续登记物流。");
+                return new RentalShipmentResult { Error = "租赁单已结束，不能继续登记物流。" };
             }
 
             if (dto.Direction == ShipmentDirection.Inbound && !HasRentalStarted(rental))
             {
-                return (null, "租赁尚未发货，不能登记回货物流。");
+                return new RentalShipmentResult { Error = "租赁尚未发货，不能登记回货物流。" };
             }
 
             var warehouse = await _context.Warehouses.FindAsync(dto.OriginWarehouseId);
             if (warehouse == null)
             {
-                return (null, "发货仓库不存在。");
+                return new RentalShipmentResult { Error = "发货仓库不存在。" };
             }
 
             if (dto.Direction == ShipmentDirection.Outbound)
             {
-                var blockingItems = await GetOtherShippedOpenItemsAsync(
+                var conflict = await ValidateOutboundShipmentConflictsAsync(
                     rental.Id,
                     rental.Items.Where(ri => ri.ReturnedAt == null).Select(ri => ri.ItemId).ToList());
 
-                if (blockingItems.Count > 0)
+                if (conflict != null && !dto.AllowOpenItemConflict)
                 {
-                    return (null, $"以下商品仍存在未归还的已发货租赁，不能登记发货：{string.Join("，", blockingItems)}");
+                    return new RentalShipmentResult { Conflict = conflict };
                 }
             }
 
@@ -970,7 +970,7 @@ namespace AuditIt.Api.Services
                 currentUser,
                 $"物流：{logisticsSummary}");
 
-            return (await GetByIdAsync(rentalId), null);
+            return new RentalShipmentResult { Rental = await GetByIdAsync(rentalId) };
         }
 
         public async Task<(RentalDto? rental, string? error)> MarkDeliveredAsync(Guid rentalId, int shipmentId, DeliverShipmentDto dto, string? currentUser)
@@ -1661,23 +1661,109 @@ namespace AuditIt.Api.Services
             return $"所选商品存在租赁时间冲突：{string.Join("，", parts)}。";
         }
 
-        private async Task<List<string>> GetOtherShippedOpenItemsAsync(Guid rentalId, IReadOnlyCollection<Guid> itemIds)
+        private async Task<RentalCreateConflictDto?> ValidateOutboundShipmentConflictsAsync(
+            Guid rentalId,
+            IReadOnlyCollection<Guid> itemIds)
         {
             if (itemIds.Count == 0)
             {
-                return new List<string>();
+                return null;
             }
 
-            return await _context.Rentals
+            var candidateRentals = await _context.Rentals
+                .Include(r => r.Items)
+                .Include(r => r.Shipments)
                 .Where(r => r.Id != rentalId)
-                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
-                .Where(r => r.RenewedFromRentalId != null || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound))
-                .SelectMany(r => r.Items
-                    .Where(ri => itemIds.Contains(ri.ItemId) && ri.ReturnedAt == null)
-                    .Select(ri => ri.ItemShortIdSnapshot))
-                .Distinct()
-                .OrderBy(shortId => shortId)
+                .Where(r => r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
+                .Where(r => r.Items.Any(ri => itemIds.Contains(ri.ItemId)))
                 .ToListAsync();
+
+            var openReturnConflicts = new List<RentalScheduleConflictDto>();
+            var returnPendingConflicts = new List<RentalScheduleConflictDto>();
+
+            foreach (var otherRental in candidateRentals)
+            {
+                var hasStarted = HasRentalStarted(otherRental);
+                var hasPendingInbound = HasPendingInboundShipment(otherRental);
+                if (!hasStarted && !hasPendingInbound)
+                {
+                    continue;
+                }
+
+                foreach (var rentalItem in otherRental.Items.Where(ri => itemIds.Contains(ri.ItemId)))
+                {
+                    if (rentalItem.ReturnedAt == null && hasStarted)
+                    {
+                        openReturnConflicts.Add(BuildConflict(
+                            otherRental,
+                            rentalItem,
+                            hasStarted,
+                            "前一个租赁单尚未登记归还"));
+                    }
+                    else if (rentalItem.ReturnedAt != null && hasPendingInbound)
+                    {
+                        returnPendingConflicts.Add(BuildConflict(
+                            otherRental,
+                            rentalItem,
+                            hasStarted,
+                            "前一个租赁单回货物流尚未签收"));
+                    }
+                }
+            }
+
+            if (openReturnConflicts.Count == 0 && returnPendingConflicts.Count == 0)
+            {
+                return null;
+            }
+
+            return new RentalCreateConflictDto
+            {
+                Message = BuildOutboundShipmentConflictMessage(openReturnConflicts, returnPendingConflicts),
+                ShippedConflicts = openReturnConflicts
+                    .OrderBy(c => c.ItemShortId)
+                    .ThenBy(c => c.StartDate)
+                    .ToList(),
+                ReturnPendingConflicts = returnPendingConflicts
+                    .OrderBy(c => c.ItemShortId)
+                    .ThenBy(c => c.StartDate)
+                    .ToList()
+            };
+        }
+
+        private static RentalScheduleConflictDto BuildConflict(
+            Rental rental,
+            RentalItem rentalItem,
+            bool hasOutboundShipment,
+            string reason) => new()
+            {
+                RentalId = rental.Id,
+                RentalNumber = rental.RentalNumber,
+                RentalStatus = rental.Status,
+                ItemId = rentalItem.ItemId,
+                ItemShortId = rentalItem.ItemShortIdSnapshot,
+                ItemName = rentalItem.ItemNameSnapshot,
+                StartDate = RentalDateRules.ToBusinessDate(rental.StartDate),
+                ExpectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
+                HasOutboundShipment = hasOutboundShipment,
+                ConflictReason = reason
+            };
+
+        private static string BuildOutboundShipmentConflictMessage(
+            IReadOnlyCollection<RentalScheduleConflictDto> openReturnConflicts,
+            IReadOnlyCollection<RentalScheduleConflictDto> returnPendingConflicts)
+        {
+            var parts = new List<string>();
+            if (openReturnConflicts.Count > 0)
+            {
+                parts.Add($"未归还 {openReturnConflicts.Count} 条");
+            }
+
+            if (returnPendingConflicts.Count > 0)
+            {
+                parts.Add($"回货未签收 {returnPendingConflicts.Count} 条");
+            }
+
+            return $"发货物品仍被其他租赁单占用：{string.Join("，", parts)}。确认后仍可继续登记发货。";
         }
 
         private async Task NotifyStatusChangeAsync(Rental rental, string action, string? currentUser, string? extra = null)
@@ -2056,6 +2142,9 @@ namespace AuditIt.Api.Services
 
         private static bool HasDeliveredInboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue);
+
+        private static bool HasPendingInboundShipment(Rental rental) =>
+            rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && !s.DeliveredAt.HasValue);
 
         private static bool IsSfTrackingNumber(string? trackingNumber) =>
             !string.IsNullOrWhiteSpace(trackingNumber)
