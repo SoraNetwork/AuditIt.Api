@@ -189,9 +189,14 @@ namespace AuditIt.Api.Services
 
         private static string? ResolveIneligibleReason(Rental rental)
         {
-            if (rental.Status is not (RentalStatus.Returned or RentalStatus.Overdue))
+            if (rental.Status is not (RentalStatus.Returned or RentalStatus.Overdue or RentalStatus.Renewed))
             {
-                return "只有已归还 / 逾期的租赁单可以发送结算信息。";
+                return "只有已归还 / 逾期 / 已续租的租赁单可以发送结算信息。";
+            }
+
+            if (rental.Status == RentalStatus.Renewed)
+            {
+                return null;
             }
 
             if (HasPendingInboundShipment(rental)
@@ -227,13 +232,25 @@ namespace AuditIt.Api.Services
             var lines = new List<string>
             {
                 $"结算单：{rental.RentalNumber}",
-                $"状态：{FormatStatus(rental.Status)}",
-                $"日期：{FormatDate(rental.StartDate)} - {FormatDate(rental.ExpectedEndDate)}",
-                "物品：",
-                BuildItemSummary(rental),
-                $"总价：{FormatMoney(rental.TotalPrice)}",
-                $"核算：{FormatMoney(accountedAmount)}"
+                $"类型：{FormatSettlementType(rental)}",
+                $"状态：{FormatStatus(rental.Status)}"
             };
+
+            if (!string.IsNullOrWhiteSpace(rental.RenewedFromRentalNumber))
+            {
+                lines.Add($"续租自：{rental.RenewedFromRentalNumber.Trim()}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(rental.RenewedToRentalNumber))
+            {
+                lines.Add($"续租到：{rental.RenewedToRentalNumber.Trim()}");
+            }
+
+            lines.Add($"日期：{FormatDate(rental.StartDate)} - {FormatDate(rental.ExpectedEndDate)}");
+            lines.Add("物品：");
+            lines.Add(BuildItemSummary(rental));
+            lines.Add($"总价：{FormatMoney(rental.TotalPrice)}");
+            lines.Add($"核算：{FormatMoney(accountedAmount)}");
 
             if (technicianAmount > 0)
             {
@@ -324,6 +341,18 @@ namespace AuditIt.Api.Services
 
         private static string FormatDate(DateTime value) =>
             RentalDateRules.ToBusinessDate(value).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+        private static string FormatSettlementType(Rental rental)
+        {
+            if (rental.Status == RentalStatus.Renewed)
+            {
+                return "续租结算";
+            }
+
+            return string.IsNullOrWhiteSpace(rental.RenewedFromRentalNumber)
+                ? "租赁结算"
+                : "续租单结算";
+        }
 
         private static string FormatStatus(RentalStatus status) => status switch
         {
