@@ -194,7 +194,8 @@ namespace AuditIt.Api.Services
                 return "只有已归还 / 逾期的租赁单可以发送结算信息。";
             }
 
-            if (!HasDeliveredInboundShipment(rental))
+            if (HasPendingInboundShipment(rental)
+                || (rental.Status == RentalStatus.Overdue && !HasDeliveredInboundShipment(rental)))
             {
                 return "回货物流入库签收后才能发送结算信息。";
             }
@@ -204,6 +205,9 @@ namespace AuditIt.Api.Services
 
         private static bool HasDeliveredInboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue);
+
+        private static bool HasPendingInboundShipment(Rental rental) =>
+            rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && !s.DeliveredAt.HasValue);
 
         private static decimal AccountedAmount(Rental rental)
         {

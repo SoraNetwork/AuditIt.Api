@@ -2185,7 +2185,9 @@ namespace AuditIt.Api.Services
                 ReminderType.RentalDeliveryUnsigned => HasDeliveredOutboundShipment(rental),
                 ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
                     HasInboundShipment(rental) || !rental.Items.Any(i => i.ReturnedAt == null),
-                ReminderType.RentalReturnUnsigned => HasDeliveredInboundShipment(rental),
+                ReminderType.RentalReturnUnsigned =>
+                    HasDeliveredInboundShipment(rental)
+                    || (rental.Status == RentalStatus.Returned && !HasInboundShipment(rental)),
                 _ => false
             };
         }
