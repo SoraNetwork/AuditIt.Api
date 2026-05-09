@@ -118,6 +118,7 @@ namespace AuditIt.Api.Services
                 ReminderType? type = null;
 
                 if (rental.Status == RentalStatus.Returned
+                    && hasInboundShipment
                     && !hasDeliveredInboundShipment)
                 {
                     type = ReminderType.RentalReturnUnsigned;
@@ -386,7 +387,9 @@ namespace AuditIt.Api.Services
                     rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound)
                     || !rental.Items.Any(i => i.ReturnedAt == null),
                 ReminderType.RentalReturnUnsigned =>
-                    rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue),
+                    rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue)
+                    || (rental.Status == RentalStatus.Returned
+                        && !rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound)),
                 _ => false
             };
         }
