@@ -1062,33 +1062,50 @@ namespace AuditIt.Api.Services
                 return (result, null);
             }
 
-            var phoneTail = ResolvePhoneTail(rental.Renter?.Phone);
-            var queryItems = new List<SfRouteQueryItem>();
-            foreach (var shipment in sfShipments)
+            var renterPhoneTail = ResolvePhoneTail(rental.Renter?.Phone);
+            var creatorPhoneTail = await ResolveCreatorPhoneTailAsync(rental.CreatedBy, ct);
+            var routeResults = new List<SfRouteQueryResult>();
+
+            if (!string.IsNullOrWhiteSpace(renterPhoneTail))
             {
-                if (string.IsNullOrWhiteSpace(phoneTail))
+                var renterQueryItems = BuildSfRouteQueryItems(sfShipments, renterPhoneTail);
+                routeResults.AddRange(await _sfExpressService.QueryRoutesAsync(renterQueryItems, forceRefresh, ct));
+            }
+
+            var shouldTryCreatorPhone = !string.IsNullOrWhiteSpace(creatorPhoneTail)
+                && !string.Equals(creatorPhoneTail, renterPhoneTail, StringComparison.Ordinal);
+            if (shouldTryCreatorPhone)
+            {
+                var routeResultsByShipmentId = routeResults.ToDictionary(r => r.ShipmentId);
+                var fallbackShipments = sfShipments
+                    .Where(shipment => string.IsNullOrWhiteSpace(renterPhoneTail)
+                        || !routeResultsByShipmentId.TryGetValue(shipment.Id, out var route)
+                        || ShouldFallbackToCreatorPhone(route))
+                    .ToList();
+
+                if (fallbackShipments.Count > 0)
+                {
+                    var fallbackIds = fallbackShipments.Select(s => s.Id).ToHashSet();
+                    routeResults.RemoveAll(route => fallbackIds.Contains(route.ShipmentId));
+
+                    var creatorQueryItems = BuildSfRouteQueryItems(fallbackShipments, creatorPhoneTail!);
+                    routeResults.AddRange(await _sfExpressService.QueryRoutesAsync(creatorQueryItems, forceRefresh, ct));
+                }
+            }
+
+            if (routeResults.Count == 0)
+            {
+                foreach (var shipment in sfShipments)
                 {
                     result.Shipments.Add(new SfShipmentRouteDto
                     {
                         ShipmentId = shipment.Id,
                         TrackingNumber = shipment.TrackingNumber ?? string.Empty,
                         Queryable = false,
-                        Error = "租客手机号不足 4 位，无法按顺丰运单号+手机号后四位查询。"
+                        Error = "租客手机号和建单人钉钉手机号均不足 4 位，无法按顺丰运单号+手机号后四位查询。"
                     });
-                    continue;
                 }
-
-                queryItems.Add(new SfRouteQueryItem
-                {
-                    ShipmentId = shipment.Id,
-                    TrackingNumber = shipment.TrackingNumber!,
-                    CheckPhoneNo = phoneTail
-                });
             }
-
-            IReadOnlyList<SfRouteQueryResult> routeResults = queryItems.Count == 0
-                ? Array.Empty<SfRouteQueryResult>()
-                : await _sfExpressService.QueryRoutesAsync(queryItems, forceRefresh, ct);
 
             var changed = false;
             foreach (var route in routeResults)
@@ -2149,6 +2166,37 @@ namespace AuditIt.Api.Services
         private static bool IsSfTrackingNumber(string? trackingNumber) =>
             !string.IsNullOrWhiteSpace(trackingNumber)
             && trackingNumber.Trim().StartsWith("SF", StringComparison.OrdinalIgnoreCase);
+
+        private async Task<string?> ResolveCreatorPhoneTailAsync(string? createdBy, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(createdBy))
+            {
+                return null;
+            }
+
+            var creatorName = createdBy.Trim();
+            var mobile = await _context.Users
+                .AsNoTracking()
+                .Where(u => u.Name == creatorName)
+                .Select(u => u.Mobile)
+                .FirstOrDefaultAsync(ct);
+
+            return ResolvePhoneTail(mobile);
+        }
+
+        private static List<SfRouteQueryItem> BuildSfRouteQueryItems(
+            IEnumerable<RentalShipment> shipments,
+            string phoneTail) =>
+            shipments.Select(shipment => new SfRouteQueryItem
+                {
+                    ShipmentId = shipment.Id,
+                    TrackingNumber = shipment.TrackingNumber!,
+                    CheckPhoneNo = phoneTail
+                })
+                .ToList();
+
+        private static bool ShouldFallbackToCreatorPhone(SfRouteQueryResult route) =>
+            route.Routes.Count == 0;
 
         private static string? ResolvePhoneTail(string? phone)
         {
