@@ -115,6 +115,8 @@ namespace AuditIt.Api.Services
                 var isRenewal = rental.RenewedFromRentalId.HasValue;
                 var hasRentalStarted = hasOutboundShipment || isRenewal;
                 var isRenewedForward = rental.RenewedToRentalId.HasValue;
+                var isOpenForDueReminders = rental.Status == RentalStatus.Active
+                    || rental.Status == RentalStatus.Overdue;
                 ReminderType? type = null;
 
                 if (rental.Status == RentalStatus.Returned
@@ -137,6 +139,7 @@ namespace AuditIt.Api.Services
                     type = ReminderType.RentalDeliveryUnsigned;
                 }
                 else if (hasRentalStarted
+                         && isOpenForDueReminders
                          && !isRenewedForward
                          && !hasInboundShipment
                          && expectedEndDate.AddDays(1) < today)
@@ -144,6 +147,7 @@ namespace AuditIt.Api.Services
                     type = ReminderType.RentalOverdue;
                 }
                 else if (hasRentalStarted
+                         && isOpenForDueReminders
                          && !isRenewedForward
                          && !hasInboundShipment
                          && expectedEndDate >= today
