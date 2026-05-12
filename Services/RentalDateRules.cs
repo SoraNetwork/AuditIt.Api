@@ -42,7 +42,7 @@ namespace AuditIt.Api.Services
         public static bool IsOverdue(DateTime expectedEndDate, DateTime utcNow) =>
             ToBusinessDate(expectedEndDate).AddDays(1) < Today(utcNow);
 
-        public static int LeadDaysFromHours(int hours) =>
-            Math.Max(1, (int)Math.Ceiling(Math.Max(1, hours) / 24d));
+        public static DateTime LeadUntilDate(DateTime utcNow, int hours) =>
+            utcNow.AddHours(Math.Max(1, hours)).Add(BusinessOffset).Date;
     }
 }

@@ -1117,7 +1117,9 @@ namespace AuditIt.Api.Services
                 }
 
                 var autoDelivered = false;
-                if (route.DeliveredAt.HasValue && shipment.DeliveredAt == null)
+                if (route.DeliveredAt.HasValue
+                    && shipment.DeliveredAt == null
+                    && shipment.Direction == ShipmentDirection.Outbound)
                 {
                     shipment.DeliveredAt = route.DeliveredAt.Value;
                     rental.UpdatedAt = DateTime.UtcNow;
@@ -1125,30 +1127,21 @@ namespace AuditIt.Api.Services
                     changed = true;
                     autoDelivered = true;
 
-                    if (shipment.Direction == ShipmentDirection.Outbound)
+                    foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null && ri.Item != null))
                     {
-                        foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null && ri.Item != null))
-                        {
-                            LogAudit(
-                                rentalItem.Item!,
-                                AuditAction.RentalDelivered,
-                                rental.RentalNumber,
-                                currentUser,
-                                $"顺丰自动签收 {route.TrackingNumber}");
-                        }
+                        LogAudit(
+                            rentalItem.Item!,
+                            AuditAction.RentalDelivered,
+                            rental.RentalNumber,
+                            currentUser,
+                            $"顺丰自动签收 {route.TrackingNumber}");
+                    }
 
-                        await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalDeliveryUnsigned);
-                    }
-                    else
-                    {
-                        await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalReturnUnsigned);
-                    }
+                    await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalDeliveryUnsigned);
 
                     await NotifyStatusChangeAsync(
                         rental,
-                        shipment.Direction == ShipmentDirection.Outbound
-                            ? "顺丰发货已签收，系统已自动签收"
-                            : "顺丰回货已签收，系统已自动签收",
+                        "顺丰发货已签收，系统已自动签收",
                         currentUser,
                         $"运单：{route.TrackingNumber}，签收时间：{RentalDateRules.FormatDateTime(route.DeliveredAt.Value)}");
                 }

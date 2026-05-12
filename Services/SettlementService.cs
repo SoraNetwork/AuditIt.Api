@@ -34,7 +34,10 @@ namespace AuditIt.Api.Services
             string? currentUser,
             CancellationToken ct = default)
         {
-            var totalPercent = dto.TechnicianPercent + dto.CreatorPercent + dto.ItemOwnerPercent;
+            var totalPercent = dto.TechnicianPercent
+                + dto.CreatorPercent
+                + dto.ShipperPercent
+                + dto.ItemOwnerPercent;
             if (totalPercent > 100m)
             {
                 return (null, "结算比例合计不能超过 100%。");
@@ -49,6 +52,7 @@ namespace AuditIt.Api.Services
 
             settings.TechnicianPercent = dto.TechnicianPercent;
             settings.CreatorPercent = dto.CreatorPercent;
+            settings.ShipperPercent = dto.ShipperPercent;
             settings.ItemOwnerPercent = dto.ItemOwnerPercent;
             settings.UpdatedAt = DateTime.UtcNow;
             settings.UpdatedBy = currentUser;
@@ -152,6 +156,8 @@ namespace AuditIt.Api.Services
             var technicianAmount = PercentAmount(accountedAmount, settings.TechnicianPercent);
             var creatorAmount = PercentAmount(accountedAmount, settings.CreatorPercent);
             var ownerPool = PercentAmount(accountedAmount, settings.ItemOwnerPercent);
+            var shipperShares = BuildShipperShares(rental, accountedAmount, settings.ShipperPercent);
+            var shipperAmount = shipperShares.Sum(s => s.Amount);
             var ownerShares = BuildOwnerShares(rental, accountedAmount, settings.ItemOwnerPercent);
             var ineligibleReason = ResolveIneligibleReason(rental);
             var markdown = BuildSettlementMarkdown(
@@ -160,6 +166,7 @@ namespace AuditIt.Api.Services
                 accountedAmount,
                 technicianAmount,
                 creatorAmount,
+                shipperShares,
                 ownerShares);
 
             return new SettlementPreviewDto
@@ -174,6 +181,11 @@ namespace AuditIt.Api.Services
                 CreatorPercent = settings.CreatorPercent,
                 CreatorAmount = string.IsNullOrWhiteSpace(rental.CreatedBy) ? 0m : creatorAmount,
                 CreatorName = string.IsNullOrWhiteSpace(rental.CreatedBy) ? null : rental.CreatedBy.Trim(),
+                ShipperPercent = settings.ShipperPercent,
+                ShipperAmount = shipperAmount,
+                ShipperShares = shipperShares
+                    .Select(i => new SettlementShipperShareDto { ShipperName = i.ShipperName, Amount = i.Amount })
+                    .ToList(),
                 ItemOwnerPercent = settings.ItemOwnerPercent,
                 ItemOwnerAmount = ownerPool,
                 OwnerShares = ownerShares
@@ -227,6 +239,7 @@ namespace AuditIt.Api.Services
             decimal accountedAmount,
             decimal technicianAmount,
             decimal creatorAmount,
+            IReadOnlyList<(string? ShipperName, decimal Amount)> shipperShares,
             IReadOnlyList<(string? OwnerName, decimal Amount)> ownerShares)
         {
             var lines = new List<string>
@@ -260,6 +273,14 @@ namespace AuditIt.Api.Services
             if (creatorAmount > 0 && !string.IsNullOrWhiteSpace(rental.CreatedBy))
             {
                 lines.Add($"建单（{rental.CreatedBy.Trim()}）：{FormatAmount(creatorAmount)}（{FormatPercent(settings.CreatorPercent)}）");
+            }
+
+            foreach (var shipperShare in shipperShares)
+            {
+                var shipperLabel = string.IsNullOrWhiteSpace(shipperShare.ShipperName)
+                    ? string.Empty
+                    : $"（{shipperShare.ShipperName}）";
+                lines.Add($"发货人{shipperLabel}：{FormatAmount(shipperShare.Amount)}（{FormatPercent(settings.ShipperPercent)}）");
             }
 
             foreach (var ownerShare in ownerShares)
@@ -324,6 +345,37 @@ namespace AuditIt.Api.Services
             return rows;
         }
 
+        private static IReadOnlyList<(string? ShipperName, decimal Amount)> BuildShipperShares(
+            Rental rental,
+            decimal accountedAmount,
+            decimal shipperPercent)
+        {
+            var shipperPool = PercentAmount(accountedAmount, shipperPercent);
+            var shipments = rental.Shipments
+                .Where(s => s.Direction == ShipmentDirection.Outbound)
+                .ToList();
+            if (shipperPool <= 0 || shipments.Count == 0)
+            {
+                return Array.Empty<(string? ShipperName, decimal Amount)>();
+            }
+
+            var perShipment = shipperPool / shipments.Count;
+            return shipments
+                .Select(s => new
+                {
+                    ShipperName = string.IsNullOrWhiteSpace(s.CreatedBy) ? null : s.CreatedBy.Trim(),
+                    Amount = perShipment
+                })
+                .GroupBy(s => s.ShipperName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .Select(g => (ShipperName: g.Key, Amount: RoundMoney(g.Sum(s => s.Amount))))
+                .Where(s => s.Amount > 0)
+                .OrderBy(s => string.IsNullOrWhiteSpace(s.ShipperName))
+                .ThenByDescending(s => s.Amount)
+                .ThenBy(s => s.ShipperName)
+                .Select(s => (ShipperName: string.IsNullOrWhiteSpace(s.ShipperName) ? null : s.ShipperName, Amount: s.Amount))
+                .ToList();
+        }
+
         private static decimal PercentAmount(decimal amount, decimal percent) =>
             RoundMoney(amount * percent / 100m);
 
@@ -369,6 +421,7 @@ namespace AuditIt.Api.Services
         {
             TechnicianPercent = settings.TechnicianPercent,
             CreatorPercent = settings.CreatorPercent,
+            ShipperPercent = settings.ShipperPercent,
             ItemOwnerPercent = settings.ItemOwnerPercent,
             UpdatedAt = settings.UpdatedAt,
             UpdatedBy = settings.UpdatedBy

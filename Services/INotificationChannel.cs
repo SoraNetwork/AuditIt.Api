@@ -67,7 +67,7 @@ namespace AuditIt.Api.Services
             }
 
             lines.Add($"级别：{FormatReminderLevel(reminder.Level)}");
-            lines.Add($"提醒日期：{RentalDateRules.FormatDateTime(reminder.DueAt)}");
+            lines.Add($"提醒日期：{FormatReminderDueAt(reminder)}");
 
             var content = string.Join("\n", lines);
 
@@ -92,5 +92,10 @@ namespace AuditIt.Api.Services
             ReminderLevel.Info => "普通",
             _ => level.ToString()
         };
+
+        private static string FormatReminderDueAt(Reminder reminder) =>
+            reminder.Type == ReminderType.Manual
+                ? RentalDateRules.FormatDateTime(reminder.DueAt)
+                : RentalDateRules.Format(reminder.DueAt);
     }
 }

@@ -6,6 +6,7 @@ namespace AuditIt.Api.Models
     {
         public decimal TechnicianPercent { get; set; }
         public decimal CreatorPercent { get; set; }
+        public decimal ShipperPercent { get; set; }
         public decimal ItemOwnerPercent { get; set; }
         public DateTime UpdatedAt { get; set; }
         public string? UpdatedBy { get; set; }
@@ -18,6 +19,9 @@ namespace AuditIt.Api.Models
 
         [Range(0, 100)]
         public decimal CreatorPercent { get; set; }
+
+        [Range(0, 100)]
+        public decimal ShipperPercent { get; set; }
 
         [Range(0, 100)]
         public decimal ItemOwnerPercent { get; set; }
@@ -35,6 +39,9 @@ namespace AuditIt.Api.Models
         public decimal CreatorPercent { get; set; }
         public decimal CreatorAmount { get; set; }
         public string? CreatorName { get; set; }
+        public decimal ShipperPercent { get; set; }
+        public decimal ShipperAmount { get; set; }
+        public List<SettlementShipperShareDto> ShipperShares { get; set; } = new();
         public decimal ItemOwnerPercent { get; set; }
         public decimal ItemOwnerAmount { get; set; }
         public List<SettlementOwnerShareDto> OwnerShares { get; set; } = new();
@@ -48,6 +55,12 @@ namespace AuditIt.Api.Models
     public class SettlementOwnerShareDto
     {
         public string? OwnerName { get; set; }
+        public decimal Amount { get; set; }
+    }
+
+    public class SettlementShipperShareDto
+    {
+        public string? ShipperName { get; set; }
         public decimal Amount { get; set; }
     }
 }

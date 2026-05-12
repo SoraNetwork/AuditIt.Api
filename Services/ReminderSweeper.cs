@@ -65,7 +65,7 @@ namespace AuditIt.Api.Services
             var now = DateTime.UtcNow;
             var today = RentalDateRules.Today(now);
             var leadHours = Math.Max(1, _options.CurrentValue.DueSoonLeadHours);
-            var leadUntil = today.AddDays(RentalDateRules.LeadDaysFromHours(leadHours));
+            var leadUntil = RentalDateRules.LeadUntilDate(now, leadHours);
 
             var newlyOverdue = await db.Rentals
                 .Include(r => r.Shipments)

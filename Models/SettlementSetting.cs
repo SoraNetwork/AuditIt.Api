@@ -18,7 +18,11 @@ namespace AuditIt.Api.Models
 
         [Range(0, 100)]
         [Column(TypeName = "decimal(5,2)")]
-        public decimal ItemOwnerPercent { get; set; } = 60m;
+        public decimal ShipperPercent { get; set; } = 10m;
+
+        [Range(0, 100)]
+        [Column(TypeName = "decimal(5,2)")]
+        public decimal ItemOwnerPercent { get; set; } = 50m;
 
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
