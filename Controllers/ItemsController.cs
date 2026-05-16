@@ -208,7 +208,9 @@ namespace AuditIt.Api.Controllers
                 photoUrl = await SavePhoto(dto.Photo);
             }
 
-            var ownerUserNamesSnapshot = ResolveOwnerUserNamesSnapshot(dto.OwnerUserNames, defaultToCurrentUser: true);
+            var (ownerUserNames, ownerUserNamesError) = ItemOwnerNamesJson.Parse(dto.OwnerUserNamesJson);
+            if (ownerUserNamesError != null) return BadRequest(ownerUserNamesError);
+            var ownerUserNamesSnapshot = ResolveOwnerUserNamesSnapshot(ownerUserNames, defaultToCurrentUser: true);
 
             var newItemId = Guid.NewGuid();
             var shortId = !string.IsNullOrEmpty(dto.ShortId)
@@ -323,13 +325,15 @@ namespace AuditIt.Api.Controllers
             item.CurrentDestination = dto.CurrentDestination;
             item.LastUpdated = DateTime.UtcNow;
 
+            var (ownerUserNames, ownerUserNamesError) = ItemOwnerNamesJson.Parse(dto.OwnerUserNamesJson);
+            if (ownerUserNamesError != null) return BadRequest(ownerUserNamesError);
             if (dto.ClearOwnerUser == true)
             {
                 item.OwnerUserNamesSnapshot = null;
             }
-            else if (dto.OwnerUserNames != null)
+            else if (ownerUserNames != null)
             {
-                item.OwnerUserNamesSnapshot = ResolveOwnerUserNamesSnapshot(dto.OwnerUserNames, defaultToCurrentUser: false);
+                item.OwnerUserNamesSnapshot = ResolveOwnerUserNamesSnapshot(ownerUserNames, defaultToCurrentUser: false);
             }
 
             if (dto.Photo != null)
