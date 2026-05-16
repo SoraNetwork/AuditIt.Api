@@ -33,9 +33,8 @@ namespace AuditIt.Api.Models
         [ForeignKey("WarehouseId")]
         public virtual Warehouse? Warehouse { get; set; }
 
-        public Guid? OwnerUserId { get; set; }
-        [ForeignKey("OwnerUserId")]
-        public virtual User? OwnerUser { get; set; }
+        [StringLength(500)]
+        public string? OwnerUserNamesSnapshot { get; set; }
 
         public ItemStatus Status { get; set; }
 

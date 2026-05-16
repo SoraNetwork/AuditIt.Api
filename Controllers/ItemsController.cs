@@ -38,7 +38,6 @@ namespace AuditIt.Api.Controllers
             var query = _context.Items
                 .Include(i => i.ItemDefinition)
                 .Include(i => i.Warehouse)
-                .Include(i => i.OwnerUser)
                 .AsQueryable();
 
             if (queryParameters.WarehouseId.HasValue)
@@ -73,24 +72,28 @@ namespace AuditIt.Api.Controllers
             return await query.OrderByDescending(i => i.LastUpdated).Select(i => ToItemDto(i)).ToListAsync();
         }
 
-        private static ItemDto ToItemDto(Item i) => new()
+        private static ItemDto ToItemDto(Item i)
         {
-            Id = i.Id.ToString(),
-            ShortId = i.ShortId,
-            SerialNumber = i.SerialNumber,
-            Status = i.Status,
-            WarehouseId = i.WarehouseId,
-            OwnerUserId = i.OwnerUserId,
-            OwnerUserName = i.OwnerUser?.Name,
-            ItemDefinitionId = i.ItemDefinitionId,
-            Remarks = i.Remarks,
-            PhotoUrl = i.PhotoUrl,
-            LastUpdated = i.LastUpdated.ToString("O"),
-            EntryDate = i.EntryDate.ToString("O"),
-            CurrentDestination = i.CurrentDestination,
-            ItemDefinitionName = i.ItemDefinition?.Name ?? string.Empty,
-            WarehouseName = i.Warehouse?.Name ?? string.Empty,
-        };
+            var ownerUserNames = ItemOwnerSnapshot.Split(i.OwnerUserNamesSnapshot).ToList();
+            return new()
+            {
+                Id = i.Id.ToString(),
+                ShortId = i.ShortId,
+                SerialNumber = i.SerialNumber,
+                Status = i.Status,
+                WarehouseId = i.WarehouseId,
+                OwnerUserNames = ownerUserNames,
+                OwnerUserName = ownerUserNames.Count == 0 ? null : string.Join(",", ownerUserNames),
+                ItemDefinitionId = i.ItemDefinitionId,
+                Remarks = i.Remarks,
+                PhotoUrl = i.PhotoUrl,
+                LastUpdated = i.LastUpdated.ToString("O"),
+                EntryDate = i.EntryDate.ToString("O"),
+                CurrentDestination = i.CurrentDestination,
+                ItemDefinitionName = i.ItemDefinition?.Name ?? string.Empty,
+                WarehouseName = i.Warehouse?.Name ?? string.Empty,
+            };
+        }
 
         // POST: api/Items/batch
         [HttpPost("batch")]
@@ -105,7 +108,6 @@ namespace AuditIt.Api.Controllers
                 .Where(i => ids.Contains(i.Id))
                 .Include(i => i.ItemDefinition)
                 .Include(i => i.Warehouse)
-                .Include(i => i.OwnerUser)
                 .ToListAsync();
             return Ok(items.Select(ToItemDto));
         }
@@ -117,7 +119,6 @@ namespace AuditIt.Api.Controllers
             var item = await _context.Items
                 .Include(i => i.ItemDefinition)
                 .Include(i => i.Warehouse)
-                .Include(i => i.OwnerUser)
                 .FirstOrDefaultAsync(i => i.Id == id);
 
             if (item == null)
@@ -207,8 +208,7 @@ namespace AuditIt.Api.Controllers
                 photoUrl = await SavePhoto(dto.Photo);
             }
 
-            var (ownerUserId, ownerError) = await ResolveOwnerUserIdAsync(dto.OwnerUserId, defaultToCurrentUser: true);
-            if (ownerError != null) return BadRequest(ownerError);
+            var ownerUserNamesSnapshot = ResolveOwnerUserNamesSnapshot(dto.OwnerUserNames, defaultToCurrentUser: true);
 
             var newItemId = Guid.NewGuid();
             var shortId = !string.IsNullOrEmpty(dto.ShortId)
@@ -222,7 +222,7 @@ namespace AuditIt.Api.Controllers
                 SerialNumber = string.IsNullOrWhiteSpace(dto.SerialNumber) ? null : dto.SerialNumber,
                 ItemDefinitionId = dto.ItemDefinitionId,
                 WarehouseId = dto.WarehouseId,
-                OwnerUserId = ownerUserId,
+                OwnerUserNamesSnapshot = ownerUserNamesSnapshot,
                 Remarks = dto.Remarks,
                 PhotoUrl = photoUrl,
                 Status = ItemStatus.InStock,
@@ -236,7 +236,6 @@ namespace AuditIt.Api.Controllers
 
             await _context.Entry(item).Reference(i => i.ItemDefinition).LoadAsync();
             await _context.Entry(item).Reference(i => i.Warehouse).LoadAsync();
-            await _context.Entry(item).Reference(i => i.OwnerUser).LoadAsync();
 
             return CreatedAtAction(nameof(GetItems), new { id = item.Id }, ToItemDto(item));
         }
@@ -261,8 +260,7 @@ namespace AuditIt.Api.Controllers
                 if (taken.Count > 0) return Conflict($"以下 SN 已存在：{string.Join(", ", taken)}");
             }
 
-            var (ownerUserId, ownerError) = await ResolveOwnerUserIdAsync(dto.OwnerUserId, defaultToCurrentUser: true);
-            if (ownerError != null) return BadRequest(ownerError);
+            var ownerUserNamesSnapshot = ResolveOwnerUserNamesSnapshot(dto.OwnerUserNames, defaultToCurrentUser: true);
 
             var newItems = new List<Item>();
             foreach (var itemDto in dto.Items)
@@ -278,7 +276,7 @@ namespace AuditIt.Api.Controllers
                     SerialNumber = string.IsNullOrWhiteSpace(itemDto.SerialNumber) ? null : itemDto.SerialNumber,
                     ItemDefinitionId = dto.ItemDefinitionId,
                     WarehouseId = dto.WarehouseId,
-                    OwnerUserId = ownerUserId,
+                    OwnerUserNamesSnapshot = ownerUserNamesSnapshot,
                     Remarks = itemDto.Remarks,
                     Status = ItemStatus.InStock,
                     EntryDate = DateTime.UtcNow,
@@ -327,13 +325,11 @@ namespace AuditIt.Api.Controllers
 
             if (dto.ClearOwnerUser == true)
             {
-                item.OwnerUserId = null;
+                item.OwnerUserNamesSnapshot = null;
             }
-            else if (dto.OwnerUserId.HasValue)
+            else if (dto.OwnerUserNames != null)
             {
-                var (ownerUserId, ownerError) = await ResolveOwnerUserIdAsync(dto.OwnerUserId, defaultToCurrentUser: false);
-                if (ownerError != null) return BadRequest(ownerError);
-                item.OwnerUserId = ownerUserId;
+                item.OwnerUserNamesSnapshot = ResolveOwnerUserNamesSnapshot(dto.OwnerUserNames, defaultToCurrentUser: false);
             }
 
             if (dto.Photo != null)
@@ -427,7 +423,6 @@ namespace AuditIt.Api.Controllers
             var item = await _context.Items
                 .Include(i => i.ItemDefinition)
                 .Include(i => i.Warehouse)
-                .Include(i => i.OwnerUser)
                 .FirstOrDefaultAsync(i => i.Id == id);
 
             if (item == null)
@@ -479,7 +474,6 @@ namespace AuditIt.Api.Controllers
             var item = await _context.Items
                 .Include(i => i.ItemDefinition)
                 .Include(i => i.Warehouse)
-                .Include(i => i.OwnerUser)
                 .FirstOrDefaultAsync(i => i.Id == id);
 
             if (item == null) return NotFound();
@@ -525,47 +519,21 @@ namespace AuditIt.Api.Controllers
             _context.AuditLogs.Add(auditLog);
         }
 
-        private async Task<(Guid? ownerUserId, string? error)> ResolveOwnerUserIdAsync(Guid? requestedOwnerUserId, bool defaultToCurrentUser)
+        private string? ResolveOwnerUserNamesSnapshot(IEnumerable<string>? requestedOwnerNames, bool defaultToCurrentUser)
         {
-            if (requestedOwnerUserId.HasValue)
+            var snapshot = ItemOwnerSnapshot.Normalize(requestedOwnerNames);
+            if (!string.IsNullOrWhiteSpace(snapshot))
             {
-                var exists = await _context.Users
-                    .AnyAsync(u => u.Id == requestedOwnerUserId.Value && u.Status == UserStatus.Active);
-                return exists
-                    ? (requestedOwnerUserId.Value, null)
-                    : (null, "Owner user not found.");
+                return snapshot;
             }
 
             if (!defaultToCurrentUser)
             {
-                return (null, null);
-            }
-
-            var userIdClaim = User.FindFirst("userId")?.Value;
-            if (Guid.TryParse(userIdClaim, out var claimUserId))
-            {
-                var activeClaimUserId = await _context.Users
-                    .Where(u => u.Id == claimUserId && u.Status == UserStatus.Active)
-                    .Select(u => (Guid?)u.Id)
-                    .FirstOrDefaultAsync();
-                if (activeClaimUserId.HasValue)
-                {
-                    return (activeClaimUserId, null);
-                }
+                return null;
             }
 
             var userName = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrWhiteSpace(userName))
-            {
-                return (null, null);
-            }
-
-            var currentUserId = await _context.Users
-                .Where(u => u.Status == UserStatus.Active && u.Name == userName.Trim())
-                .Select(u => (Guid?)u.Id)
-                .FirstOrDefaultAsync();
-
-            return (currentUserId, null);
+            return ItemOwnerSnapshot.Normalize(string.IsNullOrWhiteSpace(userName) ? null : [userName]);
         }
 
         private async Task<string> SavePhoto(IFormFile photo)

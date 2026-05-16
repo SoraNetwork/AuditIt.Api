@@ -10,7 +10,7 @@ namespace AuditIt.Api.Models
         [Required]
         public int WarehouseId { get; set; }
 
-        public Guid? OwnerUserId { get; set; }
+        public List<string>? OwnerUserNames { get; set; }
 
         [Required]
         public List<Item> Items { get; set; } = [];

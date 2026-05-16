@@ -43,15 +43,6 @@ namespace AuditIt.Api.Data
                 .IsUnique()
                 .HasFilter("\"SerialNumber\" IS NOT NULL");
 
-            modelBuilder.Entity<Item>()
-                .HasIndex(i => i.OwnerUserId);
-
-            modelBuilder.Entity<Item>()
-                .HasOne(i => i.OwnerUser)
-                .WithMany()
-                .HasForeignKey(i => i.OwnerUserId)
-                .OnDelete(DeleteBehavior.SetNull);
-
             modelBuilder.Entity<Renter>()
                 .HasIndex(r => r.Phone);
 
