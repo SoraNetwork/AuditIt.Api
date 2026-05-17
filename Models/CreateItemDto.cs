@@ -10,7 +10,7 @@ namespace AuditIt.Api.Models
         [Required]
         public int WarehouseId { get; set; }
 
-        public string? OwnerUserNamesJson { get; set; }
+        public List<string>? OwnerUserNames { get; set; }
 
         [StringLength(50)]
         public string? ShortId { get; set; } // External Barcode
