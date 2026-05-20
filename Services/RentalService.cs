@@ -1118,14 +1118,19 @@ namespace AuditIt.Api.Services
 
                 var autoDelivered = false;
                 if (route.DeliveredAt.HasValue
-                    && shipment.DeliveredAt == null
-                    && shipment.Direction == ShipmentDirection.Outbound)
+                    && shipment.DeliveredAt == null)
                 {
                     shipment.DeliveredAt = route.DeliveredAt.Value;
                     rental.UpdatedAt = DateTime.UtcNow;
                     rental.UpdatedBy = currentUser;
                     changed = true;
                     autoDelivered = true;
+
+                    var isOutbound = shipment.Direction == ShipmentDirection.Outbound;
+                    var reminderType = isOutbound
+                        ? ReminderType.RentalDeliveryUnsigned
+                        : ReminderType.RentalReturnUnsigned;
+                    var shipmentLabel = isOutbound ? "发货" : "回货";
 
                     foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null && ri.Item != null))
                     {
@@ -1134,14 +1139,14 @@ namespace AuditIt.Api.Services
                             AuditAction.RentalDelivered,
                             rental.RentalNumber,
                             currentUser,
-                            $"顺丰自动签收 {route.TrackingNumber}");
+                            $"顺丰自动签收{shipmentLabel}物流 {route.TrackingNumber}");
                     }
 
-                    await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalDeliveryUnsigned);
+                    await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, reminderType);
 
                     await NotifyStatusChangeAsync(
                         rental,
-                        "顺丰发货已签收，系统已自动签收",
+                        $"顺丰{shipmentLabel}已签收，系统已自动签收",
                         currentUser,
                         $"运单：{route.TrackingNumber}，签收时间：{RentalDateRules.FormatDateTime(route.DeliveredAt.Value)}");
                 }

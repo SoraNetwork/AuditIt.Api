@@ -8,6 +8,8 @@ namespace AuditIt.Api.Models
 
         public int ItemDefinitionId { get; set; }
         public string ItemDefinitionName { get; set; } = string.Empty;
+        public int? CategoryId { get; set; }
+        public string CategoryName { get; set; } = string.Empty;
 
         public int WarehouseId { get; set; }
         public string WarehouseName { get; set; } = string.Empty;

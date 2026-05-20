@@ -37,12 +37,18 @@ namespace AuditIt.Api.Controllers
         {
             var query = _context.Items
                 .Include(i => i.ItemDefinition)
+                    .ThenInclude(d => d!.Category)
                 .Include(i => i.Warehouse)
                 .AsQueryable();
 
             if (queryParameters.WarehouseId.HasValue)
             {
                 query = query.Where(i => i.WarehouseId == queryParameters.WarehouseId.Value);
+            }
+            if (queryParameters.CategoryId.HasValue)
+            {
+                query = query.Where(i => i.ItemDefinition != null
+                    && i.ItemDefinition.CategoryId == queryParameters.CategoryId.Value);
             }
             if (queryParameters.Status.HasValue)
             {
@@ -85,6 +91,8 @@ namespace AuditIt.Api.Controllers
                 OwnerUserNames = ownerUserNames,
                 OwnerUserName = ownerUserNames.Count == 0 ? null : string.Join(",", ownerUserNames),
                 ItemDefinitionId = i.ItemDefinitionId,
+                CategoryId = i.ItemDefinition?.CategoryId,
+                CategoryName = i.ItemDefinition?.Category?.Name ?? string.Empty,
                 Remarks = i.Remarks,
                 PhotoUrl = i.PhotoUrl,
                 LastUpdated = i.LastUpdated.ToString("O"),
@@ -107,6 +115,7 @@ namespace AuditIt.Api.Controllers
             var items = await _context.Items
                 .Where(i => ids.Contains(i.Id))
                 .Include(i => i.ItemDefinition)
+                    .ThenInclude(d => d!.Category)
                 .Include(i => i.Warehouse)
                 .ToListAsync();
             return Ok(items.Select(ToItemDto));
