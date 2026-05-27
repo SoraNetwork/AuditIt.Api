@@ -70,7 +70,8 @@ namespace AuditIt.Api.Services
             }
 
             var settings = await GetSettingsEntityAsync(ct);
-            return BuildPreview(rental, settings);
+            var shipperSourceShipments = await LoadShipperSourceShipmentsAsync(rental, ct);
+            return BuildPreview(rental, settings, shipperSourceShipments);
         }
 
         public async Task<(SettlementPreviewDto? preview, string? error)> SendForRentalAsync(
@@ -86,7 +87,8 @@ namespace AuditIt.Api.Services
             }
 
             var settings = await GetSettingsEntityAsync(ct);
-            var preview = BuildPreview(rental, settings);
+            var shipperSourceShipments = await LoadShipperSourceShipmentsAsync(rental, ct);
+            var preview = BuildPreview(rental, settings, shipperSourceShipments);
             if (!preview.CanSend)
             {
                 return (preview, preview.IneligibleReason ?? "当前租赁单不能发送结算信息。");
@@ -143,19 +145,58 @@ namespace AuditIt.Api.Services
                 .FirstOrDefaultAsync(r => r.Id == rentalId, ct);
         }
 
+        private async Task<IReadOnlyList<RentalShipment>> LoadShipperSourceShipmentsAsync(Rental rental, CancellationToken ct)
+        {
+            var currentOutboundShipments = rental.Shipments
+                .Where(s => s.Direction == ShipmentDirection.Outbound)
+                .OrderBy(s => s.Id)
+                .ToList();
+            if (currentOutboundShipments.Count > 0)
+            {
+                return currentOutboundShipments;
+            }
+
+            var visitedRentalIds = new HashSet<Guid> { rental.Id };
+            var sourceRentalId = rental.RenewedFromRentalId;
+            while (sourceRentalId.HasValue && visitedRentalIds.Add(sourceRentalId.Value))
+            {
+                var lookupRentalId = sourceRentalId.Value;
+                var sourceOutboundShipments = await _context.RentalShipments
+                    .AsNoTracking()
+                    .Where(s => s.RentalId == lookupRentalId && s.Direction == ShipmentDirection.Outbound)
+                    .OrderBy(s => s.Id)
+                    .ToListAsync(ct);
+                if (sourceOutboundShipments.Count > 0)
+                {
+                    return sourceOutboundShipments;
+                }
+
+                sourceRentalId = await _context.Rentals
+                    .AsNoTracking()
+                    .Where(r => r.Id == lookupRentalId)
+                    .Select(r => r.RenewedFromRentalId)
+                    .FirstOrDefaultAsync(ct);
+            }
+
+            return Array.Empty<RentalShipment>();
+        }
+
         private async Task<SettlementSetting> GetSettingsEntityAsync(CancellationToken ct)
         {
             return await _context.SettlementSettings.FirstOrDefaultAsync(s => s.Id == SettingsId, ct)
                 ?? new SettlementSetting { Id = SettingsId };
         }
 
-        private static SettlementPreviewDto BuildPreview(Rental rental, SettlementSetting settings)
+        private static SettlementPreviewDto BuildPreview(
+            Rental rental,
+            SettlementSetting settings,
+            IReadOnlyList<RentalShipment> shipperSourceShipments)
         {
             var accountedAmount = AccountedAmount(rental);
             var technicianAmount = PercentAmount(accountedAmount, settings.TechnicianPercent);
             var creatorAmount = PercentAmount(accountedAmount, settings.CreatorPercent);
             var ownerPool = PercentAmount(accountedAmount, settings.ItemOwnerPercent);
-            var shipperShares = BuildShipperShares(rental, accountedAmount, settings.ShipperPercent);
+            var shipperShares = BuildShipperShares(shipperSourceShipments, accountedAmount, settings.ShipperPercent);
             var shipperAmount = shipperShares.Sum(s => s.Amount);
             var ownerShares = SettlementOwnerShareCalculator.BuildOwnerShares(rental, accountedAmount, settings.ItemOwnerPercent);
             var ineligibleReason = ResolveIneligibleReason(rental);
@@ -305,17 +346,22 @@ namespace AuditIt.Api.Services
         }
 
         private static IReadOnlyList<(string? ShipperName, decimal Amount)> BuildShipperShares(
-            Rental rental,
+            IReadOnlyList<RentalShipment> sourceShipments,
             decimal accountedAmount,
             decimal shipperPercent)
         {
             var shipperPool = PercentAmount(accountedAmount, shipperPercent);
-            var shipments = rental.Shipments
-                .Where(s => s.Direction == ShipmentDirection.Outbound)
-                .ToList();
-            if (shipperPool <= 0 || shipments.Count == 0)
+            if (shipperPool <= 0)
             {
                 return Array.Empty<(string? ShipperName, decimal Amount)>();
+            }
+
+            var shipments = sourceShipments
+                .Where(s => s.Direction == ShipmentDirection.Outbound)
+                .ToList();
+            if (shipments.Count == 0)
+            {
+                return [(null, shipperPool)];
             }
 
             var perShipment = shipperPool / shipments.Count;
