@@ -95,6 +95,7 @@ namespace AuditIt.Api.Controllers
                 CategoryName = i.ItemDefinition?.Category?.Name ?? string.Empty,
                 Remarks = i.Remarks,
                 PhotoUrl = i.PhotoUrl,
+                ItemValue = i.ItemValue,
                 LastUpdated = i.LastUpdated.ToString("O"),
                 EntryDate = i.EntryDate.ToString("O"),
                 CurrentDestination = i.CurrentDestination,
@@ -152,14 +153,14 @@ namespace AuditIt.Api.Controllers
                 .Include(r => r.Renter)
                 .Include(r => r.Items)
                 .Where(r => r.Status != RentalStatus.Cancelled)
-                .Where(r => r.Items.Any(ri => ri.ItemId == id))
+                .Where(r => r.Items.Any(ri => ri.ItemId == id && (ri.ReturnedAt == null || ri.ReturnedAt > r.StartDate)))
                 .Where(r => r.StartDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
                 .ToListAsync();
 
             var busy = rentals
                 .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, rangeStart, rangeEnd))
                 .SelectMany(r => r.Items
-                    .Where(ri => ri.ItemId == id)
+                    .Where(ri => ri.ItemId == id && (ri.ReturnedAt == null || ri.ReturnedAt > r.StartDate))
                     .Select(ri =>
                     {
                         var periodEnd = ri.ReturnedAt ?? r.ActualEndDate ?? r.ExpectedEndDate;
@@ -235,6 +236,7 @@ namespace AuditIt.Api.Controllers
                 Remarks = dto.Remarks,
                 PhotoUrl = photoUrl,
                 Status = ItemStatus.InStock,
+                ItemValue = dto.ItemValue,
                 EntryDate = DateTime.UtcNow,
                 LastUpdated = DateTime.UtcNow
             };
@@ -288,6 +290,7 @@ namespace AuditIt.Api.Controllers
                     OwnerUserNamesSnapshot = ownerUserNamesSnapshot,
                     Remarks = itemDto.Remarks,
                     Status = ItemStatus.InStock,
+                    ItemValue = itemDto.ItemValue,
                     EntryDate = DateTime.UtcNow,
                     LastUpdated = DateTime.UtcNow
                 };
@@ -330,6 +333,7 @@ namespace AuditIt.Api.Controllers
 
             item.Remarks = dto.Remarks;
             item.CurrentDestination = dto.CurrentDestination;
+            item.ItemValue = dto.ItemValue;
             item.LastUpdated = DateTime.UtcNow;
 
             if (dto.ClearOwnerUser == true)

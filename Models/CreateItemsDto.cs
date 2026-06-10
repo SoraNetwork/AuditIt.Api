@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 
 namespace AuditIt.Api.Models
 {
@@ -23,6 +23,7 @@ namespace AuditIt.Api.Models
             public string? SerialNumber { get; set; }
             [StringLength(500)]
             public string? Remarks { get; set; }
+            public decimal? ItemValue { get; set; }
 
         }
     }

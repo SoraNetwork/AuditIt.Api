@@ -22,6 +22,7 @@ namespace AuditIt.Api.Models
         public string? Remarks { get; set; }
         public string? PhotoUrl { get; set; }
 
+        public decimal? ItemValue { get; set; }
         public string EntryDate { get; set; } = string.Empty;
         public string LastUpdated { get; set; } = string.Empty;
     }

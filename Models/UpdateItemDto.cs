@@ -8,6 +8,7 @@ namespace AuditIt.Api.Models
         public string? SerialNumber { get; set; }
         public string? Remarks { get; set; }
         public string? CurrentDestination { get; set; }
+        public decimal? ItemValue { get; set; }
         public List<string>? OwnerUserNames { get; set; }
         public bool? ClearOwnerUser { get; set; }
         public IFormFile? Photo { get; set; }

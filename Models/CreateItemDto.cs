@@ -21,6 +21,8 @@ namespace AuditIt.Api.Models
         [StringLength(500)]
         public string? Remarks { get; set; }
 
+        public decimal? ItemValue { get; set; }
+
         public IFormFile? Photo { get; set; }
     }
 }

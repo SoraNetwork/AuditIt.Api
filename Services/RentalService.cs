@@ -1463,29 +1463,40 @@ namespace AuditIt.Api.Services
             }
 
             var now = DateTime.UtcNow;
-            var hasOutboundShipment = HasOutboundShipment(rental);
+            var hasRentalStarted = HasRentalStarted(rental);
             var addedItems = desiredItems
                 .Where(i => addItemIds.Contains(i.Id))
                 .ToList();
 
             foreach (var rentalItem in removeRentalItems)
             {
-                rentalItem.ReturnedAt = now;
-                rentalItem.ReturnCondition = ReturnCondition.Good;
-                rentalItem.ReturnNotes = "Removed from rental item list.";
-
-                if (rentalItem.Item != null)
+                if (hasRentalStarted)
                 {
-                    if (hasOutboundShipment
-                        && rentalItem.Item.Status == ItemStatus.LoanedOut
-                        && string.Equals(rentalItem.Item.CurrentDestination, $"租赁 {rental.RentalNumber}", StringComparison.OrdinalIgnoreCase))
-                    {
-                        rentalItem.Item.Status = ItemStatus.InStock;
-                        rentalItem.Item.CurrentDestination = null;
-                    }
+                    rentalItem.ReturnedAt = now;
+                    rentalItem.ReturnCondition = ReturnCondition.Good;
+                    rentalItem.ReturnNotes = "Removed from rental item list.";
 
-                    rentalItem.Item.LastUpdated = now;
-                    LogAudit(rentalItem.Item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, "Removed from rental");
+                    if (rentalItem.Item != null)
+                    {
+                        if (rentalItem.Item.Status == ItemStatus.LoanedOut
+                            && string.Equals(rentalItem.Item.CurrentDestination, $"租赁 {rental.RentalNumber}", StringComparison.OrdinalIgnoreCase))
+                        {
+                            rentalItem.Item.Status = ItemStatus.InStock;
+                            rentalItem.Item.CurrentDestination = null;
+                        }
+
+                        rentalItem.Item.LastUpdated = now;
+                        LogAudit(rentalItem.Item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, "Removed from rental");
+                    }
+                }
+                else
+                {
+                    _context.RentalItems.Remove(rentalItem);
+                    if (rentalItem.Item != null)
+                    {
+                        rentalItem.Item.LastUpdated = now;
+                        LogAudit(rentalItem.Item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, "Removed from rental before start");
+                    }
                 }
             }
 
@@ -1501,7 +1512,7 @@ namespace AuditIt.Api.Services
                     ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks
                 });
 
-                if (hasOutboundShipment)
+                if (hasRentalStarted)
                 {
                     item.Status = ItemStatus.LoanedOut;
                     item.CurrentDestination = $"租赁 {rental.RentalNumber}";
