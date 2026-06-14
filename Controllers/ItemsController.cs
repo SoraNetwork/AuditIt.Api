@@ -149,11 +149,20 @@ namespace AuditIt.Api.Controllers
                 rangeEnd = rangeStart.AddDays(180).AddTicks(-1);
             }
 
+            var itemDefinitionId = item.ItemDefinitionId;
             var rentals = await _context.Rentals
                 .Include(r => r.Renter)
                 .Include(r => r.Items)
                 .Where(r => r.Status != RentalStatus.Cancelled)
                 .Where(r => r.Items.Any(ri => ri.ItemId == id && (ri.ReturnedAt == null || ri.ReturnedAt > r.StartDate)))
+                .Where(r => r.StartDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
+                .ToListAsync();
+
+            var uncertainRentals = await _context.Rentals
+                .Include(r => r.Renter)
+                .Include(r => r.Items)
+                .Where(r => r.Status == RentalStatus.Pending)
+                .Where(r => r.Items.Any(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null))
                 .Where(r => r.StartDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
                 .ToListAsync();
 
@@ -176,9 +185,36 @@ namespace AuditIt.Api.Controllers
                             EndAt = endAt > rangeEnd ? rangeEnd : endAt,
                             IsOpen = ri.ReturnedAt == null
                                 && r.Status != RentalStatus.Returned
-                                && r.Status != RentalStatus.Renewed
+                                && r.Status != RentalStatus.Renewed,
+                            IsUncertain = false
                         };
                     }))
+                .ToList();
+
+            var uncertainBusy = uncertainRentals
+                .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, rangeStart, rangeEnd))
+                .SelectMany(r => r.Items
+                    .Where(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null)
+                    .Select(ri =>
+                    {
+                        var startAt = RentalDateRules.ToBusinessDate(r.StartDate);
+                        var endAt = RentalDateRules.EndOfBusinessDay(r.ExpectedEndDate);
+                        return new ItemBusyPeriodDto
+                        {
+                            RentalId = r.Id,
+                            RentalNumber = $"{r.RentalNumber} (待定)",
+                            RentalStatus = r.Status,
+                            RenterName = r.Renter?.Name,
+                            StartAt = startAt < rangeStart ? rangeStart : startAt,
+                            EndAt = endAt > rangeEnd ? rangeEnd : endAt,
+                            IsOpen = true,
+                            IsUncertain = true
+                        };
+                    }))
+                .ToList();
+
+            busy.AddRange(uncertainBusy);
+            busy = busy
                 .Where(p => p.EndAt >= rangeStart && p.StartAt <= rangeEnd)
                 .OrderBy(p => p.StartAt)
                 .ThenBy(p => p.EndAt)

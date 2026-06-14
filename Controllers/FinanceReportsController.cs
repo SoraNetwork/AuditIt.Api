@@ -68,6 +68,24 @@ namespace AuditIt.Api.Controllers
             return Ok(rentals.Select(ToDetail));
         }
 
+        [HttpGet("settlements")]
+        public async Task<ActionResult<IEnumerable<SettlementPreviewDto>>> Settlements([FromQuery] FinanceReportQueryParameters query, CancellationToken ct)
+        {
+            var (from, to) = ResolveRange(query);
+            var rentals = await _context.Rentals
+                .Include(r => r.Renter)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                .Include(r => r.Shipments)
+                .Where(r => r.Status != RentalStatus.Cancelled)
+                .Where(r => r.CreatedAt >= from && r.CreatedAt <= to)
+                .OrderByDescending(r => r.CreatedAt)
+                .ToListAsync(ct);
+
+            var previews = await _settlements.GetPreviewsAsync(rentals, ct);
+            return Ok(previews);
+        }
+
         [HttpGet("settlement-settings")]
         public async Task<ActionResult<SettlementSettingDto>> GetSettlementSettings(CancellationToken ct)
         {

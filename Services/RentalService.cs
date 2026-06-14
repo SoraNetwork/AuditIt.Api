@@ -354,26 +354,31 @@ namespace AuditIt.Api.Services
 
         public async Task<CreateRentalResult> CreateAsync(CreateRentalDto dto, string? currentUser)
         {
-            if (dto.ItemIds == null || dto.ItemIds.Count == 0)
+            var hasItems = dto.ItemIds != null && dto.ItemIds.Count > 0;
+            var hasDefs = dto.ItemDefinitionIds != null && dto.ItemDefinitionIds.Count > 0;
+            if (!hasItems && !hasDefs)
             {
                 return new CreateRentalResult
                 {
-                    Error = "至少选择一件商品。"
+                    Error = "必须选择至少一件商品或物品定义。"
                 };
             }
 
             var distinctItemIds = new List<Guid>();
-            foreach (var rawItemId in dto.ItemIds.Distinct())
+            if (hasItems)
             {
-                if (!Guid.TryParse(rawItemId, out var parsedItemId))
+                foreach (var rawItemId in dto.ItemIds!.Distinct())
                 {
-                    return new CreateRentalResult
+                    if (!Guid.TryParse(rawItemId, out var parsedItemId))
                     {
-                        Error = "存在无效的商品 ID。"
-                    };
-                }
+                        return new CreateRentalResult
+                        {
+                            Error = "存在无效的商品 ID。"
+                        };
+                    }
 
-                distinctItemIds.Add(parsedItemId);
+                    distinctItemIds.Add(parsedItemId);
+                }
             }
 
             var now = DateTime.UtcNow;
@@ -390,39 +395,52 @@ namespace AuditIt.Api.Services
                 };
             }
 
-            var items = await _context.Items
-                .Include(i => i.ItemDefinition)
-                .Include(i => i.Warehouse)
-                .Include(i => i.Listings)
-                .Where(i => distinctItemIds.Contains(i.Id))
-                .ToListAsync();
-
-            if (items.Count != distinctItemIds.Count)
+            var items = new List<Item>();
+            if (hasItems)
             {
-                return new CreateRentalResult
+                items = await _context.Items
+                    .Include(i => i.ItemDefinition)
+                    .Include(i => i.Warehouse)
+                    .Include(i => i.Listings)
+                    .Where(i => distinctItemIds.Contains(i.Id))
+                    .ToListAsync();
+
+                if (items.Count != distinctItemIds.Count)
                 {
-                    Error = "部分商品不存在。"
-                };
+                    return new CreateRentalResult
+                    {
+                        Error = "部分商品不存在。"
+                    };
+                }
+
+                var disposedItems = items
+                    .Where(i => i.Status == ItemStatus.Disposed)
+                    .Select(i => i.ShortId)
+                    .ToList();
+                if (disposedItems.Count > 0)
+                {
+                    return new CreateRentalResult
+                    {
+                        Error = $"以下商品已处置，不能创建租赁：{string.Join("，", disposedItems)}"
+                    };
+                }
             }
 
-            var disposedItems = items
-                .Where(i => i.Status == ItemStatus.Disposed)
-                .Select(i => i.ShortId)
-                .ToList();
-            if (disposedItems.Count > 0)
-            {
-                return new CreateRentalResult
-                {
-                    Error = $"以下商品已处置，不能创建租赁：{string.Join("，", disposedItems)}"
-                };
-            }
+            var itemConflicts = await ValidateCreateConflictsAsync(distinctItemIds, startDate, expectedEndDate);
+            var defConflicts = await ValidateItemDefinitionConflictsAsync(dto.ItemDefinitionIds ?? new List<int>(), startDate, expectedEndDate);
 
-            var conflict = await ValidateCreateConflictsAsync(distinctItemIds, startDate, expectedEndDate);
-            if (conflict != null && !dto.AllowScheduleConflict)
+            if ((itemConflicts != null || defConflicts.Count > 0) && !dto.AllowScheduleConflict)
             {
+                var combined = itemConflicts ?? new RentalCreateConflictDto();
+                if (defConflicts.Count > 0)
+                {
+                    combined.PendingShipmentConflicts.AddRange(defConflicts.Where(c => !c.HasOutboundShipment));
+                    combined.ShippedConflicts.AddRange(defConflicts.Where(c => c.HasOutboundShipment));
+                    combined.Message = "所选商品或物品定义存在租赁时间冲突。";
+                }
                 return new CreateRentalResult
                 {
-                    Conflict = conflict
+                    Conflict = combined
                 };
             }
 
@@ -472,13 +490,29 @@ namespace AuditIt.Api.Services
                 LogAudit(item, AuditAction.RentalCreated, rentalNumber, currentUser);
             }
 
+            foreach (var defId in dto.ItemDefinitionIds ?? new List<int>())
+            {
+                var def = await _context.ItemDefinitions.FindAsync(defId);
+                if (def == null) continue;
+
+                _context.RentalItems.Add(new RentalItem
+                {
+                    RentalId = rentalId,
+                    ItemId = null,
+                    ItemDefinitionId = defId,
+                    ItemShortIdSnapshot = "待选择",
+                    ItemNameSnapshot = def.Name,
+                    ListingRemarksSnapshot = null
+                });
+            }
+
             await _context.SaveChangesAsync();
 
             await NotifyStatusChangeAsync(
                 rental,
                 "已创建",
                 currentUser,
-                $"租客：{renter.Name}，商品 {items.Count} 件");
+                $"租客：{renter.Name}，商品 {items.Count} 件，物品定义 {(dto.ItemDefinitionIds?.Count ?? 0)} 件");
 
             return new CreateRentalResult
             {
@@ -562,11 +596,21 @@ namespace AuditIt.Api.Services
                 return new RenewRentalResult { Error = "续租结束日期不能早于续租开始日期。" };
             }
 
-            var itemIds = activeItems.Select(ri => ri.ItemId).Distinct().ToList();
+            var itemIds = activeItems.Where(ri => ri.ItemId.HasValue).Select(ri => ri.ItemId!.Value).Distinct().ToList();
             var conflict = await ValidateCreateConflictsAsync(itemIds, startDate, expectedEndDate, source.Id);
-            if (conflict != null && !dto.AllowScheduleConflict)
+            var defIds = activeItems.Where(ri => ri.ItemId == null && ri.ItemDefinitionId.HasValue).Select(ri => ri.ItemDefinitionId!.Value).Distinct().ToList();
+            var defConflict = await ValidateItemDefinitionConflictsAsync(defIds, startDate, expectedEndDate, source.Id);
+
+            if ((conflict != null || defConflict.Count > 0) && !dto.AllowScheduleConflict)
             {
-                return new RenewRentalResult { Conflict = conflict };
+                var combined = conflict ?? new RentalCreateConflictDto();
+                if (defConflict.Count > 0)
+                {
+                    combined.PendingShipmentConflicts.AddRange(defConflict.Where(c => !c.HasOutboundShipment));
+                    combined.ShippedConflicts.AddRange(defConflict.Where(c => c.HasOutboundShipment));
+                    combined.Message = "续租商品或物品定义存在租赁时间冲突。";
+                }
+                return new RenewRentalResult { Conflict = combined };
             }
 
             var now = DateTime.UtcNow;
@@ -609,6 +653,7 @@ namespace AuditIt.Api.Services
                 {
                     RentalId = renewalId,
                     ItemId = sourceItem.ItemId,
+                    ItemDefinitionId = sourceItem.ItemDefinitionId,
                     ItemShortIdSnapshot = sourceItem.ItemShortIdSnapshot,
                     ItemNameSnapshot = sourceItem.ItemNameSnapshot,
                     ListingRemarksSnapshot = sourceItem.ListingRemarksSnapshot,
@@ -701,14 +746,22 @@ namespace AuditIt.Api.Services
                 || (dto.ExpectedShipDate.HasValue && nextExpectedShipDate != currentExpectedShipDate)
                 || (dto.ExpectedEndDate.HasValue && nextExpectedEndDate != currentExpectedEndDate))
             {
+                var itemIds = rental.Items.Where(ri => ri.ReturnedAt == null && ri.ItemId.HasValue).Select(ri => ri.ItemId!.Value).ToList();
                 var conflict = await ValidateCreateConflictsAsync(
-                    rental.Items.Where(ri => ri.ReturnedAt == null).Select(ri => ri.ItemId).ToList(),
+                    itemIds,
                     nextStartDate,
                     nextExpectedEndDate,
                     rental.Id);
                 if (conflict != null)
                 {
                     return (null, conflict.Message);
+                }
+
+                var defIds = rental.Items.Where(ri => ri.ReturnedAt == null && ri.ItemId == null && ri.ItemDefinitionId.HasValue).Select(ri => ri.ItemDefinitionId!.Value).ToList();
+                var defConflict = await ValidateItemDefinitionConflictsAsync(defIds, nextStartDate, nextExpectedEndDate, rental.Id);
+                if (defConflict.Count > 0)
+                {
+                    return (null, string.Join("; ", defConflict.Select(c => c.ConflictReason)));
                 }
             }
 
@@ -816,6 +869,26 @@ namespace AuditIt.Api.Services
                 }
             }
 
+            if (dto.CreatedBy != null)
+            {
+                var createdBy = NormalizeNullableText(dto.CreatedBy);
+                if (createdBy != rental.CreatedBy)
+                {
+                    changes.Add($"建单人：{rental.CreatedBy ?? "-"} -> {createdBy ?? "-"}");
+                    rental.CreatedBy = createdBy;
+                }
+            }
+
+            if (dto.SenderName != null)
+            {
+                var senderName = NormalizeNullableText(dto.SenderName);
+                if (senderName != rental.SenderName)
+                {
+                    changes.Add($"发货人：{rental.SenderName ?? "-"} -> {senderName ?? "-"}");
+                    rental.SenderName = senderName;
+                }
+            }
+
             if (changes.Count == 0)
             {
                 return (await GetByIdAsync(id), null);
@@ -887,9 +960,60 @@ namespace AuditIt.Api.Services
 
             if (dto.Direction == ShipmentDirection.Outbound)
             {
+                if (dto.ItemSelections != null && dto.ItemSelections.Count > 0)
+                {
+                    foreach (var selection in dto.ItemSelections)
+                    {
+                        var rentalItem = rental.Items.FirstOrDefault(ri => ri.Id == selection.RentalItemId);
+                        if (rentalItem == null)
+                        {
+                            return new RentalShipmentResult { Error = $"未找到租赁项 ID {selection.RentalItemId}。" };
+                        }
+
+                        if (rentalItem.ItemId == null)
+                        {
+                            var item = await _context.Items
+                                .Include(i => i.ItemDefinition)
+                                .Include(i => i.Listings)
+                                .FirstOrDefaultAsync(i => i.Id == selection.ItemId);
+
+                            if (item == null)
+                            {
+                                return new RentalShipmentResult { Error = $"所选库存商品不存在。" };
+                            }
+
+                            if (item.ItemDefinitionId != rentalItem.ItemDefinitionId)
+                            {
+                                return new RentalShipmentResult { Error = $"所选商品 {item.ShortId} 的分类不匹配。" };
+                            }
+
+                            if (item.Status == ItemStatus.Disposed)
+                            {
+                                return new RentalShipmentResult { Error = $"所选商品 {item.ShortId} 已被处置。" };
+                            }
+
+                            var listingRemarks = string.Join("; ", item.Listings
+                                .Where(l => l.Status == ListingStatus.Listed)
+                                .Select(l => $"{l.Platform}: {l.Remarks ?? "无备注"}"));
+
+                            rentalItem.ItemId = item.Id;
+                            rentalItem.ItemShortIdSnapshot = item.ShortId;
+                            rentalItem.ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty;
+                            rentalItem.ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks;
+                            rentalItem.Item = item;
+                        }
+                    }
+                }
+
+                var remainingUncertain = rental.Items.Any(ri => ri.ItemId == null && ri.ReturnedAt == null);
+                if (remainingUncertain)
+                {
+                    return new RentalShipmentResult { Error = "发货时必须为所有物品选择具体的库存。" };
+                }
+
                 var conflict = await ValidateOutboundShipmentConflictsAsync(
                     rental.Id,
-                    rental.Items.Where(ri => ri.ReturnedAt == null).Select(ri => ri.ItemId).ToList());
+                    rental.Items.Where(ri => ri.ReturnedAt == null).Select(ri => ri.ItemId!.Value).ToList());
 
                 if (conflict != null && !dto.AllowOpenItemConflict)
                 {
@@ -1436,12 +1560,13 @@ namespace AuditIt.Api.Services
                 .Where(ri => ri.ReturnedAt == null)
                 .ToList();
             var currentItemIds = activeRentalItems
-                .Select(ri => ri.ItemId)
+                .Where(ri => ri.ItemId.HasValue)
+                .Select(ri => ri.ItemId!.Value)
                 .ToHashSet();
             var desiredSet = desiredItemIds.ToHashSet();
             var addItemIds = desiredSet.Except(currentItemIds).ToList();
             var removeRentalItems = activeRentalItems
-                .Where(ri => !desiredSet.Contains(ri.ItemId))
+                .Where(ri => !ri.ItemId.HasValue || !desiredSet.Contains(ri.ItemId.Value))
                 .ToList();
 
             if (addItemIds.Count == 0 && removeRentalItems.Count == 0)
@@ -1610,7 +1735,7 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Shipments)
                 .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
                 .Where(r => excludeRentalId == null || r.Id != excludeRentalId.Value)
-                .Where(r => r.Items.Any(ri => itemIds.Contains(ri.ItemId) && ri.ReturnedAt == null))
+                .Where(r => r.Items.Any(ri => ri.ItemId.HasValue && itemIds.Contains(ri.ItemId.Value) && ri.ReturnedAt == null))
                 .ToListAsync();
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, startDay, expectedEndDay))
@@ -1623,14 +1748,14 @@ namespace AuditIt.Api.Services
             {
                 var hasRentalStarted = HasRentalStarted(rental);
 
-                foreach (var rentalItem in rental.Items.Where(ri => itemIds.Contains(ri.ItemId) && ri.ReturnedAt == null))
+                foreach (var rentalItem in rental.Items.Where(ri => ri.ItemId.HasValue && itemIds.Contains(ri.ItemId.Value) && ri.ReturnedAt == null))
                 {
                     var conflict = new RentalScheduleConflictDto
                     {
                         RentalId = rental.Id,
                         RentalNumber = rental.RentalNumber,
                         RentalStatus = rental.Status,
-                        ItemId = rentalItem.ItemId,
+                        ItemId = rentalItem.ItemId ?? Guid.Empty,
                         ItemShortId = rentalItem.ItemShortIdSnapshot,
                         ItemName = rentalItem.ItemNameSnapshot,
                         StartDate = RentalDateRules.ToBusinessDate(rental.StartDate),
@@ -1668,6 +1793,102 @@ namespace AuditIt.Api.Services
             };
         }
 
+        private async Task<List<RentalScheduleConflictDto>> ValidateItemDefinitionConflictsAsync(
+            IReadOnlyCollection<int> itemDefIds,
+            DateTime startDate,
+            DateTime expectedEndDate,
+            Guid? excludeRentalId = null)
+        {
+            var conflicts = new List<RentalScheduleConflictDto>();
+            if (itemDefIds == null || itemDefIds.Count == 0)
+            {
+                return conflicts;
+            }
+
+            var startDay = RentalDateRules.ToBusinessDate(startDate);
+            var expectedEndDay = RentalDateRules.ToBusinessDate(expectedEndDate);
+
+            var candidateRentals = await _context.Rentals
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                .Include(r => r.Shipments)
+                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
+                .Where(r => excludeRentalId == null || r.Id != excludeRentalId.Value)
+                .ToListAsync();
+
+            var overlappingRentals = candidateRentals
+                .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, startDay, expectedEndDay))
+                .ToList();
+
+            var distinctDefs = itemDefIds.Distinct().ToList();
+            foreach (var defId in distinctDefs)
+            {
+                var def = await _context.ItemDefinitions.FindAsync(defId);
+                if (def == null) continue;
+
+                var totalStock = await _context.Items.CountAsync(i => i.ItemDefinitionId == defId && i.Status != ItemStatus.Disposed);
+                var requestedQty = itemDefIds.Count(id => id == defId);
+
+                var currentDay = startDay.Date;
+                var maxOccupancy = 0;
+                Rental? worstRental = null;
+                var hasConflict = false;
+
+                while (currentDay <= expectedEndDay.Date)
+                {
+                    var dayRentals = overlappingRentals
+                        .Where(r => RentalDateRules.ToBusinessDate(r.StartDate) <= currentDay && RentalDateRules.ToBusinessDate(r.ExpectedEndDate) >= currentDay)
+                        .ToList();
+
+                    var dayOccupancy = 0;
+                    Rental? dayWorstRental = null;
+
+                    foreach (var r in dayRentals)
+                    {
+                        var count = r.Items.Count(ri => ri.ReturnedAt == null &&
+                            ((ri.ItemId != null && ri.Item != null && ri.Item.ItemDefinitionId == defId) ||
+                             (ri.ItemId == null && ri.ItemDefinitionId == defId)));
+                        if (count > 0)
+                        {
+                            dayOccupancy += count;
+                            dayWorstRental = r;
+                        }
+                    }
+
+                    if (totalStock - dayOccupancy < requestedQty)
+                    {
+                        hasConflict = true;
+                        if (dayOccupancy > maxOccupancy)
+                        {
+                            maxOccupancy = dayOccupancy;
+                            worstRental = dayWorstRental;
+                        }
+                    }
+
+                    currentDay = currentDay.AddDays(1);
+                }
+
+                if (hasConflict && worstRental != null)
+                {
+                    conflicts.Add(new RentalScheduleConflictDto
+                    {
+                        RentalId = worstRental.Id,
+                        RentalNumber = worstRental.RentalNumber,
+                        RentalStatus = worstRental.Status,
+                        ItemId = Guid.Empty,
+                        ItemShortId = $"[分类库存不足] {def.Name}",
+                        ItemName = def.Name,
+                        StartDate = RentalDateRules.ToBusinessDate(worstRental.StartDate),
+                        ExpectedEndDate = RentalDateRules.ToBusinessDate(worstRental.ExpectedEndDate),
+                        HasOutboundShipment = HasRentalStarted(worstRental),
+                        ConflictReason = $"库存不足（库存: {totalStock}, 占用: {maxOccupancy}, 本单需要: {requestedQty}）"
+                    });
+                }
+            }
+
+            return conflicts;
+        }
+
         private static string BuildCreateConflictMessage(
             IReadOnlyCollection<RentalScheduleConflictDto> pendingShipmentConflicts,
             IReadOnlyCollection<RentalScheduleConflictDto> shippedConflicts)
@@ -1701,7 +1922,7 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Shipments)
                 .Where(r => r.Id != rentalId)
                 .Where(r => r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
-                .Where(r => r.Items.Any(ri => itemIds.Contains(ri.ItemId)))
+                .Where(r => r.Items.Any(ri => ri.ItemId.HasValue && itemIds.Contains(ri.ItemId.Value)))
                 .ToListAsync();
 
             var openReturnConflicts = new List<RentalScheduleConflictDto>();
@@ -1716,7 +1937,7 @@ namespace AuditIt.Api.Services
                     continue;
                 }
 
-                foreach (var rentalItem in otherRental.Items.Where(ri => itemIds.Contains(ri.ItemId)))
+                foreach (var rentalItem in otherRental.Items.Where(ri => ri.ItemId.HasValue && itemIds.Contains(ri.ItemId.Value)))
                 {
                     if (rentalItem.ReturnedAt == null && hasStarted)
                     {
@@ -1765,7 +1986,7 @@ namespace AuditIt.Api.Services
                 RentalId = rental.Id,
                 RentalNumber = rental.RentalNumber,
                 RentalStatus = rental.Status,
-                ItemId = rentalItem.ItemId,
+                ItemId = rentalItem.ItemId ?? Guid.Empty,
                 ItemShortId = rentalItem.ItemShortIdSnapshot,
                 ItemName = rentalItem.ItemNameSnapshot,
                 StartDate = RentalDateRules.ToBusinessDate(rental.StartDate),
@@ -2500,6 +2721,7 @@ namespace AuditIt.Api.Services
             SettlementNotifiedAt = rental.SettlementNotifiedAt,
             SettlementNotifiedStatus = rental.SettlementNotifiedStatus,
             AssignedTo = rental.AssignedTo,
+            SenderName = rental.SenderName,
             Items = rental.Items.Select(ToItemDto).ToList(),
             Shipments = rental.Shipments.Select(ToShipmentDto).ToList()
         };
@@ -2508,6 +2730,7 @@ namespace AuditIt.Api.Services
         {
             Id = rentalItem.Id,
             ItemId = rentalItem.ItemId,
+            ItemDefinitionId = rentalItem.ItemDefinitionId,
             ItemShortIdSnapshot = rentalItem.ItemShortIdSnapshot,
             ItemNameSnapshot = rentalItem.ItemNameSnapshot,
             PerItemPrice = rentalItem.PerItemPrice,

@@ -21,9 +21,13 @@ namespace AuditIt.Api.Models
         [ForeignKey("RentalId")]
         public virtual Rental? Rental { get; set; }
 
-        public Guid ItemId { get; set; }
+        public Guid? ItemId { get; set; }
         [ForeignKey("ItemId")]
         public virtual Item? Item { get; set; }
+
+        public int? ItemDefinitionId { get; set; }
+        [ForeignKey("ItemDefinitionId")]
+        public virtual ItemDefinition? ItemDefinition { get; set; }
 
         [StringLength(50)]
         public string ItemShortIdSnapshot { get; set; } = string.Empty;

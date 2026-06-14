@@ -36,6 +36,7 @@ namespace AuditIt.Api.Models
         public DateTime? SettlementNotifiedAt { get; set; }
         public string? SettlementNotifiedStatus { get; set; }
         public string? AssignedTo { get; set; }
+        public string? SenderName { get; set; }
         public List<RentalItemDto> Items { get; set; } = new();
         public List<RentalShipmentDto> Shipments { get; set; } = new();
     }
@@ -43,7 +44,8 @@ namespace AuditIt.Api.Models
     public class RentalItemDto
     {
         public int Id { get; set; }
-        public Guid ItemId { get; set; }
+        public Guid? ItemId { get; set; }
+        public int? ItemDefinitionId { get; set; }
         public string ItemShortIdSnapshot { get; set; } = string.Empty;
         public string ItemNameSnapshot { get; set; } = string.Empty;
         public decimal? PerItemPrice { get; set; }
@@ -74,9 +76,9 @@ namespace AuditIt.Api.Models
         [Required]
         public RenterInlineDto Renter { get; set; } = new();
 
-        [Required]
-        [MinLength(1)]
         public List<string> ItemIds { get; set; } = new();
+
+        public List<int> ItemDefinitionIds { get; set; } = new();
 
         public DateTime? StartDate { get; set; }
 
@@ -129,6 +131,10 @@ namespace AuditIt.Api.Models
         public string? Notes { get; set; }
         [StringLength(100)]
         public string? AssignedTo { get; set; }
+
+        public string? CreatedBy { get; set; }
+
+        public string? SenderName { get; set; }
     }
 
     public class CreateRentalResult
@@ -272,6 +278,14 @@ namespace AuditIt.Api.Models
         public string? Notes { get; set; }
 
         public bool AllowOpenItemConflict { get; set; }
+
+        public List<RentalItemShipSelectionDto> ItemSelections { get; set; } = new();
+    }
+
+    public class RentalItemShipSelectionDto
+    {
+        public int RentalItemId { get; set; }
+        public Guid ItemId { get; set; }
     }
 
     public class DeliverShipmentDto

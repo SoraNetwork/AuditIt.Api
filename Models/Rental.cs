@@ -87,6 +87,10 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? AssignedTo { get; set; }
 
+        // 手动发货人姓名，与结算单相对应
+        [StringLength(100)]
+        public string? SenderName { get; set; }
+
         public virtual ICollection<RentalItem> Items { get; set; } = new List<RentalItem>();
 
         public virtual ICollection<RentalShipment> Shipments { get; set; } = new List<RentalShipment>();

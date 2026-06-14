@@ -105,6 +105,117 @@ namespace AuditIt.Api.Controllers
             return CreatedAtAction("GetItemDefinition", new { id = itemDefinition.Id }, itemDefinition);
         }
 
+        // GET: api/ItemDefinitions/5/occupancy
+        [HttpGet("{id}/occupancy")]
+        [RequirePermission(PermissionCodes.ItemView)]
+        public async Task<ActionResult<ItemDefinitionOccupancyCalendarDto>> GetOccupancyCalendar(
+            int id,
+            [FromQuery] DateTime? from,
+            [FromQuery] DateTime? to)
+        {
+            var def = await _context.ItemDefinitions.FindAsync(id);
+            if (def == null)
+            {
+                return NotFound();
+            }
+
+            var today = RentalDateRules.Today(DateTime.UtcNow);
+            var rangeStart = (from ?? today.AddDays(-7)).Date;
+            var rangeEnd = (to ?? today.AddDays(60)).Date.AddDays(1).AddTicks(-1);
+
+            if (rangeEnd < rangeStart)
+            {
+                (rangeStart, rangeEnd) = (rangeEnd.Date, rangeStart.Date.AddDays(1).AddTicks(-1));
+            }
+
+            if ((rangeEnd - rangeStart).TotalDays > 180)
+            {
+                rangeEnd = rangeStart.AddDays(180).AddTicks(-1);
+            }
+
+            var totalStock = await _context.Items.CountAsync(i => i.ItemDefinitionId == id && i.Status != ItemStatus.Disposed);
+
+            var candidateRentals = await _context.Rentals
+                .Include(r => r.Renter)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
+                .Where(r => r.StartDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
+                .ToListAsync();
+
+            var overlappingRentals = candidateRentals
+                .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, rangeStart, rangeEnd))
+                .ToList();
+
+            var dailyStocks = new List<ItemDefinitionDailyStockDto>();
+            var currentDay = rangeStart.Date;
+
+            while (currentDay <= rangeEnd.Date)
+            {
+                var dayRentals = overlappingRentals
+                    .Where(r => RentalDateRules.ToBusinessDate(r.StartDate) <= currentDay && RentalDateRules.ToBusinessDate(r.ExpectedEndDate) >= currentDay)
+                    .ToList();
+
+                var details = new List<ItemDefinitionDailyOccupancyDto>();
+                var occupiedCount = 0;
+
+                foreach (var r in dayRentals)
+                {
+                    var specificCount = r.Items.Count(ri => ri.ReturnedAt == null && ri.ItemId != null && ri.Item != null && ri.Item.ItemDefinitionId == id);
+                    var uncertainCount = r.Items.Count(ri => ri.ReturnedAt == null && ri.ItemId == null && ri.ItemDefinitionId == id);
+
+                    if (specificCount > 0)
+                    {
+                        occupiedCount += specificCount;
+                        details.Add(new ItemDefinitionDailyOccupancyDto
+                        {
+                            RentalId = r.Id,
+                            RentalNumber = r.RentalNumber,
+                            RentalStatus = r.Status,
+                            RenterName = r.Renter?.Name,
+                            Quantity = specificCount,
+                            IsUncertain = false
+                        });
+                    }
+
+                    if (uncertainCount > 0)
+                    {
+                        occupiedCount += uncertainCount;
+                        details.Add(new ItemDefinitionDailyOccupancyDto
+                        {
+                            RentalId = r.Id,
+                            RentalNumber = r.RentalNumber,
+                            RentalStatus = r.Status,
+                            RenterName = r.Renter?.Name,
+                            Quantity = uncertainCount,
+                            IsUncertain = true
+                        });
+                    }
+                }
+
+                dailyStocks.Add(new ItemDefinitionDailyStockDto
+                {
+                    Date = currentDay,
+                    TotalStock = totalStock,
+                    OccupiedCount = occupiedCount,
+                    RemainingStock = totalStock - occupiedCount,
+                    Details = details
+                });
+
+                currentDay = currentDay.AddDays(1);
+            }
+
+            return Ok(new ItemDefinitionOccupancyCalendarDto
+            {
+                ItemDefinitionId = id,
+                Name = def.Name,
+                TotalStock = totalStock,
+                From = rangeStart,
+                To = rangeEnd,
+                DailyStocks = dailyStocks
+            });
+        }
+
         // DELETE: api/ItemDefinitions/5
         [HttpDelete("{id}")]
         [RequirePermission(PermissionCodes.ItemDefinitionManage)]

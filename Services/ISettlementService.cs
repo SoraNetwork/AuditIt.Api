@@ -10,6 +10,7 @@ namespace AuditIt.Api.Services
             string? currentUser,
             CancellationToken ct = default);
         Task<SettlementPreviewDto?> GetPreviewAsync(Guid rentalId, CancellationToken ct = default);
+        Task<List<SettlementPreviewDto>> GetPreviewsAsync(List<Rental> rentals, CancellationToken ct = default);
         Task<(SettlementPreviewDto? preview, string? error)> SendForRentalAsync(
             Guid rentalId,
             string? currentUser,

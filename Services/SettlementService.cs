@@ -74,6 +74,18 @@ namespace AuditIt.Api.Services
             return BuildPreview(rental, settings, shipperSourceShipments);
         }
 
+        public async Task<List<SettlementPreviewDto>> GetPreviewsAsync(List<Rental> rentals, CancellationToken ct = default)
+        {
+            var settings = await GetSettingsEntityAsync(ct);
+            var result = new List<SettlementPreviewDto>();
+            foreach (var rental in rentals)
+            {
+                var shipperSourceShipments = await LoadShipperSourceShipmentsAsync(rental, ct);
+                result.Add(BuildPreview(rental, settings, shipperSourceShipments));
+            }
+            return result;
+        }
+
         public async Task<(SettlementPreviewDto? preview, string? error)> SendForRentalAsync(
             Guid rentalId,
             string? currentUser,
@@ -196,7 +208,7 @@ namespace AuditIt.Api.Services
             var technicianAmount = PercentAmount(accountedAmount, settings.TechnicianPercent);
             var creatorAmount = PercentAmount(accountedAmount, settings.CreatorPercent);
             var ownerPool = PercentAmount(accountedAmount, settings.ItemOwnerPercent);
-            var shipperShares = BuildShipperShares(shipperSourceShipments, accountedAmount, settings.ShipperPercent);
+            var shipperShares = BuildShipperShares(rental.SenderName, shipperSourceShipments, accountedAmount, settings.ShipperPercent);
             var shipperAmount = shipperShares.Sum(s => s.Amount);
             var ownerShares = SettlementOwnerShareCalculator.BuildOwnerShares(rental, accountedAmount, settings.ItemOwnerPercent);
             var ineligibleReason = ResolveIneligibleReason(rental);
@@ -346,6 +358,7 @@ namespace AuditIt.Api.Services
         }
 
         private static IReadOnlyList<(string? ShipperName, decimal Amount)> BuildShipperShares(
+            string? senderNameOverride,
             IReadOnlyList<RentalShipment> sourceShipments,
             decimal accountedAmount,
             decimal shipperPercent)
@@ -354,6 +367,11 @@ namespace AuditIt.Api.Services
             if (shipperPool <= 0)
             {
                 return Array.Empty<(string? ShipperName, decimal Amount)>();
+            }
+
+            if (!string.IsNullOrWhiteSpace(senderNameOverride))
+            {
+                return [(senderNameOverride.Trim(), shipperPool)];
             }
 
             var shipments = sourceShipments
