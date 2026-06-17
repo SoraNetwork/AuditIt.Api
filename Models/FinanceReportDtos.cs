@@ -43,6 +43,7 @@ namespace AuditIt.Api.Models
         public Guid RentalId { get; set; }
         public string RentalNumber { get; set; } = string.Empty;
         public RentalStatus Status { get; set; }
+        public Guid RenterId { get; set; }
         public string? RenterName { get; set; }
         public string? AssignedTo { get; set; }
         public DateTime StartDate { get; set; }

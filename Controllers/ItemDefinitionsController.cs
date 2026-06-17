@@ -172,6 +172,7 @@ namespace AuditIt.Api.Controllers
                             RentalId = r.Id,
                             RentalNumber = r.RentalNumber,
                             RentalStatus = r.Status,
+                            RenterId = r.RenterId,
                             RenterName = r.Renter?.Name,
                             Quantity = specificCount,
                             IsUncertain = false
@@ -186,6 +187,7 @@ namespace AuditIt.Api.Controllers
                             RentalId = r.Id,
                             RentalNumber = r.RentalNumber,
                             RentalStatus = r.Status,
+                            RenterId = r.RenterId,
                             RenterName = r.Renter?.Name,
                             Quantity = uncertainCount,
                             IsUncertain = true

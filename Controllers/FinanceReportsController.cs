@@ -138,6 +138,7 @@ namespace AuditIt.Api.Controllers
                 RentalId = rental.Id,
                 RentalNumber = rental.RentalNumber,
                 Status = rental.Status,
+                RenterId = rental.RenterId,
                 RenterName = rental.Renter?.Name,
                 AssignedTo = rental.AssignedTo,
                 StartDate = RentalDateRules.ToBusinessDate(rental.StartDate),

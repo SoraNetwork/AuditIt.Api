@@ -14,6 +14,7 @@ namespace AuditIt.Api.Models
         public Guid RentalId { get; set; }
         public string RentalNumber { get; set; } = string.Empty;
         public RentalStatus RentalStatus { get; set; }
+        public Guid RenterId { get; set; }
         public string? RenterName { get; set; }
         public DateTime StartAt { get; set; }
         public DateTime EndAt { get; set; }
@@ -51,6 +52,7 @@ namespace AuditIt.Api.Models
         public Guid RentalId { get; set; }
         public string RentalNumber { get; set; } = string.Empty;
         public RentalStatus RentalStatus { get; set; }
+        public Guid RenterId { get; set; }
         public string? RenterName { get; set; }
         public int Quantity { get; set; }
         public bool IsUncertain { get; set; }

@@ -168,6 +168,7 @@ namespace AuditIt.Api.Services
                         Level = rental.Status == RentalStatus.Overdue ? ReminderLevel.Critical : ReminderLevel.Info,
                         RentalId = rental.Id,
                         RentalNumber = rental.RentalNumber,
+                        RenterId = rental.RenterId,
                         RenterName = rental.Renter?.Name,
                         RentalStatus = rental.Status,
                         Title = $"租期 {rental.RentalNumber}",
@@ -195,6 +196,7 @@ namespace AuditIt.Api.Services
                             Level = expectedShipDate < today ? ReminderLevel.Critical : ReminderLevel.Warning,
                             RentalId = rental.Id,
                             RentalNumber = rental.RentalNumber,
+                            RenterId = rental.RenterId,
                             RenterName = rental.Renter?.Name,
                             RentalStatus = rental.Status,
                             Title = $"需要发货 {rental.RentalNumber}",
@@ -226,6 +228,7 @@ namespace AuditIt.Api.Services
                                 : ReminderLevel.Warning,
                             RentalId = rental.Id,
                             RentalNumber = rental.RentalNumber,
+                            RenterId = rental.RenterId,
                             RenterName = rental.Renter?.Name,
                             RentalStatus = rental.Status,
                             Title = $"需要收货 {rental.RentalNumber}",
@@ -249,6 +252,7 @@ namespace AuditIt.Api.Services
                         Level = ReminderLevel.Info,
                         RentalId = rental.Id,
                         RentalNumber = rental.RentalNumber,
+                        RenterId = rental.RenterId,
                         RenterName = rental.Renter?.Name,
                         RentalStatus = rental.Status,
                         Title = shipment.Direction == ShipmentDirection.Outbound
@@ -293,6 +297,7 @@ namespace AuditIt.Api.Services
                     ? new Dictionary<Guid, Rental>()
                     : await _context.Rentals
                         .Include(r => r.Items)
+                        .Include(r => r.Renter)
                         .Include(r => r.Shipments)
                         .Where(r => reminderRentalIds.Contains(r.Id))
                         .ToDictionaryAsync(r => r.Id);
@@ -300,6 +305,9 @@ namespace AuditIt.Api.Services
                 foreach (var reminder in reminders)
                 {
                     var rentalId = ParseRentalId(reminder);
+                    var reminderRental = rentalId.HasValue && reminderRentals.TryGetValue(rentalId.Value, out var rental)
+                        ? rental
+                        : null;
                     if (IsCompletedAutoReminder(reminder, rentalId, reminderRentals))
                     {
                         continue;
@@ -322,6 +330,8 @@ namespace AuditIt.Api.Services
                         ReminderType = reminder.Type,
                         Level = reminder.Level,
                         RentalId = rentalId,
+                        RenterId = reminderRental?.RenterId,
+                        RenterName = reminderRental?.Renter?.Name,
                         ReminderId = reminder.Id,
                         Title = reminder.Title,
                         Description = reminder.Message,

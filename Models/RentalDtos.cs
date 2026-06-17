@@ -244,6 +244,7 @@ namespace AuditIt.Api.Models
         public ReminderLevel Level { get; set; } = ReminderLevel.Info;
         public Guid? RentalId { get; set; }
         public string? RentalNumber { get; set; }
+        public Guid? RenterId { get; set; }
         public string? RenterName { get; set; }
         public RentalStatus? RentalStatus { get; set; }
         public int? ReminderId { get; set; }
