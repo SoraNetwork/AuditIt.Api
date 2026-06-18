@@ -139,12 +139,15 @@ namespace AuditIt.Api.Controllers
                 .Include(r => r.Renter)
                 .Include(r => r.Items)
                     .ThenInclude(ri => ri.Item)
+                .Include(r => r.Shipments)
                 .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
-                .Where(r => r.StartDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
+                .Where(r => (r.StartDate <= rangeEnd.AddDays(1)
+                    || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
+                    && r.ExpectedEndDate >= rangeStart.AddDays(-1))
                 .ToListAsync();
 
             var overlappingRentals = candidateRentals
-                .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, rangeStart, rangeEnd))
+                .Where(r => RentalDateRules.Overlaps(RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments), r.ExpectedEndDate, rangeStart, rangeEnd))
                 .ToList();
 
             var dailyStocks = new List<ItemDefinitionDailyStockDto>();
@@ -153,7 +156,7 @@ namespace AuditIt.Api.Controllers
             while (currentDay <= rangeEnd.Date)
             {
                 var dayRentals = overlappingRentals
-                    .Where(r => RentalDateRules.ToBusinessDate(r.StartDate) <= currentDay && RentalDateRules.ToBusinessDate(r.ExpectedEndDate) >= currentDay)
+                    .Where(r => RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments) <= currentDay && RentalDateRules.ToBusinessDate(r.ExpectedEndDate) >= currentDay)
                     .ToList();
 
                 var details = new List<ItemDefinitionDailyOccupancyDto>();

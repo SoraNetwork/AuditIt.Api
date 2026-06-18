@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using AuditIt.Api.Models;
 
 namespace AuditIt.Api.Services
 {
@@ -30,6 +33,20 @@ namespace AuditIt.Api.Services
 
         public static bool Overlaps(DateTime startDate, DateTime expectedEndDate, DateTime from, DateTime to) =>
             ToBusinessDate(startDate) <= to.Date && ToBusinessDate(expectedEndDate) >= from.Date;
+
+        public static DateTime OccupancyStartDate(DateTime startDate, IEnumerable<RentalShipment> shipments)
+        {
+            var start = ToBusinessDate(startDate);
+            var firstOutbound = shipments
+                .Where(shipment => shipment.Direction == ShipmentDirection.Outbound)
+                .OrderBy(shipment => shipment.ShippedAt)
+                .Select(shipment => (DateTime?)ToBusinessDate(shipment.ShippedAt))
+                .FirstOrDefault();
+
+            return firstOutbound.HasValue && firstOutbound.Value < start
+                ? firstOutbound.Value
+                : start;
+        }
 
         public static string Format(DateTime value) => ToBusinessDate(value).ToString("yyyy-MM-dd");
 

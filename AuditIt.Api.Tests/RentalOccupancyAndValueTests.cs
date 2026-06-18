@@ -1,6 +1,8 @@
+using AuditIt.Api.Controllers;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
 using AuditIt.Api.Services;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -158,6 +160,75 @@ public class RentalOccupancyAndValueTests
             .Where(r => r.Items.Any(ri => ri.ItemId == item2.Id && (ri.ReturnedAt == null || ri.ReturnedAt > r.StartDate)))
             .ToListAsync();
         Assert.Single(busyRentalsAfter2);
+    }
+
+    [Fact]
+    public async Task DefinitionOccupancy_UsesActualOutboundShipmentDate_IfShippedBeforeRentalStart()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut
+        };
+        var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
+        var rentalId = Guid.NewGuid();
+        var shippedAt = new DateTime(2026, 6, 18, 10, 0, 0, DateTimeKind.Utc);
+
+        var rental = new Rental
+        {
+            Id = rentalId,
+            RentalNumber = "R20260618-0001",
+            Renter = renter,
+            Status = RentalStatus.Active,
+            StartDate = new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc),
+            ExpectedShipDate = new DateTime(2026, 6, 19, 0, 0, 0, DateTimeKind.Utc),
+            ExpectedEndDate = new DateTime(2026, 6, 25, 0, 0, 0, DateTimeKind.Utc)
+        };
+
+        context.Rentals.Add(rental);
+        context.RentalItems.Add(new RentalItem
+        {
+            RentalId = rentalId,
+            ItemId = item.Id,
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        context.RentalShipments.Add(new RentalShipment
+        {
+            RentalId = rentalId,
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = shippedAt
+        });
+        await context.SaveChangesAsync();
+
+        var controller = new ItemDefinitionsController(context);
+        var action = await controller.GetOccupancyCalendar(definition.Id, shippedAt, shippedAt);
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var calendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(ok.Value);
+        var day = Assert.Single(calendar.DailyStocks);
+        Assert.Equal(shippedAt.AddHours(8).Date, day.Date);
+        Assert.Equal(1, day.OccupiedCount);
+        Assert.Single(day.Details);
     }
 
     private sealed class StubRenterService : IRenterService

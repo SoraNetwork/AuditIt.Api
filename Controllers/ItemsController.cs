@@ -153,9 +153,12 @@ namespace AuditIt.Api.Controllers
             var rentals = await _context.Rentals
                 .Include(r => r.Renter)
                 .Include(r => r.Items)
+                .Include(r => r.Shipments)
                 .Where(r => r.Status != RentalStatus.Cancelled)
                 .Where(r => r.Items.Any(ri => ri.ItemId == id && (ri.ReturnedAt == null || ri.ReturnedAt > r.StartDate)))
-                .Where(r => r.StartDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
+                .Where(r => (r.StartDate <= rangeEnd.AddDays(1)
+                    || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
+                    && r.ExpectedEndDate >= rangeStart.AddDays(-1))
                 .ToListAsync();
 
             var uncertainRentals = await _context.Rentals
@@ -167,13 +170,13 @@ namespace AuditIt.Api.Controllers
                 .ToListAsync();
 
             var busy = rentals
-                .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, rangeStart, rangeEnd))
+                .Where(r => RentalDateRules.Overlaps(RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments), r.ExpectedEndDate, rangeStart, rangeEnd))
                 .SelectMany(r => r.Items
                     .Where(ri => ri.ItemId == id && (ri.ReturnedAt == null || ri.ReturnedAt > r.StartDate))
                     .Select(ri =>
                     {
                         var periodEnd = ri.ReturnedAt ?? r.ActualEndDate ?? r.ExpectedEndDate;
-                        var startAt = RentalDateRules.ToBusinessDate(r.StartDate);
+                        var startAt = RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments);
                         var endAt = RentalDateRules.EndOfBusinessDay(periodEnd);
                         return new ItemBusyPeriodDto
                         {
