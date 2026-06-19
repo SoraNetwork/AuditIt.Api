@@ -20,6 +20,7 @@ namespace AuditIt.Api.Models
         public DateTime EndAt { get; set; }
         public bool IsOpen { get; set; }
         public bool IsUncertain { get; set; }
+        public ItemOccupancyStatus OccupancyStatus { get; set; } = ItemOccupancyStatus.Scheduled;
     }
 
     public class ItemFreePeriodDto
@@ -56,5 +57,12 @@ namespace AuditIt.Api.Models
         public string? RenterName { get; set; }
         public int Quantity { get; set; }
         public bool IsUncertain { get; set; }
+        public ItemOccupancyStatus OccupancyStatus { get; set; } = ItemOccupancyStatus.Scheduled;
+    }
+
+    public enum ItemOccupancyStatus
+    {
+        Scheduled,
+        Returning
     }
 }

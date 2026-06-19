@@ -48,8 +48,24 @@ namespace AuditIt.Api.Services
                 : start;
         }
 
-        public static DateTime OccupancyEndDate(DateTime expectedEndDate, DateTime? actualEndDate, DateTime? returnedAt = null) =>
-            ToBusinessDate(returnedAt ?? actualEndDate ?? expectedEndDate);
+        public static DateTime OccupancyEndDate(
+            DateTime expectedEndDate,
+            DateTime? actualEndDate,
+            DateTime? returnedAt = null,
+            DateTime? openEndedUntil = null) =>
+            ToBusinessDate(returnedAt ?? actualEndDate ?? openEndedUntil ?? expectedEndDate);
+
+        public static DateTime? OpenEndedUntil(
+            DateTime? actualEndDate,
+            DateTime? returnedAt,
+            bool hasRentalStarted,
+            DateTime rangeEnd) =>
+            hasRentalStarted && actualEndDate == null && returnedAt == null
+                ? rangeEnd
+                : null;
+
+        public static bool IsReturningBusinessDate(DateTime expectedEndDate, DateTime day) =>
+            day.Date > ToBusinessDate(expectedEndDate);
 
         public static bool OccupiesBusinessDate(
             DateTime startDate,
@@ -57,11 +73,12 @@ namespace AuditIt.Api.Services
             IEnumerable<RentalShipment> shipments,
             DateTime day,
             DateTime? actualEndDate = null,
-            DateTime? returnedAt = null)
+            DateTime? returnedAt = null,
+            DateTime? openEndedUntil = null)
         {
             var businessDay = day.Date;
             return OccupancyStartDate(startDate, shipments) <= businessDay
-                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt) >= businessDay;
+                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt, openEndedUntil) >= businessDay;
         }
 
         public static string Format(DateTime value) => ToBusinessDate(value).ToString("yyyy-MM-dd");

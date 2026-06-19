@@ -145,13 +145,23 @@ namespace AuditIt.Api.Controllers
                     || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
                     && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
                         || r.ActualEndDate >= rangeStart.AddDays(-1)
-                        || r.Items.Any(ri => ri.ReturnedAt >= rangeStart.AddDays(-1))))
+                        || r.Items.Any(ri => ri.ReturnedAt >= rangeStart.AddDays(-1))
+                        || ((r.RenewedFromRentalId != null
+                                || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound))
+                            && r.Items.Any(ri => ri.ReturnedAt == null))))
                 .ToListAsync();
 
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(
                     RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments),
-                    RentalDateRules.OccupancyEndDate(r.ExpectedEndDate, r.ActualEndDate),
+                    RentalDateRules.OccupancyEndDate(
+                        r.ExpectedEndDate,
+                        r.ActualEndDate,
+                        openEndedUntil: RentalDateRules.OpenEndedUntil(
+                            r.ActualEndDate,
+                            null,
+                            HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
+                            rangeEnd)),
                     rangeStart,
                     rangeEnd))
                 .ToList();
@@ -163,7 +173,14 @@ namespace AuditIt.Api.Controllers
             {
                 var dayRentals = overlappingRentals
                     .Where(r => RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments) <= currentDay
-                        && RentalDateRules.OccupancyEndDate(r.ExpectedEndDate, r.ActualEndDate) >= currentDay)
+                        && RentalDateRules.OccupancyEndDate(
+                            r.ExpectedEndDate,
+                            r.ActualEndDate,
+                            openEndedUntil: RentalDateRules.OpenEndedUntil(
+                                r.ActualEndDate,
+                                null,
+                                HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
+                                currentDay)) >= currentDay)
                     .ToList();
 
                 var details = new List<ItemDefinitionDailyOccupancyDto>();
@@ -171,31 +188,39 @@ namespace AuditIt.Api.Controllers
 
                 foreach (var r in dayRentals)
                 {
-                    var specificCount = r.Items.Count(ri =>
-                        ri.ItemId != null
-                        && ri.Item != null
-                        && ri.Item.ItemDefinitionId == id
-                        && RentalDateRules.OccupiesBusinessDate(
-                            r.StartDate,
-                            r.ExpectedEndDate,
-                            r.Shipments,
-                            currentDay,
-                            r.ActualEndDate,
-                            ri.ReturnedAt));
-                    var uncertainCount = r.Items.Count(ri =>
-                        ri.ItemId == null
-                        && ri.ItemDefinitionId == id
-                        && RentalDateRules.OccupiesBusinessDate(
-                            r.StartDate,
-                            r.ExpectedEndDate,
-                            r.Shipments,
-                            currentDay,
-                            r.ActualEndDate,
-                            ri.ReturnedAt));
+                    var hasRentalStarted = HasRentalStarted(r);
+                    var specificGroups = r.Items
+                        .Where(ri =>
+                            ri.ItemId != null
+                            && ri.Item != null
+                            && ri.Item.ItemDefinitionId == id
+                            && RentalDateRules.OccupiesBusinessDate(
+                                r.StartDate,
+                                r.ExpectedEndDate,
+                                r.Shipments,
+                                currentDay,
+                                r.ActualEndDate,
+                                ri.ReturnedAt,
+                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay)))
+                        .GroupBy(_ => ResolveOccupancyStatus(r.ExpectedEndDate, currentDay));
+                    var uncertainGroups = r.Items
+                        .Where(ri =>
+                            ri.ItemId == null
+                            && ri.ItemDefinitionId == id
+                            && RentalDateRules.OccupiesBusinessDate(
+                                r.StartDate,
+                                r.ExpectedEndDate,
+                                r.Shipments,
+                                currentDay,
+                                r.ActualEndDate,
+                                ri.ReturnedAt,
+                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay)))
+                        .GroupBy(_ => ResolveOccupancyStatus(r.ExpectedEndDate, currentDay));
 
-                    if (specificCount > 0)
+                    foreach (var group in specificGroups)
                     {
-                        occupiedCount += specificCount;
+                        var quantity = group.Count();
+                        occupiedCount += quantity;
                         details.Add(new ItemDefinitionDailyOccupancyDto
                         {
                             RentalId = r.Id,
@@ -203,14 +228,16 @@ namespace AuditIt.Api.Controllers
                             RentalStatus = r.Status,
                             RenterId = r.RenterId,
                             RenterName = r.Renter?.Name,
-                            Quantity = specificCount,
-                            IsUncertain = false
+                            Quantity = quantity,
+                            IsUncertain = false,
+                            OccupancyStatus = group.Key
                         });
                     }
 
-                    if (uncertainCount > 0)
+                    foreach (var group in uncertainGroups)
                     {
-                        occupiedCount += uncertainCount;
+                        var quantity = group.Count();
+                        occupiedCount += quantity;
                         details.Add(new ItemDefinitionDailyOccupancyDto
                         {
                             RentalId = r.Id,
@@ -218,8 +245,9 @@ namespace AuditIt.Api.Controllers
                             RentalStatus = r.Status,
                             RenterId = r.RenterId,
                             RenterName = r.Renter?.Name,
-                            Quantity = uncertainCount,
-                            IsUncertain = true
+                            Quantity = quantity,
+                            IsUncertain = true,
+                            OccupancyStatus = group.Key
                         });
                     }
                 }
@@ -268,5 +296,14 @@ namespace AuditIt.Api.Controllers
         {
             return _context.ItemDefinitions.Any(e => e.Id == id);
         }
+
+        private static bool HasRentalStarted(Rental rental) =>
+            rental.RenewedFromRentalId.HasValue
+            || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+
+        private static ItemOccupancyStatus ResolveOccupancyStatus(DateTime expectedEndDate, DateTime day) =>
+            RentalDateRules.IsReturningBusinessDate(expectedEndDate, day)
+                ? ItemOccupancyStatus.Returning
+                : ItemOccupancyStatus.Scheduled;
     }
 }

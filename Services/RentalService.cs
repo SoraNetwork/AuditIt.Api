@@ -1860,7 +1860,18 @@ namespace AuditIt.Api.Services
                 .Where(r => r.Items.Any(ri => ri.ItemId.HasValue && itemIds.Contains(ri.ItemId.Value) && ri.ReturnedAt == null))
                 .ToListAsync();
             var overlappingRentals = candidateRentals
-                .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, startDay, expectedEndDay))
+                .Where(r => RentalDateRules.Overlaps(
+                    RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments),
+                    RentalDateRules.OccupancyEndDate(
+                        r.ExpectedEndDate,
+                        r.ActualEndDate,
+                        openEndedUntil: RentalDateRules.OpenEndedUntil(
+                            r.ActualEndDate,
+                            null,
+                            HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
+                            expectedEndDay)),
+                    startDay,
+                    expectedEndDay))
                 .ToList();
 
             var pendingShipmentConflicts = new List<RentalScheduleConflictDto>();
@@ -1941,7 +1952,14 @@ namespace AuditIt.Api.Services
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(
                     RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments),
-                    RentalDateRules.OccupancyEndDate(r.ExpectedEndDate, r.ActualEndDate),
+                    RentalDateRules.OccupancyEndDate(
+                        r.ExpectedEndDate,
+                        r.ActualEndDate,
+                        openEndedUntil: RentalDateRules.OpenEndedUntil(
+                            r.ActualEndDate,
+                            null,
+                            HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
+                            expectedEndDay)),
                     startDay,
                     expectedEndDay))
                 .ToList();
@@ -1976,7 +1994,8 @@ namespace AuditIt.Api.Services
                                 r.Shipments,
                                 currentDay,
                                 r.ActualEndDate,
-                                ri.ReturnedAt) &&
+                                ri.ReturnedAt,
+                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, HasRentalStarted(r), currentDay)) &&
                             ((ri.ItemId != null && ri.Item != null && ri.Item.ItemDefinitionId == defId) ||
                              (ri.ItemId == null && ri.ItemDefinitionId == defId)));
                         if (count > 0)
