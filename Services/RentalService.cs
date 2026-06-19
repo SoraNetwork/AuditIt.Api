@@ -777,8 +777,13 @@ namespace AuditIt.Api.Services
                     return (null, conflict.Message);
                 }
 
-                var defIds = rental.Items.Where(ri => ri.ReturnedAt == null && ri.ItemId == null && ri.ItemDefinitionId.HasValue).Select(ri => ri.ItemDefinitionId!.Value).ToList();
-                var defConflict = await ValidateItemDefinitionConflictsAsync(defIds, nextStartDate, nextExpectedEndDate, rental.Id);
+                var definitionDemand = rental.Items
+                    .Where(ri => ri.ReturnedAt == null)
+                    .Select(ri => ri.Item?.ItemDefinitionId ?? ri.ItemDefinitionId)
+                    .Where(id => id.HasValue)
+                    .Select(id => id!.Value)
+                    .ToList();
+                var defConflict = await ValidateItemDefinitionConflictsAsync(definitionDemand, nextStartDate, nextExpectedEndDate, rental.Id);
                 if (defConflict.Count > 0)
                 {
                     return (null, string.Join("; ", defConflict.Select(c => c.ConflictReason)));
@@ -1558,6 +1563,12 @@ namespace AuditIt.Api.Services
                 return new RentalItemsUpdateResult { Error = "已结束的租赁单不能修改租赁物品。" };
             }
 
+            var hasRentalStarted = HasRentalStarted(rental);
+            if (hasRentalStarted && desiredDefinitionIds.Count > 0)
+            {
+                return new RentalItemsUpdateResult { Error = "租赁已发货或已续租开始，修改物品时只能选择具体物品。" };
+            }
+
             var desiredItems = await _context.Items
                 .Include(i => i.ItemDefinition)
                 .Include(i => i.Warehouse)
@@ -1681,7 +1692,6 @@ namespace AuditIt.Api.Services
             }
 
             var now = DateTime.UtcNow;
-            var hasRentalStarted = HasRentalStarted(rental);
             var addedItems = desiredItems
                 .Where(i => addItemIds.Contains(i.Id))
                 .ToList();
