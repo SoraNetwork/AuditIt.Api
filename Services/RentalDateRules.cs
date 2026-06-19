@@ -48,6 +48,22 @@ namespace AuditIt.Api.Services
                 : start;
         }
 
+        public static DateTime OccupancyEndDate(DateTime expectedEndDate, DateTime? actualEndDate, DateTime? returnedAt = null) =>
+            ToBusinessDate(returnedAt ?? actualEndDate ?? expectedEndDate);
+
+        public static bool OccupiesBusinessDate(
+            DateTime startDate,
+            DateTime expectedEndDate,
+            IEnumerable<RentalShipment> shipments,
+            DateTime day,
+            DateTime? actualEndDate = null,
+            DateTime? returnedAt = null)
+        {
+            var businessDay = day.Date;
+            return OccupancyStartDate(startDate, shipments) <= businessDay
+                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt) >= businessDay;
+        }
+
         public static string Format(DateTime value) => ToBusinessDate(value).ToString("yyyy-MM-dd");
 
         public static string FormatDateTime(DateTime value) =>

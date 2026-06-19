@@ -140,14 +140,20 @@ namespace AuditIt.Api.Controllers
                 .Include(r => r.Items)
                     .ThenInclude(ri => ri.Item)
                 .Include(r => r.Shipments)
-                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
+                .Where(r => r.Status != RentalStatus.Cancelled)
                 .Where(r => (r.StartDate <= rangeEnd.AddDays(1)
                     || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
-                    && r.ExpectedEndDate >= rangeStart.AddDays(-1))
+                    && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
+                        || r.ActualEndDate >= rangeStart.AddDays(-1)
+                        || r.Items.Any(ri => ri.ReturnedAt >= rangeStart.AddDays(-1))))
                 .ToListAsync();
 
             var overlappingRentals = candidateRentals
-                .Where(r => RentalDateRules.Overlaps(RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments), r.ExpectedEndDate, rangeStart, rangeEnd))
+                .Where(r => RentalDateRules.Overlaps(
+                    RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments),
+                    RentalDateRules.OccupancyEndDate(r.ExpectedEndDate, r.ActualEndDate),
+                    rangeStart,
+                    rangeEnd))
                 .ToList();
 
             var dailyStocks = new List<ItemDefinitionDailyStockDto>();
@@ -156,7 +162,8 @@ namespace AuditIt.Api.Controllers
             while (currentDay <= rangeEnd.Date)
             {
                 var dayRentals = overlappingRentals
-                    .Where(r => RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments) <= currentDay && RentalDateRules.ToBusinessDate(r.ExpectedEndDate) >= currentDay)
+                    .Where(r => RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments) <= currentDay
+                        && RentalDateRules.OccupancyEndDate(r.ExpectedEndDate, r.ActualEndDate) >= currentDay)
                     .ToList();
 
                 var details = new List<ItemDefinitionDailyOccupancyDto>();
@@ -164,8 +171,27 @@ namespace AuditIt.Api.Controllers
 
                 foreach (var r in dayRentals)
                 {
-                    var specificCount = r.Items.Count(ri => ri.ReturnedAt == null && ri.ItemId != null && ri.Item != null && ri.Item.ItemDefinitionId == id);
-                    var uncertainCount = r.Items.Count(ri => ri.ReturnedAt == null && ri.ItemId == null && ri.ItemDefinitionId == id);
+                    var specificCount = r.Items.Count(ri =>
+                        ri.ItemId != null
+                        && ri.Item != null
+                        && ri.Item.ItemDefinitionId == id
+                        && RentalDateRules.OccupiesBusinessDate(
+                            r.StartDate,
+                            r.ExpectedEndDate,
+                            r.Shipments,
+                            currentDay,
+                            r.ActualEndDate,
+                            ri.ReturnedAt));
+                    var uncertainCount = r.Items.Count(ri =>
+                        ri.ItemId == null
+                        && ri.ItemDefinitionId == id
+                        && RentalDateRules.OccupiesBusinessDate(
+                            r.StartDate,
+                            r.ExpectedEndDate,
+                            r.Shipments,
+                            currentDay,
+                            r.ActualEndDate,
+                            ri.ReturnedAt));
 
                     if (specificCount > 0)
                     {

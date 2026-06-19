@@ -176,9 +176,9 @@ namespace AuditIt.Api.Models
 
     public class UpdateRentalItemsDto
     {
-        [Required]
-        [MinLength(1)]
         public List<string> ItemIds { get; set; } = new();
+
+        public List<int> ItemDefinitionIds { get; set; } = new();
 
         public bool AllowScheduleConflict { get; set; }
     }
