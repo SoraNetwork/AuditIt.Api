@@ -214,10 +214,11 @@ namespace AuditIt.Api.Services
                     && !rental.RenewedToRentalId.HasValue
                     && hasOpenItems)
                 {
-                    var returnRequiredEnd = expectedEndDate < today
+                    var returnRequiredStart = expectedEndDate.AddDays(1);
+                    var returnRequiredEnd = returnRequiredStart < today
                         ? (today > to.Date ? to.Date : today)
-                        : expectedEndDate;
-                    if (RentalDateRules.Overlaps(expectedEndDate, returnRequiredEnd, from, to))
+                        : returnRequiredStart;
+                    if (RentalDateRules.Overlaps(returnRequiredStart, returnRequiredEnd, from, to))
                     {
                         events.Add(new RentalCalendarEventDto
                         {
@@ -233,7 +234,7 @@ namespace AuditIt.Api.Services
                             RentalStatus = rental.Status,
                             Title = $"需要收货 {rental.RentalNumber}",
                             Description = $"{rental.Renter?.Name ?? "-"} | 租期结束，登记回货物流后消除",
-                            StartAt = expectedEndDate,
+                            StartAt = returnRequiredStart,
                             EndAt = returnRequiredEnd,
                             AllDay = true,
                             IsOpen = true

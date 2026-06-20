@@ -55,6 +55,8 @@ namespace AuditIt.Api.Models
     public class SettlementOwnerShareDto
     {
         public string? OwnerName { get; set; }
+        public string? ItemShortId { get; set; }
+        public string? ItemName { get; set; }
         public decimal Amount { get; set; }
     }
 

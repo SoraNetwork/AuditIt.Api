@@ -241,7 +241,13 @@ namespace AuditIt.Api.Services
                 ItemOwnerPercent = settings.ItemOwnerPercent,
                 ItemOwnerAmount = ownerPool,
                 OwnerShares = ownerShares
-                    .Select(i => new SettlementOwnerShareDto { OwnerName = i.OwnerName, Amount = i.Amount })
+                    .Select(i => new SettlementOwnerShareDto
+                    {
+                        OwnerName = i.OwnerName,
+                        ItemShortId = i.ItemShortId,
+                        ItemName = i.ItemName,
+                        Amount = i.Amount
+                    })
                     .ToList(),
                 MarkdownText = markdown,
                 CanSend = ineligibleReason == null,
@@ -292,7 +298,7 @@ namespace AuditIt.Api.Services
             decimal technicianAmount,
             decimal creatorAmount,
             IReadOnlyList<(string? ShipperName, decimal Amount)> shipperShares,
-            IReadOnlyList<(string? OwnerName, decimal Amount)> ownerShares)
+            IReadOnlyList<(string? OwnerName, decimal Amount, string? ItemShortId, string? ItemName)> ownerShares)
         {
             var lines = new List<string>
             {
@@ -340,6 +346,11 @@ namespace AuditIt.Api.Services
                 var ownerLabel = string.IsNullOrWhiteSpace(ownerShare.OwnerName)
                     ? string.Empty
                     : $"（{ownerShare.OwnerName}）";
+                var itemLabel = FormatOwnerShareItem(ownerShare.ItemShortId, ownerShare.ItemName);
+                if (!string.IsNullOrWhiteSpace(itemLabel))
+                {
+                    ownerLabel += $" / {itemLabel}";
+                }
                 lines.Add($"物品所有{ownerLabel}：{FormatAmount(ownerShare.Amount)}（{FormatPercent(settings.ItemOwnerPercent)}）");
             }
 
@@ -355,6 +366,16 @@ namespace AuditIt.Api.Services
                 .ToList();
 
             return items.Count == 0 ? "-" : string.Join("\n", items);
+        }
+
+        private static string? FormatOwnerShareItem(string? itemShortId, string? itemName)
+        {
+            var parts = new[] { itemShortId, itemName }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim())
+                .ToList();
+
+            return parts.Count == 0 ? null : string.Join(" / ", parts);
         }
 
         private static IReadOnlyList<(string? ShipperName, decimal Amount)> BuildShipperShares(

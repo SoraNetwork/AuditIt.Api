@@ -757,7 +757,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task Calendar_ShowsReturnRequiredForRenewalRentalWithoutOutboundShipment()
+    public async Task Calendar_ShowsReturnRequiredForRenewalRentalDayAfterExpectedEndWithoutOutboundShipment()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -808,16 +808,29 @@ public class RentalOccupancyAndValueTests
             new StubSfExpressService(),
             new StubSettlementService());
 
-        var events = await rentalService.GetCalendarAsync(
+        var sameDayEvents = await rentalService.GetCalendarAsync(
             new RentalCalendarQueryParameters { From = expectedEndDate, To = expectedEndDate },
             "Alice",
             includeReminders: false,
             canSeeAllReminders: false);
 
-        Assert.Contains(events, item =>
+        Assert.DoesNotContain(sameDayEvents, item =>
+            item.Kind == RentalCalendarEventKind.ReturnRequired
+            && item.RentalId == rentalId);
+
+        var returnRequiredDay = expectedEndDate.AddDays(1);
+        var nextDayEvents = await rentalService.GetCalendarAsync(
+            new RentalCalendarQueryParameters { From = returnRequiredDay, To = returnRequiredDay },
+            "Alice",
+            includeReminders: false,
+            canSeeAllReminders: false);
+
+        var returnRequired = Assert.Single(nextDayEvents, item =>
             item.Kind == RentalCalendarEventKind.ReturnRequired
             && item.RentalId == rentalId
             && item.RentalNumber == "R20990620-0001-01");
+        Assert.Equal(returnRequiredDay, returnRequired.StartAt);
+        Assert.Equal(returnRequiredDay, returnRequired.EndAt);
     }
 
     private sealed class StubRenterService : IRenterService

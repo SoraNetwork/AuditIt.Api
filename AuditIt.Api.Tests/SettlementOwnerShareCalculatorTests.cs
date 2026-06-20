@@ -7,7 +7,7 @@ namespace AuditIt.Api.Tests;
 public class SettlementOwnerShareCalculatorTests
 {
     [Fact]
-    public void BuildOwnerShares_usesMultiOwnerSnapshotAsSingleSettlementLabel()
+    public void BuildOwnerShares_keepsEachRentalItemAsSeparateSettlementLine()
     {
         var rental = new Rental
         {
@@ -15,13 +15,17 @@ public class SettlementOwnerShareCalculatorTests
             {
                 new RentalItem
                 {
+                    ItemShortIdSnapshot = "CAM-001",
+                    ItemNameSnapshot = "Camera A",
                     PerItemPrice = 100m,
-                    Item = new Item { OwnerUserNamesSnapshot = " Alice , Bob " }
+                    Item = new Item { OwnerUserNamesSnapshot = "Owner" }
                 },
                 new RentalItem
                 {
+                    ItemShortIdSnapshot = "CAM-002",
+                    ItemNameSnapshot = "Camera B",
                     PerItemPrice = 300m,
-                    Item = new Item { OwnerUserNamesSnapshot = "Bob" }
+                    Item = new Item { OwnerUserNamesSnapshot = "Owner" }
                 }
             }
         };
@@ -32,13 +36,17 @@ public class SettlementOwnerShareCalculatorTests
             shares,
             share =>
             {
-                Assert.Equal("Bob", share.OwnerName);
-                Assert.Equal(375m, share.Amount);
+                Assert.Equal("Owner", share.OwnerName);
+                Assert.Equal("CAM-001", share.ItemShortId);
+                Assert.Equal("Camera A", share.ItemName);
+                Assert.Equal(125m, share.Amount);
             },
             share =>
             {
-                Assert.Equal("Alice,Bob", share.OwnerName);
-                Assert.Equal(125m, share.Amount);
+                Assert.Equal("Owner", share.OwnerName);
+                Assert.Equal("CAM-002", share.ItemShortId);
+                Assert.Equal("Camera B", share.ItemName);
+                Assert.Equal(375m, share.Amount);
             });
     }
 

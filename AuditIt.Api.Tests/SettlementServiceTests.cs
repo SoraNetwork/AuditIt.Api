@@ -173,6 +173,107 @@ public class SettlementServiceTests
     }
 
     [Fact]
+    public async Task GetPreviewAsync_keepsOwnerSharesSeparatePerRentalItem()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var rentalId = Guid.NewGuid();
+        var startDate = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var itemA = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            OwnerUserNamesSnapshot = "Owner"
+        };
+        var itemB = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-002",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            OwnerUserNamesSnapshot = "Owner"
+        };
+
+        var rental = new Rental
+        {
+            Id = rentalId,
+            RentalNumber = "R20260501-0004",
+            Renter = renter,
+            Status = RentalStatus.Returned,
+            StartDate = startDate,
+            ExpectedShipDate = startDate.AddDays(-1),
+            ExpectedEndDate = startDate.AddDays(10),
+            TotalPrice = 1000m
+        };
+        rental.Items.Add(new RentalItem
+        {
+            Item = itemA,
+            ItemShortIdSnapshot = itemA.ShortId,
+            ItemNameSnapshot = "Camera A",
+            PerItemPrice = 100m,
+            ReturnedAt = startDate.AddDays(10)
+        });
+        rental.Items.Add(new RentalItem
+        {
+            Item = itemB,
+            ItemShortIdSnapshot = itemB.ShortId,
+            ItemNameSnapshot = "Camera B",
+            PerItemPrice = 300m,
+            ReturnedAt = startDate.AddDays(10)
+        });
+
+        context.SettlementSettings.Add(new SettlementSetting
+        {
+            Id = 1,
+            TechnicianPercent = 0m,
+            CreatorPercent = 0m,
+            ShipperPercent = 0m,
+            ItemOwnerPercent = 50m
+        });
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var service = new SettlementService(context, new StubDingTalkService(), NullLogger<SettlementService>.Instance);
+
+        var preview = await service.GetPreviewAsync(rentalId);
+
+        Assert.NotNull(preview);
+        Assert.Equal(500m, preview!.ItemOwnerAmount);
+        Assert.Collection(
+            preview.OwnerShares,
+            share =>
+            {
+                Assert.Equal("Owner", share.OwnerName);
+                Assert.Equal("CAM-001", share.ItemShortId);
+                Assert.Equal("Camera A", share.ItemName);
+                Assert.Equal(125m, share.Amount);
+            },
+            share =>
+            {
+                Assert.Equal("Owner", share.OwnerName);
+                Assert.Equal("CAM-002", share.ItemShortId);
+                Assert.Equal("Camera B", share.ItemName);
+                Assert.Equal(375m, share.Amount);
+            });
+        Assert.Contains("CAM-001", preview.MarkdownText);
+        Assert.Contains("CAM-002", preview.MarkdownText);
+    }
+
+    [Fact]
     public async Task GetPreviewAsync_walksRenewalChainUntilOutboundShippersAreFound()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
