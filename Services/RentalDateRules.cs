@@ -52,17 +52,38 @@ namespace AuditIt.Api.Services
             DateTime expectedEndDate,
             DateTime? actualEndDate,
             DateTime? returnedAt = null,
-            DateTime? openEndedUntil = null) =>
-            ToBusinessDate(returnedAt ?? actualEndDate ?? openEndedUntil ?? expectedEndDate);
+            DateTime? openEndedUntil = null)
+        {
+            if (returnedAt.HasValue || actualEndDate.HasValue)
+            {
+                return ToBusinessDate(returnedAt ?? actualEndDate!.Value);
+            }
+
+            var expectedEnd = ToBusinessDate(expectedEndDate);
+            if (!openEndedUntil.HasValue)
+            {
+                return expectedEnd;
+            }
+
+            var openEnd = ToBusinessDate(openEndedUntil.Value);
+            return openEnd > expectedEnd ? openEnd : expectedEnd;
+        }
 
         public static DateTime? OpenEndedUntil(
             DateTime? actualEndDate,
             DateTime? returnedAt,
             bool hasRentalStarted,
-            DateTime rangeEnd) =>
-            hasRentalStarted && actualEndDate == null && returnedAt == null
-                ? rangeEnd
-                : null;
+            DateTime rangeEnd)
+        {
+            if (!hasRentalStarted || actualEndDate != null || returnedAt != null)
+            {
+                return null;
+            }
+
+            var requestedEnd = ToBusinessDate(rangeEnd);
+            var today = Today(DateTime.UtcNow);
+            return requestedEnd < today ? requestedEnd : today;
+        }
 
         public static bool IsReturningBusinessDate(DateTime expectedEndDate, DateTime day) =>
             day.Date > ToBusinessDate(expectedEndDate);

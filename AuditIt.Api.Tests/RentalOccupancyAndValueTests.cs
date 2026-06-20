@@ -445,7 +445,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task DefinitionOccupancy_ExtendsOpenRentalAfterExpectedEndAsReturning()
+    public async Task DefinitionOccupancy_ExtendsOpenRentalAfterExpectedEndOnlyUntilToday()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -470,6 +470,9 @@ public class RentalOccupancyAndValueTests
         };
         var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
         var rentalId = Guid.NewGuid();
+        var today = BusinessToday();
+        var expectedEndDate = today.AddDays(-1);
+        var futureDate = today.AddDays(1);
 
         context.Rentals.Add(new Rental
         {
@@ -477,9 +480,9 @@ public class RentalOccupancyAndValueTests
             RentalNumber = "R20260610-0005",
             Renter = renter,
             Status = RentalStatus.Overdue,
-            StartDate = new DateTime(2026, 6, 10, 0, 0, 0, DateTimeKind.Utc),
-            ExpectedShipDate = new DateTime(2026, 6, 9, 0, 0, 0, DateTimeKind.Utc),
-            ExpectedEndDate = new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc)
+            StartDate = expectedEndDate.AddDays(-10),
+            ExpectedShipDate = expectedEndDate.AddDays(-11),
+            ExpectedEndDate = expectedEndDate
         });
         context.RentalItems.Add(new RentalItem
         {
@@ -495,28 +498,33 @@ public class RentalOccupancyAndValueTests
             Direction = ShipmentDirection.Outbound,
             OriginWarehouse = warehouse,
             Carrier = "SF",
-            ShippedAt = new DateTime(2026, 6, 9, 10, 0, 0, DateTimeKind.Utc)
+            ShippedAt = expectedEndDate.AddDays(-11).AddHours(10)
         });
         await context.SaveChangesAsync();
 
         var controller = new ItemDefinitionsController(context);
         var action = await controller.GetOccupancyCalendar(
             definition.Id,
-            new DateTime(2026, 6, 21, 0, 0, 0, DateTimeKind.Utc),
-            new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc));
+            expectedEndDate,
+            futureDate);
 
         var ok = Assert.IsType<OkObjectResult>(action.Result);
         var calendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(ok.Value);
 
-        Assert.All(calendar.DailyStocks, day => Assert.Equal(1, day.OccupiedCount));
-        var detail = Assert.Single(calendar.DailyStocks.Single(day => day.Date == new DateTime(2026, 6, 21)).Details);
-        var statusProperty = detail.GetType().GetProperty("OccupancyStatus");
-        Assert.NotNull(statusProperty);
-        Assert.Equal("Returning", statusProperty!.GetValue(detail)?.ToString());
+        var expectedEndDay = calendar.DailyStocks.Single(day => day.Date == expectedEndDate);
+        var todayStock = calendar.DailyStocks.Single(day => day.Date == today);
+        var futureStock = calendar.DailyStocks.Single(day => day.Date == futureDate);
+
+        Assert.Equal(1, expectedEndDay.OccupiedCount);
+        Assert.Equal(ItemOccupancyStatus.Scheduled, Assert.Single(expectedEndDay.Details).OccupancyStatus);
+        Assert.Equal(1, todayStock.OccupiedCount);
+        Assert.Equal(ItemOccupancyStatus.Returning, Assert.Single(todayStock.Details).OccupancyStatus);
+        Assert.Equal(0, futureStock.OccupiedCount);
+        Assert.Empty(futureStock.Details);
     }
 
     [Fact]
-    public async Task ItemAvailability_ExtendsOpenRentalAfterExpectedEndUntilRangeEnd()
+    public async Task ItemAvailability_ExtendsOpenRentalAfterExpectedEndOnlyUntilToday()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -541,6 +549,9 @@ public class RentalOccupancyAndValueTests
         };
         var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
         var rentalId = Guid.NewGuid();
+        var today = BusinessToday();
+        var expectedEndDate = today.AddDays(-1);
+        var futureDate = today.AddDays(1);
 
         context.Rentals.Add(new Rental
         {
@@ -548,9 +559,9 @@ public class RentalOccupancyAndValueTests
             RentalNumber = "R20260610-0006",
             Renter = renter,
             Status = RentalStatus.Overdue,
-            StartDate = new DateTime(2026, 6, 10, 0, 0, 0, DateTimeKind.Utc),
-            ExpectedShipDate = new DateTime(2026, 6, 9, 0, 0, 0, DateTimeKind.Utc),
-            ExpectedEndDate = new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc)
+            StartDate = expectedEndDate.AddDays(-10),
+            ExpectedShipDate = expectedEndDate.AddDays(-11),
+            ExpectedEndDate = expectedEndDate
         });
         context.RentalItems.Add(new RentalItem
         {
@@ -566,25 +577,27 @@ public class RentalOccupancyAndValueTests
             Direction = ShipmentDirection.Outbound,
             OriginWarehouse = warehouse,
             Carrier = "SF",
-            ShippedAt = new DateTime(2026, 6, 9, 10, 0, 0, DateTimeKind.Utc)
+            ShippedAt = expectedEndDate.AddDays(-11).AddHours(10)
         });
         await context.SaveChangesAsync();
 
         var controller = new ItemsController(context, new StubWebHostEnvironment());
         var action = await controller.GetAvailability(
             item.Id,
-            new DateTime(2026, 6, 21, 0, 0, 0, DateTimeKind.Utc),
-            new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc));
+            expectedEndDate,
+            futureDate);
 
         var ok = Assert.IsType<OkObjectResult>(action.Result);
         var calendar = Assert.IsType<ItemAvailabilityCalendarDto>(ok.Value);
-        var busy = Assert.Single(calendar.BusyPeriods);
 
-        Assert.Equal(new DateTime(2026, 6, 21), busy.StartAt);
-        Assert.Equal(new DateTime(2026, 6, 23).AddDays(1).AddTicks(-1), busy.EndAt);
-        var statusProperty = busy.GetType().GetProperty("OccupancyStatus");
-        Assert.NotNull(statusProperty);
-        Assert.Equal("Returning", statusProperty!.GetValue(busy)?.ToString());
+        Assert.Equal(2, calendar.BusyPeriods.Count);
+        var scheduled = Assert.Single(calendar.BusyPeriods, period => period.OccupancyStatus == ItemOccupancyStatus.Scheduled);
+        var returning = Assert.Single(calendar.BusyPeriods, period => period.OccupancyStatus == ItemOccupancyStatus.Returning);
+        Assert.Equal(expectedEndDate, scheduled.StartAt);
+        Assert.Equal(expectedEndDate.AddDays(1).AddTicks(-1), scheduled.EndAt);
+        Assert.Equal(today, returning.StartAt);
+        Assert.Equal(today.AddDays(1).AddTicks(-1), returning.EndAt);
+        Assert.DoesNotContain(calendar.BusyPeriods, period => period.StartAt.Date > today);
     }
 
     [Fact]
@@ -613,6 +626,8 @@ public class RentalOccupancyAndValueTests
         };
         var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
         var rentalId = Guid.NewGuid();
+        var today = BusinessToday();
+        var expectedEndDate = today.AddDays(-1);
 
         context.Rentals.Add(new Rental
         {
@@ -620,9 +635,9 @@ public class RentalOccupancyAndValueTests
             RentalNumber = "R20260610-0007",
             Renter = renter,
             Status = RentalStatus.Overdue,
-            StartDate = new DateTime(2026, 6, 10, 0, 0, 0, DateTimeKind.Utc),
-            ExpectedShipDate = new DateTime(2026, 6, 9, 0, 0, 0, DateTimeKind.Utc),
-            ExpectedEndDate = new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc)
+            StartDate = expectedEndDate.AddDays(-10),
+            ExpectedShipDate = expectedEndDate.AddDays(-11),
+            ExpectedEndDate = expectedEndDate
         });
         context.RentalItems.Add(new RentalItem
         {
@@ -638,7 +653,7 @@ public class RentalOccupancyAndValueTests
             Direction = ShipmentDirection.Outbound,
             OriginWarehouse = warehouse,
             Carrier = "SF",
-            ShippedAt = new DateTime(2026, 6, 9, 10, 0, 0, DateTimeKind.Utc)
+            ShippedAt = expectedEndDate.AddDays(-11).AddHours(10)
         });
         await context.SaveChangesAsync();
 
@@ -654,13 +669,91 @@ public class RentalOccupancyAndValueTests
         {
             Renter = new RenterInlineDto { Name = "Next Tenant", Phone = "13900139000" },
             ItemIds = new List<string> { item.Id.ToString() },
-            StartDate = new DateTime(2026, 6, 21, 0, 0, 0, DateTimeKind.Utc),
-            ExpectedShipDate = new DateTime(2026, 6, 21, 0, 0, 0, DateTimeKind.Utc),
-            ExpectedEndDate = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc)
+            StartDate = today,
+            ExpectedShipDate = today,
+            ExpectedEndDate = today.AddDays(2)
         }, "TestUser");
 
         Assert.NotNull(result.Conflict);
         Assert.Contains(result.Conflict!.ShippedConflicts, conflict => conflict.RentalId == rentalId);
+    }
+
+    [Fact]
+    public async Task CreateAsync_DoesNotConflictWithOpenPreviousRentalBeyondToday()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-002",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut
+        };
+        var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
+        var rentalId = Guid.NewGuid();
+        var today = BusinessToday();
+        var expectedEndDate = today.AddDays(-1);
+        var futureStartDate = today.AddDays(1);
+
+        context.Rentals.Add(new Rental
+        {
+            Id = rentalId,
+            RentalNumber = "R20260610-0008",
+            Renter = renter,
+            Status = RentalStatus.Overdue,
+            StartDate = expectedEndDate.AddDays(-10),
+            ExpectedShipDate = expectedEndDate.AddDays(-11),
+            ExpectedEndDate = expectedEndDate
+        });
+        context.RentalItems.Add(new RentalItem
+        {
+            RentalId = rentalId,
+            ItemId = item.Id,
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        context.RentalShipments.Add(new RentalShipment
+        {
+            RentalId = rentalId,
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = expectedEndDate.AddDays(-11).AddHours(10)
+        });
+        await context.SaveChangesAsync();
+
+        var rentalService = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            Array.Empty<INotificationChannel>(),
+            new StubSfExpressService(),
+            new StubSettlementService());
+
+        var result = await rentalService.CreateAsync(new CreateRentalDto
+        {
+            Renter = new RenterInlineDto { Name = "Next Tenant", Phone = "13900139000" },
+            ItemIds = new List<string> { item.Id.ToString() },
+            StartDate = futureStartDate,
+            ExpectedShipDate = futureStartDate,
+            ExpectedEndDate = futureStartDate.AddDays(2)
+        }, "TestUser");
+
+        Assert.Null(result.Conflict);
     }
 
     [Fact]
@@ -741,6 +834,8 @@ public class RentalOccupancyAndValueTests
             Phone = inline.Phone
         });
     }
+
+    private static DateTime BusinessToday() => DateTime.UtcNow.AddHours(8).Date;
 
     private sealed class StubIdentityService : IIdentityService
     {
