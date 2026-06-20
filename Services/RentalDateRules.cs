@@ -54,9 +54,14 @@ namespace AuditIt.Api.Services
             DateTime? returnedAt = null,
             DateTime? openEndedUntil = null)
         {
-            if (returnedAt.HasValue || actualEndDate.HasValue)
+            if (returnedAt.HasValue)
             {
-                return ToBusinessDate(returnedAt ?? actualEndDate!.Value);
+                return ToBusinessDate(returnedAt.Value).AddDays(-1);
+            }
+
+            if (actualEndDate.HasValue)
+            {
+                return ToBusinessDate(actualEndDate.Value);
             }
 
             var expectedEnd = ToBusinessDate(expectedEndDate);

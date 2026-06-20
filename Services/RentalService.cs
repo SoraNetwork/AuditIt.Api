@@ -2072,7 +2072,7 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Items)
                 .Include(r => r.Shipments)
                 .Where(r => r.Id != rentalId)
-                .Where(r => r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
+                .Where(r => r.Status != RentalStatus.Returned && r.Status != RentalStatus.Cancelled && r.Status != RentalStatus.Renewed)
                 .Where(r => r.Items.Any(ri => ri.ItemId.HasValue && itemIds.Contains(ri.ItemId.Value)))
                 .ToListAsync();
 
