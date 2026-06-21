@@ -53,9 +53,15 @@ namespace AuditIt.Api.Services
             DateTime? actualEndDate,
             DateTime? returnedAt = null,
             DateTime? openEndedUntil = null,
-            bool includeReturnBuffer = true)
+            bool includeReturnBuffer = true,
+            DateTime? releasedFromRentalAt = null)
         {
             var expectedEnd = ToBusinessDate(expectedEndDate);
+            if (releasedFromRentalAt.HasValue)
+            {
+                return ToBusinessDate(releasedFromRentalAt.Value);
+            }
+
             if (returnedAt.HasValue || actualEndDate.HasValue || !includeReturnBuffer)
             {
                 return expectedEnd;
@@ -98,11 +104,12 @@ namespace AuditIt.Api.Services
             DateTime? actualEndDate = null,
             DateTime? returnedAt = null,
             DateTime? openEndedUntil = null,
-            bool includeReturnBuffer = true)
+            bool includeReturnBuffer = true,
+            DateTime? releasedFromRentalAt = null)
         {
             var businessDay = day.Date;
             return OccupancyStartDate(startDate, shipments) <= businessDay
-                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt, openEndedUntil, includeReturnBuffer) >= businessDay;
+                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt, openEndedUntil, includeReturnBuffer, releasedFromRentalAt) >= businessDay;
         }
 
         public static string Format(DateTime value) => ToBusinessDate(value).ToString("yyyy-MM-dd");

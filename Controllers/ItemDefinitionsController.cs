@@ -225,7 +225,8 @@ namespace AuditIt.Api.Controllers
                                 r.ActualEndDate,
                                 ri.ReturnedAt,
                                 RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay),
-                                ShouldUseReturnBuffer(r)))
+                                ShouldUseReturnBuffer(r),
+                                ri.ReleasedFromRentalAt))
                         .GroupBy(_ => ResolveOccupancyStatus(r.ExpectedEndDate, currentDay));
                     var uncertainGroups = r.Items
                         .Where(ri =>
@@ -239,7 +240,8 @@ namespace AuditIt.Api.Controllers
                                 r.ActualEndDate,
                                 ri.ReturnedAt,
                                 RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay),
-                                ShouldUseReturnBuffer(r)))
+                                ShouldUseReturnBuffer(r),
+                                ri.ReleasedFromRentalAt))
                         .GroupBy(_ => ResolveOccupancyStatus(r.ExpectedEndDate, currentDay));
 
                     foreach (var group in specificGroups)

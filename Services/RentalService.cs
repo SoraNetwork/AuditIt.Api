@@ -1702,13 +1702,13 @@ namespace AuditIt.Api.Services
                 if (hasRentalStarted)
                 {
                     rentalItem.ReturnedAt = now;
+                    rentalItem.ReleasedFromRentalAt = now;
                     rentalItem.ReturnCondition = ReturnCondition.Good;
                     rentalItem.ReturnNotes = "Removed from rental item list.";
 
                     if (rentalItem.Item != null)
                     {
-                        if (rentalItem.Item.Status == ItemStatus.LoanedOut
-                            && string.Equals(rentalItem.Item.CurrentDestination, $"租赁 {rental.RentalNumber}", StringComparison.OrdinalIgnoreCase))
+                        if (rentalItem.Item.Status == ItemStatus.LoanedOut)
                         {
                             rentalItem.Item.Status = ItemStatus.InStock;
                             rentalItem.Item.CurrentDestination = null;
@@ -2024,7 +2024,8 @@ namespace AuditIt.Api.Services
                                 r.ActualEndDate,
                                 ri.ReturnedAt,
                                 RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, HasRentalStarted(r), currentDay),
-                                ShouldUseReturnBuffer(r)) &&
+                                ShouldUseReturnBuffer(r),
+                                ri.ReleasedFromRentalAt) &&
                             ((ri.ItemId != null && ri.Item != null && ri.Item.ItemDefinitionId == defId) ||
                              (ri.ItemId == null && ri.ItemDefinitionId == defId)));
                         if (count > 0)

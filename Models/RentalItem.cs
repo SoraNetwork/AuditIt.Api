@@ -43,6 +43,8 @@ namespace AuditIt.Api.Models
 
         public DateTime? ReturnedAt { get; set; }
 
+        public DateTime? ReleasedFromRentalAt { get; set; }
+
         public ReturnCondition? ReturnCondition { get; set; }
 
         [StringLength(500)]
