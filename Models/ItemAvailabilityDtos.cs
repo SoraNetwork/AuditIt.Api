@@ -20,6 +20,7 @@ namespace AuditIt.Api.Models
         public DateTime EndAt { get; set; }
         public bool IsOpen { get; set; }
         public bool IsUncertain { get; set; }
+        public bool IsManualLoan { get; set; }
         public ItemOccupancyStatus OccupancyStatus { get; set; } = ItemOccupancyStatus.Scheduled;
     }
 
@@ -57,6 +58,7 @@ namespace AuditIt.Api.Models
         public string? RenterName { get; set; }
         public int Quantity { get; set; }
         public bool IsUncertain { get; set; }
+        public bool IsManualLoan { get; set; }
         public ItemOccupancyStatus OccupancyStatus { get; set; } = ItemOccupancyStatus.Scheduled;
     }
 

@@ -1870,7 +1870,8 @@ namespace AuditIt.Api.Services
                             r.ActualEndDate,
                             null,
                             HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
-                            expectedEndDay)),
+                            expectedEndDay),
+                        includeReturnBuffer: ShouldUseReturnBuffer(r)),
                     startDay,
                     expectedEndDay))
                 .ToList();
@@ -1941,6 +1942,28 @@ namespace AuditIt.Api.Services
 
             var startDay = RentalDateRules.ToBusinessDate(startDate);
             var expectedEndDay = RentalDateRules.ToBusinessDate(expectedEndDate);
+            var distinctDefs = itemDefIds.Distinct().ToList();
+
+            var manualLoanItems = await _context.Items
+                .Where(i => distinctDefs.Contains(i.ItemDefinitionId) && i.Status == ItemStatus.LoanedOut)
+                .Where(i => !_context.RentalItems.Any(ri =>
+                    ri.ItemId == i.Id
+                    && ri.ReturnedAt == null
+                    && ri.Rental != null
+                    && ri.Rental.Status != RentalStatus.Returned
+                    && ri.Rental.Status != RentalStatus.Cancelled
+                    && ri.Rental.Status != RentalStatus.Renewed))
+                .Select(i => new
+                {
+                    i.ItemDefinitionId,
+                    i.LastUpdated,
+                    OutboundAt = _context.AuditLogs
+                        .Where(log => log.ItemId == i.Id && log.Action == AuditAction.Outbound)
+                        .OrderByDescending(log => log.Timestamp)
+                        .Select(log => (DateTime?)log.Timestamp)
+                        .FirstOrDefault()
+                })
+                .ToListAsync();
 
             var candidateRentals = await _context.Rentals
                 .Include(r => r.Items)
@@ -1960,12 +1983,12 @@ namespace AuditIt.Api.Services
                             r.ActualEndDate,
                             null,
                             HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
-                            expectedEndDay)),
+                            expectedEndDay),
+                        includeReturnBuffer: ShouldUseReturnBuffer(r)),
                     startDay,
                     expectedEndDay))
                 .ToList();
 
-            var distinctDefs = itemDefIds.Distinct().ToList();
             foreach (var defId in distinctDefs)
             {
                 var def = await _context.ItemDefinitions.FindAsync(defId);
@@ -1973,9 +1996,13 @@ namespace AuditIt.Api.Services
 
                 var totalStock = await _context.Items.CountAsync(i => i.ItemDefinitionId == defId && i.Status != ItemStatus.Disposed);
                 var requestedQty = itemDefIds.Count(id => id == defId);
+                var definitionManualLoans = manualLoanItems
+                    .Where(item => item.ItemDefinitionId == defId)
+                    .ToList();
 
                 var currentDay = startDay.Date;
                 var maxOccupancy = 0;
+                var maxManualLoanOccupancy = 0;
                 Rental? worstRental = null;
                 var hasConflict = false;
 
@@ -1996,7 +2023,8 @@ namespace AuditIt.Api.Services
                                 currentDay,
                                 r.ActualEndDate,
                                 ri.ReturnedAt,
-                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, HasRentalStarted(r), currentDay)) &&
+                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, HasRentalStarted(r), currentDay),
+                                ShouldUseReturnBuffer(r)) &&
                             ((ri.ItemId != null && ri.Item != null && ri.Item.ItemDefinitionId == defId) ||
                              (ri.ItemId == null && ri.ItemDefinitionId == defId)));
                         if (count > 0)
@@ -2006,6 +2034,10 @@ namespace AuditIt.Api.Services
                         }
                     }
 
+                    var manualLoanOccupancy = definitionManualLoans.Count(item =>
+                        RentalDateRules.ToBusinessDate(item.OutboundAt ?? item.LastUpdated) <= currentDay);
+                    dayOccupancy += manualLoanOccupancy;
+
                     if (totalStock - dayOccupancy < requestedQty)
                     {
                         hasConflict = true;
@@ -2013,26 +2045,27 @@ namespace AuditIt.Api.Services
                         {
                             maxOccupancy = dayOccupancy;
                             worstRental = dayWorstRental;
+                            maxManualLoanOccupancy = manualLoanOccupancy;
                         }
                     }
 
                     currentDay = currentDay.AddDays(1);
                 }
 
-                if (hasConflict && worstRental != null)
+                if (hasConflict && (worstRental != null || maxManualLoanOccupancy > 0))
                 {
                     conflicts.Add(new RentalScheduleConflictDto
                     {
-                        RentalId = worstRental.Id,
-                        RentalNumber = worstRental.RentalNumber,
-                        RentalStatus = worstRental.Status,
+                        RentalId = worstRental?.Id ?? Guid.Empty,
+                        RentalNumber = worstRental?.RentalNumber ?? "普通借出",
+                        RentalStatus = worstRental?.Status ?? RentalStatus.Active,
                         ItemId = Guid.Empty,
                         ItemShortId = $"[分类库存不足] {def.Name}",
                         ItemName = def.Name,
-                        StartDate = RentalDateRules.ToBusinessDate(worstRental.StartDate),
-                        ExpectedEndDate = RentalDateRules.ToBusinessDate(worstRental.ExpectedEndDate),
-                        HasOutboundShipment = HasRentalStarted(worstRental),
-                        ConflictReason = $"库存不足（库存: {totalStock}, 占用: {maxOccupancy}, 本单需要: {requestedQty}）"
+                        StartDate = worstRental != null ? RentalDateRules.ToBusinessDate(worstRental.StartDate) : startDay,
+                        ExpectedEndDate = worstRental != null ? RentalDateRules.ToBusinessDate(worstRental.ExpectedEndDate) : expectedEndDay,
+                        HasOutboundShipment = worstRental != null ? HasRentalStarted(worstRental) : true,
+                        ConflictReason = $"库存不足（库存: {totalStock}, 占用: {maxOccupancy}, 普通借出: {maxManualLoanOccupancy}, 本单需要: {requestedQty}）"
                     });
                 }
             }
@@ -2528,6 +2561,10 @@ namespace AuditIt.Api.Services
 
         private static bool HasRentalStarted(Rental rental) =>
             IsRenewal(rental) || HasOutboundShipment(rental);
+
+        private static bool ShouldUseReturnBuffer(Rental rental) =>
+            rental.Status != RentalStatus.Renewed
+            && !rental.RenewedToRentalId.HasValue;
 
         private static bool IsClosedStatus(RentalStatus status) =>
             status is RentalStatus.Returned or RentalStatus.Cancelled or RentalStatus.Renewed;

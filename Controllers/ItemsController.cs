@@ -184,7 +184,8 @@ namespace AuditIt.Api.Controllers
                             r.ActualEndDate,
                             null,
                             HasRentalStarted(r) && r.Items.Any(ri => ri.ItemId == id && ri.ReturnedAt == null),
-                            rangeEnd)),
+                            rangeEnd),
+                        includeReturnBuffer: ShouldUseReturnBuffer(r)),
                     rangeStart,
                     rangeEnd))
                 .SelectMany(r => r.Items
@@ -215,6 +216,41 @@ namespace AuditIt.Api.Controllers
                         };
                     }))
                 .ToList();
+
+            var isManualLoan = item.Status == ItemStatus.LoanedOut
+                && !await _context.RentalItems.AnyAsync(ri =>
+                    ri.ItemId == id
+                    && ri.ReturnedAt == null
+                    && ri.Rental != null
+                    && ri.Rental.Status != RentalStatus.Returned
+                    && ri.Rental.Status != RentalStatus.Cancelled
+                    && ri.Rental.Status != RentalStatus.Renewed);
+
+            if (isManualLoan)
+            {
+                var outboundAt = await _context.AuditLogs
+                    .Where(log => log.ItemId == id && log.Action == AuditAction.Outbound)
+                    .OrderByDescending(log => log.Timestamp)
+                    .Select(log => (DateTime?)log.Timestamp)
+                    .FirstOrDefaultAsync();
+                var loanStart = RentalDateRules.ToBusinessDate(outboundAt ?? item.LastUpdated);
+
+                if (loanStart <= rangeEnd)
+                {
+                    busy.Add(new ItemBusyPeriodDto
+                    {
+                        RentalId = Guid.Empty,
+                        RentalNumber = "普通借出",
+                        RentalStatus = RentalStatus.Active,
+                        StartAt = loanStart < rangeStart ? rangeStart : loanStart,
+                        EndAt = rangeEnd,
+                        IsOpen = true,
+                        IsUncertain = false,
+                        IsManualLoan = true,
+                        OccupancyStatus = ItemOccupancyStatus.Scheduled
+                    });
+                }
+            }
 
             busy.AddRange(uncertainBusy);
             busy = busy
@@ -681,7 +717,8 @@ namespace AuditIt.Api.Controllers
                 rental.ExpectedEndDate,
                 rental.ActualEndDate,
                 rentalItem.ReturnedAt,
-                RentalDateRules.OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt, hasRentalStarted, rangeEnd));
+                RentalDateRules.OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt, hasRentalStarted, rangeEnd),
+                ShouldUseReturnBuffer(rental));
             var endAt = RentalDateRules.EndOfBusinessDay(endDay);
             var expectedEndAt = RentalDateRules.EndOfBusinessDay(rental.ExpectedEndDate);
             var returningStart = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate).AddDays(1);
@@ -743,5 +780,9 @@ namespace AuditIt.Api.Controllers
         private static bool HasRentalStarted(Rental rental) =>
             rental.RenewedFromRentalId.HasValue
             || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+
+        private static bool ShouldUseReturnBuffer(Rental rental) =>
+            rental.Status != RentalStatus.Renewed
+            && !rental.RenewedToRentalId.HasValue;
     }
 }

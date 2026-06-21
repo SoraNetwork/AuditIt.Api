@@ -161,10 +161,32 @@ namespace AuditIt.Api.Controllers
                             r.ActualEndDate,
                             null,
                             HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
-                            rangeEnd)),
+                            rangeEnd),
+                        includeReturnBuffer: ShouldUseReturnBuffer(r)),
                     rangeStart,
                     rangeEnd))
                 .ToList();
+
+            var manualLoans = await _context.Items
+                .Where(i => i.ItemDefinitionId == id && i.Status == ItemStatus.LoanedOut)
+                .Where(i => !_context.RentalItems.Any(ri =>
+                    ri.ItemId == i.Id
+                    && ri.ReturnedAt == null
+                    && ri.Rental != null
+                    && ri.Rental.Status != RentalStatus.Returned
+                    && ri.Rental.Status != RentalStatus.Cancelled
+                    && ri.Rental.Status != RentalStatus.Renewed))
+                .Select(i => new
+                {
+                    i.ShortId,
+                    i.LastUpdated,
+                    OutboundAt = _context.AuditLogs
+                        .Where(log => log.ItemId == i.Id && log.Action == AuditAction.Outbound)
+                        .OrderByDescending(log => log.Timestamp)
+                        .Select(log => (DateTime?)log.Timestamp)
+                        .FirstOrDefault()
+                })
+                .ToListAsync();
 
             var dailyStocks = new List<ItemDefinitionDailyStockDto>();
             var currentDay = rangeStart.Date;
@@ -180,7 +202,8 @@ namespace AuditIt.Api.Controllers
                                 r.ActualEndDate,
                                 null,
                                 HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
-                                currentDay)) >= currentDay)
+                                currentDay),
+                            includeReturnBuffer: ShouldUseReturnBuffer(r)) >= currentDay)
                     .ToList();
 
                 var details = new List<ItemDefinitionDailyOccupancyDto>();
@@ -201,7 +224,8 @@ namespace AuditIt.Api.Controllers
                                 currentDay,
                                 r.ActualEndDate,
                                 ri.ReturnedAt,
-                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay)))
+                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay),
+                                ShouldUseReturnBuffer(r)))
                         .GroupBy(_ => ResolveOccupancyStatus(r.ExpectedEndDate, currentDay));
                     var uncertainGroups = r.Items
                         .Where(ri =>
@@ -214,7 +238,8 @@ namespace AuditIt.Api.Controllers
                                 currentDay,
                                 r.ActualEndDate,
                                 ri.ReturnedAt,
-                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay)))
+                                RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay),
+                                ShouldUseReturnBuffer(r)))
                         .GroupBy(_ => ResolveOccupancyStatus(r.ExpectedEndDate, currentDay));
 
                     foreach (var group in specificGroups)
@@ -250,6 +275,23 @@ namespace AuditIt.Api.Controllers
                             OccupancyStatus = group.Key
                         });
                     }
+                }
+
+                foreach (var manualLoan in manualLoans
+                    .Where(loan => RentalDateRules.ToBusinessDate(loan.OutboundAt ?? loan.LastUpdated) <= currentDay)
+                    .OrderBy(loan => loan.ShortId))
+                {
+                    occupiedCount++;
+                    details.Add(new ItemDefinitionDailyOccupancyDto
+                    {
+                        RentalId = Guid.Empty,
+                        RentalNumber = $"普通借出 ({manualLoan.ShortId})",
+                        RentalStatus = RentalStatus.Active,
+                        Quantity = 1,
+                        IsUncertain = false,
+                        IsManualLoan = true,
+                        OccupancyStatus = ItemOccupancyStatus.Scheduled
+                    });
                 }
 
                 dailyStocks.Add(new ItemDefinitionDailyStockDto
@@ -300,6 +342,10 @@ namespace AuditIt.Api.Controllers
         private static bool HasRentalStarted(Rental rental) =>
             rental.RenewedFromRentalId.HasValue
             || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+
+        private static bool ShouldUseReturnBuffer(Rental rental) =>
+            rental.Status != RentalStatus.Renewed
+            && !rental.RenewedToRentalId.HasValue;
 
         private static ItemOccupancyStatus ResolveOccupancyStatus(DateTime expectedEndDate, DateTime day) =>
             RentalDateRules.IsReturningBusinessDate(expectedEndDate, day)

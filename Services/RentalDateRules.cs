@@ -52,26 +52,23 @@ namespace AuditIt.Api.Services
             DateTime expectedEndDate,
             DateTime? actualEndDate,
             DateTime? returnedAt = null,
-            DateTime? openEndedUntil = null)
+            DateTime? openEndedUntil = null,
+            bool includeReturnBuffer = true)
         {
-            if (returnedAt.HasValue)
-            {
-                return ToBusinessDate(returnedAt.Value).AddDays(-1);
-            }
-
-            if (actualEndDate.HasValue)
-            {
-                return ToBusinessDate(actualEndDate.Value);
-            }
-
             var expectedEnd = ToBusinessDate(expectedEndDate);
-            if (!openEndedUntil.HasValue)
+            if (returnedAt.HasValue || actualEndDate.HasValue || !includeReturnBuffer)
             {
                 return expectedEnd;
             }
 
+            var bufferedEnd = expectedEnd.AddDays(1);
+            if (!openEndedUntil.HasValue)
+            {
+                return bufferedEnd;
+            }
+
             var openEnd = ToBusinessDate(openEndedUntil.Value);
-            return openEnd > expectedEnd ? openEnd : expectedEnd;
+            return openEnd > bufferedEnd ? openEnd : bufferedEnd;
         }
 
         public static DateTime? OpenEndedUntil(
@@ -100,11 +97,12 @@ namespace AuditIt.Api.Services
             DateTime day,
             DateTime? actualEndDate = null,
             DateTime? returnedAt = null,
-            DateTime? openEndedUntil = null)
+            DateTime? openEndedUntil = null,
+            bool includeReturnBuffer = true)
         {
             var businessDay = day.Date;
             return OccupancyStartDate(startDate, shipments) <= businessDay
-                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt, openEndedUntil) >= businessDay;
+                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt, openEndedUntil, includeReturnBuffer) >= businessDay;
         }
 
         public static string Format(DateTime value) => ToBusinessDate(value).ToString("yyyy-MM-dd");
