@@ -8,6 +8,13 @@ namespace AuditIt.Api.Services
     internal static class RentalDateRules
     {
         private static readonly TimeSpan BusinessOffset = TimeSpan.FromHours(8);
+        public const string RemovedFromRentalReturnNote = "Removed from rental item list.";
+
+        public static DateTime? EffectiveReleasedFromRentalAt(RentalItem rentalItem) =>
+            rentalItem.ReleasedFromRentalAt ??
+            (string.Equals(rentalItem.ReturnNotes, RemovedFromRentalReturnNote, StringComparison.Ordinal)
+                ? rentalItem.ReturnedAt
+                : null);
 
         public static DateTime ToBusinessDate(DateTime value)
         {

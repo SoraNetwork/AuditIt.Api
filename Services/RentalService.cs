@@ -1704,7 +1704,7 @@ namespace AuditIt.Api.Services
                     rentalItem.ReturnedAt = now;
                     rentalItem.ReleasedFromRentalAt = now;
                     rentalItem.ReturnCondition = ReturnCondition.Good;
-                    rentalItem.ReturnNotes = "Removed from rental item list.";
+                    rentalItem.ReturnNotes = RentalDateRules.RemovedFromRentalReturnNote;
 
                     if (rentalItem.Item != null)
                     {
@@ -2025,7 +2025,7 @@ namespace AuditIt.Api.Services
                                 ri.ReturnedAt,
                                 RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, HasRentalStarted(r), currentDay),
                                 ShouldUseReturnBuffer(r),
-                                ri.ReleasedFromRentalAt) &&
+                                RentalDateRules.EffectiveReleasedFromRentalAt(ri)) &&
                             ((ri.ItemId != null && ri.Item != null && ri.Item.ItemDefinitionId == defId) ||
                              (ri.ItemId == null && ri.ItemDefinitionId == defId)));
                         if (count > 0)

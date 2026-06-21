@@ -16,6 +16,13 @@ namespace AuditIt.Api.Migrations
                 table: "RentalItems",
                 type: "TEXT",
                 nullable: true);
+
+            migrationBuilder.Sql(@"
+                UPDATE ""RentalItems""
+                SET ""ReleasedFromRentalAt"" = ""ReturnedAt""
+                WHERE ""ReleasedFromRentalAt"" IS NULL
+                  AND ""ReturnedAt"" IS NOT NULL
+                  AND ""ReturnNotes"" = 'Removed from rental item list.';");
         }
 
         /// <inheritdoc />

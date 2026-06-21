@@ -719,7 +719,7 @@ namespace AuditIt.Api.Controllers
                 rentalItem.ReturnedAt,
                 RentalDateRules.OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt, hasRentalStarted, rangeEnd),
                 ShouldUseReturnBuffer(rental),
-                rentalItem.ReleasedFromRentalAt);
+                RentalDateRules.EffectiveReleasedFromRentalAt(rentalItem));
             var endAt = RentalDateRules.EndOfBusinessDay(endDay);
             var expectedEndAt = RentalDateRules.EndOfBusinessDay(rental.ExpectedEndDate);
             var returningStart = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate).AddDays(1);
