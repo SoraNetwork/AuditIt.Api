@@ -141,7 +141,8 @@ namespace AuditIt.Api.Controllers
                     .ThenInclude(ri => ri.Item)
                 .Include(r => r.Shipments)
                 .Where(r => r.Status != RentalStatus.Cancelled)
-                .Where(r => (r.StartDate <= rangeEnd.AddDays(1)
+                .Where(r => (r.ExpectedShipDate <= rangeEnd.AddDays(1)
+                    || r.StartDate <= rangeEnd.AddDays(1)
                     || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
                     && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
                         || r.ActualEndDate >= rangeStart.AddDays(-1)
@@ -153,7 +154,7 @@ namespace AuditIt.Api.Controllers
 
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(
-                    RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments),
+                    OccupancyStartDate(r),
                     RentalDateRules.OccupancyEndDate(
                         r.ExpectedEndDate,
                         r.ActualEndDate,
@@ -194,7 +195,7 @@ namespace AuditIt.Api.Controllers
             while (currentDay <= rangeEnd.Date)
             {
                 var dayRentals = overlappingRentals
-                    .Where(r => RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments) <= currentDay
+                    .Where(r => OccupancyStartDate(r) <= currentDay
                         && RentalDateRules.OccupancyEndDate(
                             r.ExpectedEndDate,
                             r.ActualEndDate,
@@ -218,7 +219,7 @@ namespace AuditIt.Api.Controllers
                             && ri.Item != null
                             && ri.Item.ItemDefinitionId == id
                             && RentalDateRules.OccupiesBusinessDate(
-                                r.StartDate,
+                                r.ExpectedShipDate,
                                 r.ExpectedEndDate,
                                 r.Shipments,
                                 currentDay,
@@ -226,14 +227,15 @@ namespace AuditIt.Api.Controllers
                                 ri.ReturnedAt,
                                 RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay),
                                 ShouldUseReturnBuffer(r),
-                                RentalDateRules.EffectiveReleasedFromRentalAt(ri)))
+                                RentalDateRules.EffectiveReleasedFromRentalAt(ri),
+                                r.Status == RentalStatus.Returned ? r.StartDate : null))
                         .GroupBy(_ => ResolveOccupancyStatus(r.ExpectedEndDate, currentDay));
                     var uncertainGroups = r.Items
                         .Where(ri =>
                             ri.ItemId == null
                             && ri.ItemDefinitionId == id
                             && RentalDateRules.OccupiesBusinessDate(
-                                r.StartDate,
+                                r.ExpectedShipDate,
                                 r.ExpectedEndDate,
                                 r.Shipments,
                                 currentDay,
@@ -241,7 +243,8 @@ namespace AuditIt.Api.Controllers
                                 ri.ReturnedAt,
                                 RentalDateRules.OpenEndedUntil(r.ActualEndDate, ri.ReturnedAt, hasRentalStarted, currentDay),
                                 ShouldUseReturnBuffer(r),
-                                RentalDateRules.EffectiveReleasedFromRentalAt(ri)))
+                                RentalDateRules.EffectiveReleasedFromRentalAt(ri),
+                                r.Status == RentalStatus.Returned ? r.StartDate : null))
                         .GroupBy(_ => ResolveOccupancyStatus(r.ExpectedEndDate, currentDay));
 
                     foreach (var group in specificGroups)
@@ -344,6 +347,12 @@ namespace AuditIt.Api.Controllers
         private static bool HasRentalStarted(Rental rental) =>
             rental.RenewedFromRentalId.HasValue
             || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+
+        private static DateTime OccupancyStartDate(Rental rental) =>
+            RentalDateRules.OccupancyStartDate(
+                rental.ExpectedShipDate,
+                rental.Shipments,
+                rental.Status == RentalStatus.Returned ? rental.StartDate : null);
 
         private static bool ShouldUseReturnBuffer(Rental rental) =>
             rental.Status != RentalStatus.Renewed

@@ -570,6 +570,51 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task DefinitionOccupancy_BeginsOnExpectedShipmentDateBeforeActualShipment()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item { Id = Guid.NewGuid(), ShortId = "CAM-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var expectedShipDate = new DateTime(2099, 6, 19, 0, 0, 0, DateTimeKind.Utc);
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990619-0001",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = expectedShipDate.AddDays(2),
+            ExpectedShipDate = expectedShipDate,
+            ExpectedEndDate = expectedShipDate.AddDays(7)
+        };
+        context.Rentals.Add(rental);
+        context.RentalItems.Add(new RentalItem
+        {
+            RentalId = rental.Id,
+            ItemId = item.Id,
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        await context.SaveChangesAsync();
+
+        var controller = new ItemDefinitionsController(context);
+        var action = await controller.GetOccupancyCalendar(definition.Id, expectedShipDate, expectedShipDate);
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var calendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(ok.Value);
+        Assert.Equal(1, Assert.Single(calendar.DailyStocks).OccupiedCount);
+    }
+
+    [Fact]
     public async Task DefinitionOccupancy_ManualLoanOccupiesUntilItemIsReturned()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

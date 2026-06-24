@@ -41,18 +41,39 @@ namespace AuditIt.Api.Services
         public static bool Overlaps(DateTime startDate, DateTime expectedEndDate, DateTime from, DateTime to) =>
             ToBusinessDate(startDate) <= to.Date && ToBusinessDate(expectedEndDate) >= from.Date;
 
-        public static DateTime OccupancyStartDate(DateTime startDate, IEnumerable<RentalShipment> shipments)
+        public static DateTime OccupancyStartDate(
+            DateTime expectedShipDate,
+            IEnumerable<RentalShipment> shipments,
+            DateTime? historicalOccupancyStartDate = null)
         {
-            var start = ToBusinessDate(startDate);
             var firstOutbound = shipments
                 .Where(shipment => shipment.Direction == ShipmentDirection.Outbound)
                 .OrderBy(shipment => shipment.ShippedAt)
                 .Select(shipment => (DateTime?)ToBusinessDate(shipment.ShippedAt))
                 .FirstOrDefault();
 
-            return firstOutbound.HasValue && firstOutbound.Value < start
-                ? firstOutbound.Value
-                : start;
+            // A booked item is reserved on its scheduled shipping day. If that day
+            // passes without an outbound shipment, do not leave a stale reservation
+            // on the missed day: carry the reservation forward one business day at a
+            // time until it is actually shipped.
+            if (!firstOutbound.HasValue)
+            {
+                // Completed legacy rentals can predate shipment tracking. Keep their
+                // recorded historical occupancy intact rather than projecting them
+                // forward to today.
+                if (historicalOccupancyStartDate.HasValue)
+                {
+                    return ToBusinessDate(historicalOccupancyStartDate.Value);
+                }
+
+                var expectedShipDay = ToBusinessDate(expectedShipDate);
+                var today = Today(DateTime.UtcNow);
+                return expectedShipDay < today ? today : expectedShipDay;
+            }
+
+            // The actual outbound timestamp is authoritative, including when the
+            // shipment happens earlier or later than originally expected.
+            return firstOutbound.Value;
         }
 
         public static DateTime OccupancyEndDate(
@@ -104,7 +125,7 @@ namespace AuditIt.Api.Services
             day.Date > ToBusinessDate(expectedEndDate);
 
         public static bool OccupiesBusinessDate(
-            DateTime startDate,
+            DateTime expectedShipDate,
             DateTime expectedEndDate,
             IEnumerable<RentalShipment> shipments,
             DateTime day,
@@ -112,10 +133,11 @@ namespace AuditIt.Api.Services
             DateTime? returnedAt = null,
             DateTime? openEndedUntil = null,
             bool includeReturnBuffer = true,
-            DateTime? releasedFromRentalAt = null)
+            DateTime? releasedFromRentalAt = null,
+            DateTime? historicalOccupancyStartDate = null)
         {
             var businessDay = day.Date;
-            return OccupancyStartDate(startDate, shipments) <= businessDay
+            return OccupancyStartDate(expectedShipDate, shipments, historicalOccupancyStartDate) <= businessDay
                 && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt, openEndedUntil, includeReturnBuffer, releasedFromRentalAt) >= businessDay;
         }
 

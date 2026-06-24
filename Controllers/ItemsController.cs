@@ -156,7 +156,8 @@ namespace AuditIt.Api.Controllers
                 .Include(r => r.Shipments)
                 .Where(r => r.Status != RentalStatus.Cancelled)
                 .Where(r => r.Items.Any(ri => ri.ItemId == id && (ri.ReturnedAt == null || ri.ReturnedAt > r.StartDate)))
-                .Where(r => (r.StartDate <= rangeEnd.AddDays(1)
+                .Where(r => (r.ExpectedShipDate <= rangeEnd.AddDays(1)
+                    || r.StartDate <= rangeEnd.AddDays(1)
                     || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
                     && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
                         || r.ActualEndDate >= rangeStart.AddDays(-1)
@@ -176,7 +177,7 @@ namespace AuditIt.Api.Controllers
 
             var busy = rentals
                 .Where(r => RentalDateRules.Overlaps(
-                    RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments),
+                    OccupancyStartDate(r),
                     RentalDateRules.OccupancyEndDate(
                         r.ExpectedEndDate,
                         r.ActualEndDate,
@@ -705,6 +706,12 @@ namespace AuditIt.Api.Controllers
             return free;
         }
 
+        private static DateTime OccupancyStartDate(Rental rental) =>
+            RentalDateRules.OccupancyStartDate(
+                rental.ExpectedShipDate,
+                rental.Shipments,
+                rental.Status == RentalStatus.Returned ? rental.StartDate : null);
+
         private static IEnumerable<ItemBusyPeriodDto> BuildBusyPeriods(
             Rental rental,
             RentalItem rentalItem,
@@ -712,7 +719,7 @@ namespace AuditIt.Api.Controllers
             DateTime rangeEnd)
         {
             var hasRentalStarted = HasRentalStarted(rental);
-            var startAt = RentalDateRules.OccupancyStartDate(rental.StartDate, rental.Shipments);
+            var startAt = OccupancyStartDate(rental);
             var endDay = RentalDateRules.OccupancyEndDate(
                 rental.ExpectedEndDate,
                 rental.ActualEndDate,

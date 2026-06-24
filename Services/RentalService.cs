@@ -1862,7 +1862,7 @@ namespace AuditIt.Api.Services
                 .ToListAsync();
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(
-                    RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments),
+                    RentalDateRules.OccupancyStartDate(r.ExpectedShipDate, r.Shipments),
                     RentalDateRules.OccupancyEndDate(
                         r.ExpectedEndDate,
                         r.ActualEndDate,
@@ -1975,7 +1975,7 @@ namespace AuditIt.Api.Services
 
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(
-                    RentalDateRules.OccupancyStartDate(r.StartDate, r.Shipments),
+                    RentalDateRules.OccupancyStartDate(r.ExpectedShipDate, r.Shipments),
                     RentalDateRules.OccupancyEndDate(
                         r.ExpectedEndDate,
                         r.ActualEndDate,
@@ -2017,7 +2017,7 @@ namespace AuditIt.Api.Services
                     {
                         var count = r.Items.Count(ri =>
                             RentalDateRules.OccupiesBusinessDate(
-                                r.StartDate,
+                                r.ExpectedShipDate,
                                 r.ExpectedEndDate,
                                 r.Shipments,
                                 currentDay,
