@@ -584,6 +584,9 @@ public class RentalOccupancyAndValueTests
         var category = new Category { Name = "Camera", Description = "Camera category" };
         var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
         var item = new Item { Id = Guid.NewGuid(), ShortId = "CAM-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        context.Items.Add(item);
+        await context.SaveChangesAsync();
+
         var expectedShipDate = new DateTime(2099, 6, 19, 0, 0, 0, DateTimeKind.Utc);
         var rental = new Rental
         {
@@ -612,6 +615,56 @@ public class RentalOccupancyAndValueTests
         var ok = Assert.IsType<OkObjectResult>(action.Result);
         var calendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(ok.Value);
         Assert.Equal(1, Assert.Single(calendar.DailyStocks).OccupiedCount);
+    }
+
+    [Fact]
+    public async Task ItemAvailability_ShowsUncertainDefinitionOccupancyFromExpectedShipmentDate()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item { Id = Guid.NewGuid(), ShortId = "CAM-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        context.Items.Add(item);
+        await context.SaveChangesAsync();
+
+        var expectedShipDate = new DateTime(2099, 6, 19, 0, 0, 0, DateTimeKind.Utc);
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990619-0001",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = expectedShipDate.AddDays(2),
+            ExpectedShipDate = expectedShipDate,
+            ExpectedEndDate = expectedShipDate.AddDays(7)
+        };
+        context.Rentals.Add(rental);
+        context.RentalItems.Add(new RentalItem
+        {
+            RentalId = rental.Id,
+            ItemId = null,
+            ItemDefinitionId = definition.Id,
+            ItemShortIdSnapshot = "Pending",
+            ItemNameSnapshot = definition.Name
+        });
+        await context.SaveChangesAsync();
+
+        var controller = new ItemsController(context, new StubWebHostEnvironment());
+        var action = await controller.GetAvailability(item.Id, expectedShipDate, expectedShipDate);
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var calendar = Assert.IsType<ItemAvailabilityCalendarDto>(ok.Value);
+        var busy = Assert.Single(calendar.BusyPeriods);
+        Assert.True(busy.IsUncertain);
+        Assert.Equal(expectedShipDate, busy.StartAt);
     }
 
     [Fact]
@@ -802,6 +855,133 @@ public class RentalOccupancyAndValueTests
         }, "TestUser");
 
         Assert.NotNull(result.Conflict);
+    }
+
+    [Fact]
+    public async Task CreateAsync_ConflictsOnExpectedShipmentDateForSpecificItem()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item { Id = Guid.NewGuid(), ShortId = "CAM-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var spareItem = new Item { Id = Guid.NewGuid(), ShortId = "CAM-002", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
+        var occupiedDay = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
+        var existingRentalId = Guid.NewGuid();
+
+        context.Items.AddRange(item, spareItem);
+        context.Rentals.Add(new Rental
+        {
+            Id = existingRentalId,
+            RentalNumber = "R20990609-0001",
+            Renter = renter,
+            Status = RentalStatus.Pending,
+            StartDate = occupiedDay.AddDays(-1),
+            ExpectedShipDate = occupiedDay.AddDays(-1),
+            ExpectedEndDate = occupiedDay
+        });
+        context.RentalItems.Add(new RentalItem
+        {
+            RentalId = existingRentalId,
+            ItemId = item.Id,
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        await context.SaveChangesAsync();
+
+        var rentalService = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            Array.Empty<INotificationChannel>(),
+            new StubSfExpressService(),
+            new StubSettlementService());
+
+        var result = await rentalService.CreateAsync(new CreateRentalDto
+        {
+            Renter = new RenterInlineDto { Name = "Next Tenant", Phone = "13900139000" },
+            ItemIds = new List<string> { item.Id.ToString() },
+            ExpectedShipDate = occupiedDay,
+            StartDate = occupiedDay.AddDays(2),
+            ExpectedEndDate = occupiedDay.AddDays(2)
+        }, "TestUser");
+
+        Assert.NotNull(result.Conflict);
+        Assert.Contains(result.Conflict!.PendingShipmentConflicts, conflict => conflict.RentalId == existingRentalId);
+    }
+
+    [Fact]
+    public async Task CreateAsync_ConflictsOnExpectedShipmentDateForItemDefinition()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item { Id = Guid.NewGuid(), ShortId = "CAM-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
+        var occupiedDay = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
+        var existingRentalId = Guid.NewGuid();
+
+        context.Items.Add(item);
+        context.Rentals.Add(new Rental
+        {
+            Id = existingRentalId,
+            RentalNumber = "R20990609-0001",
+            Renter = renter,
+            Status = RentalStatus.Pending,
+            StartDate = occupiedDay.AddDays(-1),
+            ExpectedShipDate = occupiedDay.AddDays(-1),
+            ExpectedEndDate = occupiedDay
+        });
+        context.RentalItems.Add(new RentalItem
+        {
+            RentalId = existingRentalId,
+            ItemId = item.Id,
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        await context.SaveChangesAsync();
+
+        var rentalService = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            Array.Empty<INotificationChannel>(),
+            new StubSfExpressService(),
+            new StubSettlementService());
+
+        var result = await rentalService.CreateAsync(new CreateRentalDto
+        {
+            Renter = new RenterInlineDto { Name = "Next Tenant", Phone = "13900139000" },
+            ItemDefinitionIds = new List<int> { definition.Id },
+            ExpectedShipDate = occupiedDay,
+            StartDate = occupiedDay.AddDays(2),
+            ExpectedEndDate = occupiedDay.AddDays(2)
+        }, "TestUser");
+
+        Assert.NotNull(result.Conflict);
+        Assert.Contains(result.Conflict!.PendingShipmentConflicts, conflict => conflict.RentalId == existingRentalId);
     }
 
     [Fact]

@@ -170,9 +170,10 @@ namespace AuditIt.Api.Controllers
             var uncertainRentals = await _context.Rentals
                 .Include(r => r.Renter)
                 .Include(r => r.Items)
+                .Include(r => r.Shipments)
                 .Where(r => r.Status == RentalStatus.Pending)
                 .Where(r => r.Items.Any(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null))
-                .Where(r => r.StartDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
+                .Where(r => r.ExpectedShipDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
                 .ToListAsync();
 
             var busy = rentals
@@ -195,12 +196,12 @@ namespace AuditIt.Api.Controllers
                 .ToList();
 
             var uncertainBusy = uncertainRentals
-                .Where(r => RentalDateRules.Overlaps(r.StartDate, r.ExpectedEndDate, rangeStart, rangeEnd))
+                .Where(r => RentalDateRules.Overlaps(r.ExpectedShipDate, r.ExpectedEndDate, rangeStart, rangeEnd))
                 .SelectMany(r => r.Items
                     .Where(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null)
                     .Select(ri =>
                     {
-                        var startAt = RentalDateRules.ToBusinessDate(r.StartDate);
+                        var startAt = RentalDateRules.OccupancyStartDate(r.ExpectedShipDate, r.Shipments);
                         var endAt = RentalDateRules.EndOfBusinessDay(r.ExpectedEndDate);
                         return new ItemBusyPeriodDto
                         {
@@ -707,10 +708,7 @@ namespace AuditIt.Api.Controllers
         }
 
         private static DateTime OccupancyStartDate(Rental rental) =>
-            RentalDateRules.OccupancyStartDate(
-                rental.ExpectedShipDate,
-                rental.Shipments,
-                rental.Status == RentalStatus.Returned ? rental.StartDate : null);
+            RentalDateRules.OccupancyStartDate(rental);
 
         private static IEnumerable<ItemBusyPeriodDto> BuildBusyPeriods(
             Rental rental,
@@ -718,15 +716,8 @@ namespace AuditIt.Api.Controllers
             DateTime rangeStart,
             DateTime rangeEnd)
         {
-            var hasRentalStarted = HasRentalStarted(rental);
             var startAt = OccupancyStartDate(rental);
-            var endDay = RentalDateRules.OccupancyEndDate(
-                rental.ExpectedEndDate,
-                rental.ActualEndDate,
-                rentalItem.ReturnedAt,
-                RentalDateRules.OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt, hasRentalStarted, rangeEnd),
-                ShouldUseReturnBuffer(rental),
-                RentalDateRules.EffectiveReleasedFromRentalAt(rentalItem));
+            var endDay = RentalDateRules.OccupancyEndDate(rental, rentalItem, rangeEnd);
             var endAt = RentalDateRules.EndOfBusinessDay(endDay);
             var expectedEndAt = RentalDateRules.EndOfBusinessDay(rental.ExpectedEndDate);
             var returningStart = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate).AddDays(1);
@@ -786,11 +777,9 @@ namespace AuditIt.Api.Controllers
             };
 
         private static bool HasRentalStarted(Rental rental) =>
-            rental.RenewedFromRentalId.HasValue
-            || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+            RentalDateRules.HasRentalStarted(rental);
 
         private static bool ShouldUseReturnBuffer(Rental rental) =>
-            rental.Status != RentalStatus.Renewed
-            && !rental.RenewedToRentalId.HasValue;
+            RentalDateRules.ShouldUseReturnBuffer(rental);
     }
 }

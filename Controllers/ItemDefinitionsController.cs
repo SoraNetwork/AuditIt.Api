@@ -189,6 +189,164 @@ namespace AuditIt.Api.Controllers
                 })
                 .ToListAsync();
 
+            var dayCount = (rangeEnd.Date - rangeStart.Date).Days + 1;
+            var occupancyDiff = new int[dayCount + 1];
+            var detailBuckets = Enumerable.Range(0, dayCount)
+                .Select(_ => new Dictionary<string, ItemDefinitionDailyOccupancyDto>())
+                .ToList();
+
+            void AddDetail(int dayIndex, ItemDefinitionDailyOccupancyDto detail)
+            {
+                var key = string.Join("|",
+                    detail.RentalId,
+                    detail.RentalNumber,
+                    detail.RentalStatus,
+                    detail.RenterId,
+                    detail.IsUncertain,
+                    detail.IsManualLoan,
+                    detail.OccupancyStatus);
+
+                if (detailBuckets[dayIndex].TryGetValue(key, out var existing))
+                {
+                    existing.Quantity += detail.Quantity;
+                    return;
+                }
+
+                detailBuckets[dayIndex][key] = detail;
+            }
+
+            void AddSegment(DateTime startDay, DateTime endDay, ItemDefinitionDailyOccupancyDto detail)
+            {
+                var clippedStart = startDay.Date < rangeStart.Date ? rangeStart.Date : startDay.Date;
+                var clippedEnd = endDay.Date > rangeEnd.Date ? rangeEnd.Date : endDay.Date;
+                if (clippedEnd < clippedStart)
+                {
+                    return;
+                }
+
+                var startIndex = (clippedStart - rangeStart.Date).Days;
+                var endIndex = (clippedEnd - rangeStart.Date).Days;
+                occupancyDiff[startIndex] += detail.Quantity;
+                if (endIndex + 1 < occupancyDiff.Length)
+                {
+                    occupancyDiff[endIndex + 1] -= detail.Quantity;
+                }
+
+                for (var dayIndex = startIndex; dayIndex <= endIndex; dayIndex++)
+                {
+                    AddDetail(dayIndex, new ItemDefinitionDailyOccupancyDto
+                    {
+                        RentalId = detail.RentalId,
+                        RentalNumber = detail.RentalNumber,
+                        RentalStatus = detail.RentalStatus,
+                        RenterId = detail.RenterId,
+                        RenterName = detail.RenterName,
+                        Quantity = detail.Quantity,
+                        IsUncertain = detail.IsUncertain,
+                        IsManualLoan = detail.IsManualLoan,
+                        OccupancyStatus = detail.OccupancyStatus
+                    });
+                }
+            }
+
+            void AddRentalItemSegment(Rental rental, RentalItem rentalItem, bool isUncertain)
+            {
+                var startDay = RentalDateRules.OccupancyStartDate(rental);
+                var endDay = RentalDateRules.OccupancyEndDate(rental, rentalItem, rangeEnd);
+                var expectedEndDay = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
+
+                var detail = new ItemDefinitionDailyOccupancyDto
+                {
+                    RentalId = rental.Id,
+                    RentalNumber = rental.RentalNumber,
+                    RentalStatus = rental.Status,
+                    RenterId = rental.RenterId,
+                    RenterName = rental.Renter?.Name,
+                    Quantity = 1,
+                    IsUncertain = isUncertain
+                };
+
+                var scheduledEnd = endDay < expectedEndDay ? endDay : expectedEndDay;
+                if (startDay <= scheduledEnd)
+                {
+                    detail.OccupancyStatus = ItemOccupancyStatus.Scheduled;
+                    AddSegment(startDay, scheduledEnd, detail);
+                }
+
+                var returningStart = expectedEndDay.AddDays(1);
+                if (returningStart <= endDay)
+                {
+                    detail.OccupancyStatus = ItemOccupancyStatus.Returning;
+                    AddSegment(returningStart, endDay, detail);
+                }
+            }
+
+            foreach (var rental in overlappingRentals)
+            {
+                foreach (var rentalItem in rental.Items.Where(ri =>
+                    ri.ItemId != null
+                    && ri.Item != null
+                    && ri.Item.ItemDefinitionId == id))
+                {
+                    AddRentalItemSegment(rental, rentalItem, isUncertain: false);
+                }
+
+                foreach (var rentalItem in rental.Items.Where(ri =>
+                    ri.ItemId == null
+                    && ri.ItemDefinitionId == id))
+                {
+                    AddRentalItemSegment(rental, rentalItem, isUncertain: true);
+                }
+            }
+
+            foreach (var manualLoan in manualLoans.OrderBy(loan => loan.ShortId))
+            {
+                AddSegment(
+                    RentalDateRules.ToBusinessDate(manualLoan.OutboundAt ?? manualLoan.LastUpdated),
+                    rangeEnd.Date,
+                    new ItemDefinitionDailyOccupancyDto
+                    {
+                        RentalId = Guid.Empty,
+                        RentalNumber = $"普通借出 ({manualLoan.ShortId})",
+                        RentalStatus = RentalStatus.Active,
+                        Quantity = 1,
+                        IsManualLoan = true,
+                        OccupancyStatus = ItemOccupancyStatus.Scheduled
+                    });
+            }
+
+            var prefixDailyStocks = new List<ItemDefinitionDailyStockDto>();
+            var prefixOccupiedCount = 0;
+            for (var dayIndex = 0; dayIndex < dayCount; dayIndex++)
+            {
+                prefixOccupiedCount += occupancyDiff[dayIndex];
+                prefixDailyStocks.Add(new ItemDefinitionDailyStockDto
+                {
+                    Date = rangeStart.Date.AddDays(dayIndex),
+                    TotalStock = totalStock,
+                    OccupiedCount = prefixOccupiedCount,
+                    RemainingStock = totalStock - prefixOccupiedCount,
+                    Details = detailBuckets[dayIndex]
+                        .Values
+                        .OrderBy(detail => detail.IsManualLoan)
+                        .ThenBy(detail => detail.IsUncertain)
+                        .ThenBy(detail => detail.RentalNumber)
+                        .ThenBy(detail => detail.OccupancyStatus)
+                        .ToList()
+                });
+            }
+
+            return Ok(new ItemDefinitionOccupancyCalendarDto
+            {
+                ItemDefinitionId = id,
+                Name = def.Name,
+                TotalStock = totalStock,
+                From = rangeStart,
+                To = rangeEnd,
+                DailyStocks = prefixDailyStocks
+            });
+
+#if false
             var dailyStocks = new List<ItemDefinitionDailyStockDto>();
             var currentDay = rangeStart.Date;
 
@@ -320,6 +478,7 @@ namespace AuditIt.Api.Controllers
                 To = rangeEnd,
                 DailyStocks = dailyStocks
             });
+#endif
         }
 
         // DELETE: api/ItemDefinitions/5

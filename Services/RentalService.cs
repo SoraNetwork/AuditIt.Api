@@ -443,8 +443,8 @@ namespace AuditIt.Api.Services
                 .Select(item => item.ItemDefinitionId)
                 .Concat(dto.ItemDefinitionIds ?? new List<int>())
                 .ToList();
-            var itemConflicts = await ValidateCreateConflictsAsync(distinctItemIds, startDate, expectedEndDate);
-            var defConflicts = await ValidateItemDefinitionConflictsAsync(definitionDemand, startDate, expectedEndDate);
+            var itemConflicts = await ValidateCreateConflictsAsync(distinctItemIds, expectedShipDate, expectedEndDate);
+            var defConflicts = await ValidateItemDefinitionConflictsAsync(definitionDemand, expectedShipDate, expectedEndDate);
 
             if ((itemConflicts != null || defConflicts.Count > 0) && !dto.AllowScheduleConflict)
             {
@@ -770,7 +770,7 @@ namespace AuditIt.Api.Services
                 var itemIds = rental.Items.Where(ri => ri.ReturnedAt == null && ri.ItemId.HasValue).Select(ri => ri.ItemId!.Value).ToList();
                 var conflict = await ValidateCreateConflictsAsync(
                     itemIds,
-                    nextStartDate,
+                    nextExpectedShipDate,
                     nextExpectedEndDate,
                     rental.Id);
                 if (conflict != null)
@@ -784,7 +784,7 @@ namespace AuditIt.Api.Services
                     .Where(id => id.HasValue)
                     .Select(id => id!.Value)
                     .ToList();
-                var defConflict = await ValidateItemDefinitionConflictsAsync(definitionDemand, nextStartDate, nextExpectedEndDate, rental.Id);
+                var defConflict = await ValidateItemDefinitionConflictsAsync(definitionDemand, nextExpectedShipDate, nextExpectedEndDate, rental.Id);
                 if (defConflict.Count > 0)
                 {
                     return (null, string.Join("; ", defConflict.Select(c => c.ConflictReason)));
@@ -1661,7 +1661,7 @@ namespace AuditIt.Api.Services
                     .ToList();
                 definitionConflicts = await ValidateItemDefinitionConflictsAsync(
                     definitionDemand,
-                    rental.StartDate,
+                    rental.ExpectedShipDate,
                     rental.ExpectedEndDate,
                     rental.Id);
             }
@@ -1670,7 +1670,7 @@ namespace AuditIt.Api.Services
             {
                 var conflict = await ValidateCreateConflictsAsync(
                     addItemIds,
-                    rental.StartDate,
+                    rental.ExpectedShipDate,
                     rental.ExpectedEndDate,
                     rental.Id);
                 if (conflict != null && !dto.AllowScheduleConflict)
@@ -1847,11 +1847,11 @@ namespace AuditIt.Api.Services
 
         private async Task<RentalCreateConflictDto?> ValidateCreateConflictsAsync(
             IReadOnlyCollection<Guid> itemIds,
-            DateTime startDate,
+            DateTime requestedOccupancyStartDate,
             DateTime expectedEndDate,
             Guid? excludeRentalId = null)
         {
-            var startDay = RentalDateRules.ToBusinessDate(startDate);
+            var startDay = RentalDateRules.ToBusinessDate(requestedOccupancyStartDate);
             var expectedEndDay = RentalDateRules.ToBusinessDate(expectedEndDate);
             var candidateRentals = await _context.Rentals
                 .Include(r => r.Items)
@@ -1930,7 +1930,7 @@ namespace AuditIt.Api.Services
 
         private async Task<List<RentalScheduleConflictDto>> ValidateItemDefinitionConflictsAsync(
             IReadOnlyCollection<int> itemDefIds,
-            DateTime startDate,
+            DateTime requestedOccupancyStartDate,
             DateTime expectedEndDate,
             Guid? excludeRentalId = null)
         {
@@ -1940,7 +1940,7 @@ namespace AuditIt.Api.Services
                 return conflicts;
             }
 
-            var startDay = RentalDateRules.ToBusinessDate(startDate);
+            var startDay = RentalDateRules.ToBusinessDate(requestedOccupancyStartDate);
             var expectedEndDay = RentalDateRules.ToBusinessDate(expectedEndDate);
             var distinctDefs = itemDefIds.Distinct().ToList();
 
@@ -1989,6 +1989,121 @@ namespace AuditIt.Api.Services
                     expectedEndDay))
                 .ToList();
 
+            foreach (var defId in distinctDefs)
+            {
+                var def = await _context.ItemDefinitions.FindAsync(defId);
+                if (def == null) continue;
+
+                var totalStock = await _context.Items.CountAsync(i => i.ItemDefinitionId == defId && i.Status != ItemStatus.Disposed);
+                var requestedQty = itemDefIds.Count(id => id == defId);
+                var dayCount = (expectedEndDay.Date - startDay.Date).Days + 1;
+                var occupancyDiff = new int[dayCount + 1];
+                var manualLoanDiff = new int[dayCount + 1];
+                var dayWorstRentals = new Rental?[dayCount];
+
+                void AddOccupancy(DateTime start, DateTime end, Rental? rental, bool isManualLoan)
+                {
+                    var clippedStart = start.Date < startDay.Date ? startDay.Date : start.Date;
+                    var clippedEnd = end.Date > expectedEndDay.Date ? expectedEndDay.Date : end.Date;
+                    if (clippedEnd < clippedStart)
+                    {
+                        return;
+                    }
+
+                    var startIndex = (clippedStart - startDay.Date).Days;
+                    var endIndex = (clippedEnd - startDay.Date).Days;
+                    occupancyDiff[startIndex]++;
+                    if (endIndex + 1 < occupancyDiff.Length)
+                    {
+                        occupancyDiff[endIndex + 1]--;
+                    }
+
+                    if (isManualLoan)
+                    {
+                        manualLoanDiff[startIndex]++;
+                        if (endIndex + 1 < manualLoanDiff.Length)
+                        {
+                            manualLoanDiff[endIndex + 1]--;
+                        }
+                    }
+
+                    if (rental != null)
+                    {
+                        for (var dayIndex = startIndex; dayIndex <= endIndex; dayIndex++)
+                        {
+                            dayWorstRentals[dayIndex] ??= rental;
+                        }
+                    }
+                }
+
+                foreach (var rental in overlappingRentals)
+                {
+                    foreach (var rentalItem in rental.Items.Where(ri =>
+                        (ri.ItemId != null && ri.Item != null && ri.Item.ItemDefinitionId == defId) ||
+                        (ri.ItemId == null && ri.ItemDefinitionId == defId)))
+                    {
+                        AddOccupancy(
+                            RentalDateRules.OccupancyStartDate(rental),
+                            RentalDateRules.OccupancyEndDate(rental, rentalItem, expectedEndDay),
+                            rental,
+                            isManualLoan: false);
+                    }
+                }
+
+                foreach (var manualLoan in manualLoanItems.Where(item => item.ItemDefinitionId == defId))
+                {
+                    AddOccupancy(
+                        RentalDateRules.ToBusinessDate(manualLoan.OutboundAt ?? manualLoan.LastUpdated),
+                        expectedEndDay,
+                        null,
+                        isManualLoan: true);
+                }
+
+                var occupancy = 0;
+                var manualLoanOccupancy = 0;
+                var maxOccupancy = 0;
+                var maxManualLoanOccupancy = 0;
+                Rental? worstRental = null;
+                var hasConflict = false;
+
+                for (var dayIndex = 0; dayIndex < dayCount; dayIndex++)
+                {
+                    occupancy += occupancyDiff[dayIndex];
+                    manualLoanOccupancy += manualLoanDiff[dayIndex];
+
+                    if (totalStock - occupancy < requestedQty)
+                    {
+                        hasConflict = true;
+                        if (occupancy > maxOccupancy)
+                        {
+                            maxOccupancy = occupancy;
+                            maxManualLoanOccupancy = manualLoanOccupancy;
+                            worstRental = dayWorstRentals[dayIndex];
+                        }
+                    }
+                }
+
+                if (hasConflict && (worstRental != null || maxManualLoanOccupancy > 0))
+                {
+                    conflicts.Add(new RentalScheduleConflictDto
+                    {
+                        RentalId = worstRental?.Id ?? Guid.Empty,
+                        RentalNumber = worstRental?.RentalNumber ?? "普通借出",
+                        RentalStatus = worstRental?.Status ?? RentalStatus.Active,
+                        ItemId = Guid.Empty,
+                        ItemShortId = $"[分类库存不足] {def.Name}",
+                        ItemName = def.Name,
+                        StartDate = worstRental != null ? RentalDateRules.ToBusinessDate(worstRental.StartDate) : startDay,
+                        ExpectedEndDate = worstRental != null ? RentalDateRules.ToBusinessDate(worstRental.ExpectedEndDate) : expectedEndDay,
+                        HasOutboundShipment = worstRental != null ? HasRentalStarted(worstRental) : true,
+                        ConflictReason = $"库存不足（库存: {totalStock}, 占用: {maxOccupancy}, 普通借出: {maxManualLoanOccupancy}, 本单需要: {requestedQty}）"
+                    });
+                }
+            }
+
+            return conflicts;
+
+#if false
             foreach (var defId in distinctDefs)
             {
                 var def = await _context.ItemDefinitions.FindAsync(defId);
@@ -2072,6 +2187,7 @@ namespace AuditIt.Api.Services
             }
 
             return conflicts;
+#endif
         }
 
         private static string BuildCreateConflictMessage(
