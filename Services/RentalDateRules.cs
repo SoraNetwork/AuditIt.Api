@@ -89,11 +89,18 @@ namespace AuditIt.Api.Services
             return firstOutbound.Value;
         }
 
-        public static DateTime OccupancyStartDate(Rental rental) =>
-            OccupancyStartDate(
+        public static DateTime OccupancyStartDate(Rental rental)
+        {
+            if (IsRenewal(rental))
+            {
+                return ToBusinessDate(rental.ExpectedShipDate);
+            }
+
+            return OccupancyStartDate(
                 rental.ExpectedShipDate,
                 rental.Shipments,
                 rental.Status == RentalStatus.Returned ? rental.StartDate : null);
+        }
 
         public static DateTime OccupancyEndDate(
             DateTime expectedEndDate,
@@ -125,7 +132,10 @@ namespace AuditIt.Api.Services
         }
 
         public static DateTime OccupancyEndDate(Rental rental, DateTime openEndedRangeEnd) =>
-            OccupancyEndDate(
+            ExtendReturnedRenewalEndDate(
+                rental,
+                null,
+                OccupancyEndDate(
                 rental.ExpectedEndDate,
                 rental.ActualEndDate,
                 openEndedUntil: OpenEndedUntil(
@@ -133,16 +143,34 @@ namespace AuditIt.Api.Services
                     null,
                     HasRentalStarted(rental) && rental.Items.Any(item => item.ReturnedAt == null),
                     openEndedRangeEnd),
-                includeReturnBuffer: ShouldUseReturnBuffer(rental));
+                includeReturnBuffer: ShouldUseReturnBuffer(rental)));
 
         public static DateTime OccupancyEndDate(Rental rental, RentalItem rentalItem, DateTime openEndedRangeEnd) =>
-            OccupancyEndDate(
+            ExtendReturnedRenewalEndDate(
+                rental,
+                rentalItem,
+                OccupancyEndDate(
                 rental.ExpectedEndDate,
                 rental.ActualEndDate,
                 rentalItem.ReturnedAt,
                 OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt, HasRentalStarted(rental), openEndedRangeEnd),
                 ShouldUseReturnBuffer(rental),
-                EffectiveReleasedFromRentalAt(rentalItem));
+                EffectiveReleasedFromRentalAt(rentalItem)));
+
+        private static DateTime ExtendReturnedRenewalEndDate(Rental rental, RentalItem? rentalItem, DateTime endDate)
+        {
+            if (!IsRenewal(rental) || rental.Status != RentalStatus.Returned)
+            {
+                return endDate;
+            }
+
+            var actualRelease = new[] { rental.ActualEndDate, rentalItem?.ReturnedAt }
+                .Where(value => value.HasValue)
+                .Select(value => ToBusinessDate(value!.Value))
+                .DefaultIfEmpty(endDate)
+                .Max();
+            return actualRelease > endDate ? actualRelease : endDate;
+        }
 
         public static DateTime? OpenEndedUntil(
             DateTime? actualEndDate,

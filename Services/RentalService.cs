@@ -159,7 +159,9 @@ namespace AuditIt.Api.Services
                     && rental.Items.Any(i => i.ReturnedAt == null);
                 var rentalPeriodOverlaps = RentalDateRules.Overlaps(rental.StartDate, rental.ExpectedEndDate, from, to);
 
-                if (rentalPeriodOverlaps)
+                if (rentalPeriodOverlaps
+                    && rental.Status != RentalStatus.Renewed
+                    && !rental.RenewedToRentalId.HasValue)
                 {
                     events.Add(new RentalCalendarEventDto
                     {
@@ -1862,7 +1864,7 @@ namespace AuditIt.Api.Services
                 .ToListAsync();
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(
-                    RentalDateRules.OccupancyStartDate(r.ExpectedShipDate, r.Shipments),
+                    RentalDateRules.OccupancyStartDate(r),
                     RentalDateRules.OccupancyEndDate(
                         r.ExpectedEndDate,
                         r.ActualEndDate,
@@ -1944,17 +1946,12 @@ namespace AuditIt.Api.Services
             var expectedEndDay = RentalDateRules.ToBusinessDate(expectedEndDate);
             var distinctDefs = itemDefIds.Distinct().ToList();
 
-            var manualLoanItems = await _context.Items
+            var manualLoanCandidates = await _context.Items
                 .Where(i => distinctDefs.Contains(i.ItemDefinitionId) && i.Status == ItemStatus.LoanedOut)
-                .Where(i => !_context.RentalItems.Any(ri =>
-                    ri.ItemId == i.Id
-                    && ri.ReturnedAt == null
-                    && ri.Rental != null
-                    && ri.Rental.Status != RentalStatus.Returned
-                    && ri.Rental.Status != RentalStatus.Cancelled
-                    && ri.Rental.Status != RentalStatus.Renewed))
+                .Where(i => i.CurrentDestination == null || !i.CurrentDestination.StartsWith("租赁 "))
                 .Select(i => new
                 {
+                    i.Id,
                     i.ItemDefinitionId,
                     i.LastUpdated,
                     OutboundAt = _context.AuditLogs
@@ -1964,6 +1961,9 @@ namespace AuditIt.Api.Services
                         .FirstOrDefault()
                 })
                 .ToListAsync();
+            var manualLoanItems = manualLoanCandidates
+                .Where(item => item.OutboundAt.HasValue)
+                .ToList();
 
             var candidateRentals = await _context.Rentals
                 .Include(r => r.Items)
@@ -1975,7 +1975,7 @@ namespace AuditIt.Api.Services
 
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(
-                    RentalDateRules.OccupancyStartDate(r.ExpectedShipDate, r.Shipments),
+                    RentalDateRules.OccupancyStartDate(r),
                     RentalDateRules.OccupancyEndDate(
                         r.ExpectedEndDate,
                         r.ActualEndDate,
@@ -1988,6 +1988,16 @@ namespace AuditIt.Api.Services
                     startDay,
                     expectedEndDay))
                 .ToList();
+            var occupiedSpecificItemIds = overlappingRentals
+                .SelectMany(r => r.Items.Select(ri => new { Rental = r, RentalItem = ri }))
+                .Where(entry => entry.RentalItem.ItemId.HasValue
+                    && RentalDateRules.Overlaps(
+                        RentalDateRules.OccupancyStartDate(entry.Rental),
+                        RentalDateRules.OccupancyEndDate(entry.Rental, entry.RentalItem, expectedEndDay),
+                        startDay,
+                        expectedEndDay))
+                .Select(entry => entry.RentalItem.ItemId!.Value)
+                .ToHashSet();
 
             foreach (var defId in distinctDefs)
             {
@@ -2050,7 +2060,9 @@ namespace AuditIt.Api.Services
                     }
                 }
 
-                foreach (var manualLoan in manualLoanItems.Where(item => item.ItemDefinitionId == defId))
+                foreach (var manualLoan in manualLoanItems.Where(item =>
+                    item.ItemDefinitionId == defId
+                    && !occupiedSpecificItemIds.Contains(item.Id)))
                 {
                     AddOccupancy(
                         RentalDateRules.ToBusinessDate(manualLoan.OutboundAt ?? manualLoan.LastUpdated),
@@ -2321,22 +2333,7 @@ namespace AuditIt.Api.Services
                 var title = $"租赁单 {rental.RentalNumber} | {action}";
                 var content = await BuildRentalNotificationContentAsync(rental, action, currentUser, extra);
 
-                var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (!string.IsNullOrWhiteSpace(rental.CreatedBy))
-                {
-                    targets.Add(rental.CreatedBy.Trim());
-                }
-
-                foreach (var assignedUser in SplitUsers(rental.AssignedTo))
-                {
-                    targets.Add(assignedUser);
-                }
-
-                var admins = await _identityService.GetUsersInRoleAsync(BuiltInRoles.Admin);
-                foreach (var admin in admins)
-                {
-                    targets.Add(admin);
-                }
+                var targets = await BuildRentalNotificationTargetsAsync(rental, includeAdmins: true);
 
                 if (targets.Count == 0)
                 {
@@ -2428,6 +2425,11 @@ namespace AuditIt.Api.Services
                 lines.Add($"负责人：{source.AssignedTo}");
             }
 
+            if (!string.IsNullOrWhiteSpace(source.SenderName))
+            {
+                lines.Add($"发货人：{source.SenderName}");
+            }
+
             if (!string.IsNullOrWhiteSpace(currentUser))
             {
                 lines.Add($"操作人：{currentUser}");
@@ -2494,22 +2496,7 @@ namespace AuditIt.Api.Services
                 return;
             }
 
-            var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!string.IsNullOrWhiteSpace(rental.CreatedBy))
-            {
-                targets.Add(rental.CreatedBy.Trim());
-            }
-
-            foreach (var assignedUser in SplitUsers(rental.AssignedTo))
-            {
-                targets.Add(assignedUser);
-            }
-
-            var admins = await _identityService.GetUsersInRoleAsync(BuiltInRoles.Admin);
-            foreach (var admin in admins)
-            {
-                targets.Add(admin);
-            }
+            var targets = await BuildRentalNotificationTargetsAsync(rental, includeAdmins: true);
 
             if (targets.Count == 0)
             {
@@ -2908,7 +2895,11 @@ namespace AuditIt.Api.Services
             }
 
             return string.Equals(rental.CreatedBy, targetUser, StringComparison.OrdinalIgnoreCase)
-                || SplitUsers(rental.AssignedTo).Any(user => string.Equals(user, targetUser, StringComparison.OrdinalIgnoreCase));
+                || SplitUsers(rental.AssignedTo).Any(user => string.Equals(user, targetUser, StringComparison.OrdinalIgnoreCase))
+                || SplitUsers(rental.SenderName).Any(user => string.Equals(user, targetUser, StringComparison.OrdinalIgnoreCase))
+                || rental.Shipments.Any(shipment =>
+                    shipment.Direction == ShipmentDirection.Outbound
+                    && string.Equals(shipment.CreatedBy, targetUser, StringComparison.OrdinalIgnoreCase));
         }
 
         private static Guid? ParseRentalId(Reminder reminder)
@@ -2947,6 +2938,53 @@ namespace AuditIt.Api.Services
             string.IsNullOrWhiteSpace(users)
                 ? Array.Empty<string>()
                 : users.Split(new[] { ',', ';', '，', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        private async Task<HashSet<string>> BuildRentalNotificationTargetsAsync(Rental rental, bool includeAdmins)
+        {
+            var snapshot = await _context.Rentals
+                .AsNoTracking()
+                .Include(r => r.Shipments)
+                .FirstOrDefaultAsync(r => r.Id == rental.Id);
+            var source = snapshot ?? rental;
+
+            var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            AddNotificationTarget(targets, source.CreatedBy);
+            foreach (var assignedUser in SplitUsers(source.AssignedTo))
+            {
+                AddNotificationTarget(targets, assignedUser);
+            }
+
+            foreach (var sender in SplitUsers(source.SenderName))
+            {
+                AddNotificationTarget(targets, sender);
+            }
+
+            foreach (var shipper in source.Shipments
+                .Where(shipment => shipment.Direction == ShipmentDirection.Outbound)
+                .Select(shipment => shipment.CreatedBy))
+            {
+                AddNotificationTarget(targets, shipper);
+            }
+
+            if (includeAdmins)
+            {
+                var admins = await _identityService.GetUsersInRoleAsync(BuiltInRoles.Admin);
+                foreach (var admin in admins)
+                {
+                    AddNotificationTarget(targets, admin);
+                }
+            }
+
+            return targets;
+        }
+
+        private static void AddNotificationTarget(HashSet<string> targets, string? user)
+        {
+            if (!string.IsNullOrWhiteSpace(user))
+            {
+                targets.Add(user.Trim());
+            }
+        }
 
         private static string? NormalizeNullableText(string? value) =>
             string.IsNullOrWhiteSpace(value) ? null : value.Trim();

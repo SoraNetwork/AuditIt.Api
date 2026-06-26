@@ -179,15 +179,7 @@ namespace AuditIt.Api.Controllers
             var busy = rentals
                 .Where(r => RentalDateRules.Overlaps(
                     OccupancyStartDate(r),
-                    RentalDateRules.OccupancyEndDate(
-                        r.ExpectedEndDate,
-                        r.ActualEndDate,
-                        openEndedUntil: RentalDateRules.OpenEndedUntil(
-                            r.ActualEndDate,
-                            null,
-                            HasRentalStarted(r) && r.Items.Any(ri => ri.ItemId == id && ri.ReturnedAt == null),
-                            rangeEnd),
-                        includeReturnBuffer: ShouldUseReturnBuffer(r)),
+                    RentalDateRules.OccupancyEndDate(r, rangeEnd),
                     rangeStart,
                     rangeEnd))
                 .SelectMany(r => r.Items
@@ -201,7 +193,7 @@ namespace AuditIt.Api.Controllers
                     .Where(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null)
                     .Select(ri =>
                     {
-                        var startAt = RentalDateRules.OccupancyStartDate(r.ExpectedShipDate, r.Shipments);
+                        var startAt = RentalDateRules.OccupancyStartDate(r);
                         var endAt = RentalDateRules.EndOfBusinessDay(r.ExpectedEndDate);
                         return new ItemBusyPeriodDto
                         {
@@ -219,22 +211,19 @@ namespace AuditIt.Api.Controllers
                     }))
                 .ToList();
 
+            var outboundAt = await _context.AuditLogs
+                .Where(log => log.ItemId == id && log.Action == AuditAction.Outbound)
+                .OrderByDescending(log => log.Timestamp)
+                .Select(log => (DateTime?)log.Timestamp)
+                .FirstOrDefaultAsync();
+            var hasSpecificRentalBusy = busy.Any(period => !period.IsManualLoan && !period.IsUncertain);
             var isManualLoan = item.Status == ItemStatus.LoanedOut
-                && !await _context.RentalItems.AnyAsync(ri =>
-                    ri.ItemId == id
-                    && ri.ReturnedAt == null
-                    && ri.Rental != null
-                    && ri.Rental.Status != RentalStatus.Returned
-                    && ri.Rental.Status != RentalStatus.Cancelled
-                    && ri.Rental.Status != RentalStatus.Renewed);
+                && outboundAt.HasValue
+                && (item.CurrentDestination == null || !item.CurrentDestination.StartsWith("租赁 ", StringComparison.Ordinal))
+                && !hasSpecificRentalBusy;
 
             if (isManualLoan)
             {
-                var outboundAt = await _context.AuditLogs
-                    .Where(log => log.ItemId == id && log.Action == AuditAction.Outbound)
-                    .OrderByDescending(log => log.Timestamp)
-                    .Select(log => (DateTime?)log.Timestamp)
-                    .FirstOrDefaultAsync();
                 var loanStart = RentalDateRules.ToBusinessDate(outboundAt ?? item.LastUpdated);
 
                 if (loanStart <= rangeEnd)

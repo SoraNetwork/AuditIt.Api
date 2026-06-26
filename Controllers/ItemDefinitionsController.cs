@@ -155,28 +155,27 @@ namespace AuditIt.Api.Controllers
             var overlappingRentals = candidateRentals
                 .Where(r => RentalDateRules.Overlaps(
                     OccupancyStartDate(r),
-                    RentalDateRules.OccupancyEndDate(
-                        r.ExpectedEndDate,
-                        r.ActualEndDate,
-                        openEndedUntil: RentalDateRules.OpenEndedUntil(
-                            r.ActualEndDate,
-                            null,
-                            HasRentalStarted(r) && r.Items.Any(ri => ri.ReturnedAt == null),
-                            rangeEnd),
-                        includeReturnBuffer: ShouldUseReturnBuffer(r)),
+                    RentalDateRules.OccupancyEndDate(r, rangeEnd),
                     rangeStart,
                     rangeEnd))
                 .ToList();
+            var occupiedSpecificItemIds = overlappingRentals
+                .SelectMany(r => r.Items.Select(ri => new { Rental = r, RentalItem = ri }))
+                .Where(entry => entry.RentalItem.ItemId.HasValue
+                    && entry.RentalItem.Item != null
+                    && entry.RentalItem.Item.ItemDefinitionId == id
+                    && RentalDateRules.Overlaps(
+                        RentalDateRules.OccupancyStartDate(entry.Rental),
+                        RentalDateRules.OccupancyEndDate(entry.Rental, entry.RentalItem, rangeEnd),
+                        rangeStart,
+                        rangeEnd))
+                .Select(entry => entry.RentalItem.ItemId!.Value)
+                .ToHashSet();
 
-            var manualLoans = await _context.Items
+            var manualLoanCandidates = await _context.Items
                 .Where(i => i.ItemDefinitionId == id && i.Status == ItemStatus.LoanedOut)
-                .Where(i => !_context.RentalItems.Any(ri =>
-                    ri.ItemId == i.Id
-                    && ri.ReturnedAt == null
-                    && ri.Rental != null
-                    && ri.Rental.Status != RentalStatus.Returned
-                    && ri.Rental.Status != RentalStatus.Cancelled
-                    && ri.Rental.Status != RentalStatus.Renewed))
+                .Where(i => i.CurrentDestination == null || !i.CurrentDestination.StartsWith("租赁 "))
+                .Where(i => !occupiedSpecificItemIds.Contains(i.Id))
                 .Select(i => new
                 {
                     i.ShortId,
@@ -188,6 +187,9 @@ namespace AuditIt.Api.Controllers
                         .FirstOrDefault()
                 })
                 .ToListAsync();
+            var manualLoans = manualLoanCandidates
+                .Where(loan => loan.OutboundAt.HasValue)
+                .ToList();
 
             var dayCount = (rangeEnd.Date - rangeStart.Date).Days + 1;
             var occupancyDiff = new int[dayCount + 1];
@@ -508,10 +510,7 @@ namespace AuditIt.Api.Controllers
             || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
 
         private static DateTime OccupancyStartDate(Rental rental) =>
-            RentalDateRules.OccupancyStartDate(
-                rental.ExpectedShipDate,
-                rental.Shipments,
-                rental.Status == RentalStatus.Returned ? rental.StartDate : null);
+            RentalDateRules.OccupancyStartDate(rental);
 
         private static bool ShouldUseReturnBuffer(Rental rental) =>
             rental.Status != RentalStatus.Renewed

@@ -161,19 +161,7 @@ namespace AuditIt.Api.Services
                     continue;
                 }
 
-                var targets = new HashSet<string?>(StringComparer.OrdinalIgnoreCase);
-                if (!string.IsNullOrWhiteSpace(rental.CreatedBy))
-                {
-                    targets.Add(rental.CreatedBy.Trim());
-                }
-
-                if (type != ReminderType.RentalReturnUnsigned && !string.IsNullOrWhiteSpace(rental.AssignedTo))
-                {
-                    foreach (var name in rental.AssignedTo.Split(new[] { ',', ';', '，', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                    {
-                        targets.Add(name);
-                    }
-                }
+                var targets = BuildRentalReminderTargets(rental);
 
                 if (type == ReminderType.RentalOverdue)
                 {
@@ -243,6 +231,44 @@ namespace AuditIt.Api.Services
                 && (dueDate.HasValue
                     ? r.DueAt.Date == dueDate.Value.Date
                     : r.DismissedAt == null), ct);
+        }
+
+        private static HashSet<string?> BuildRentalReminderTargets(Rental rental)
+        {
+            var targets = new HashSet<string?>(StringComparer.OrdinalIgnoreCase);
+            AddReminderTarget(targets, rental.CreatedBy);
+
+            foreach (var assignedUser in SplitUsers(rental.AssignedTo))
+            {
+                AddReminderTarget(targets, assignedUser);
+            }
+
+            foreach (var sender in SplitUsers(rental.SenderName))
+            {
+                AddReminderTarget(targets, sender);
+            }
+
+            foreach (var shipper in rental.Shipments
+                .Where(shipment => shipment.Direction == ShipmentDirection.Outbound)
+                .Select(shipment => shipment.CreatedBy))
+            {
+                AddReminderTarget(targets, shipper);
+            }
+
+            return targets;
+        }
+
+        private static IEnumerable<string> SplitUsers(string? users) =>
+            string.IsNullOrWhiteSpace(users)
+                ? Array.Empty<string>()
+                : users.Split(new[] { ',', ';', '，', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        private static void AddReminderTarget(HashSet<string?> targets, string? user)
+        {
+            if (!string.IsNullOrWhiteSpace(user))
+            {
+                targets.Add(user.Trim());
+            }
         }
 
         private static Reminder BuildReminder(Rental rental, ReminderType type, string? target, DateTime now)
