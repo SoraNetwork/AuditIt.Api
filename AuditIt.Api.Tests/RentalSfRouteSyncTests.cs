@@ -9,6 +9,79 @@ namespace AuditIt.Api.Tests;
 
 public class RentalSfRouteSyncTests
 {
+    [Theory]
+    [InlineData("Alice", "R20260601-0001")]
+    [InlineData("R20260601", "R20260601-0001")]
+    [InlineData("Camera", "R20260601-0001")]
+    public async Task ListAsync_searchesRentalNumberRenterAndItems(string search, string expectedRentalNumber)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var cameraRental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20260601-0001",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Alice Chen", Phone = "13800138000" },
+            Status = RentalStatus.Active,
+            StartDate = new DateTime(2026, 6, 1),
+            ExpectedShipDate = new DateTime(2026, 5, 31),
+            ExpectedEndDate = new DateTime(2026, 6, 5),
+            TotalPrice = 100m
+        };
+        cameraRental.Items.Add(new RentalItem
+        {
+            ItemShortIdSnapshot = "CAM-001",
+            ItemNameSnapshot = "Camera Body"
+        });
+
+        var lensRental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20260602-0002",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Bob Li", Phone = "13900139000" },
+            Status = RentalStatus.Active,
+            StartDate = new DateTime(2026, 6, 2),
+            ExpectedShipDate = new DateTime(2026, 6, 1),
+            ExpectedEndDate = new DateTime(2026, 6, 6),
+            TotalPrice = 200m
+        };
+        lensRental.Items.Add(new RentalItem
+        {
+            ItemShortIdSnapshot = "LEN-001",
+            ItemNameSnapshot = "Prime Lens"
+        });
+
+        context.Rentals.AddRange(cameraRental, lensRental);
+        await context.SaveChangesAsync();
+
+        var service = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            Array.Empty<INotificationChannel>(),
+            new StubSfExpressService(DateTime.UtcNow),
+            new StubSettlementService());
+
+        var (items, total) = await service.ListAsync(new RentalQueryParameters
+        {
+            Search = search,
+            PageSize = 20
+        });
+
+        var item = Assert.Single(items);
+        Assert.Equal(1, total);
+        Assert.Equal(expectedRentalNumber, item.RentalNumber);
+    }
+
     [Fact]
     public async Task SyncSfRoutesAsync_autoSignsInboundShipmentWithoutReturningRentalItems()
     {

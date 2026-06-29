@@ -331,6 +331,7 @@ namespace AuditIt.Api.Models
     {
         public RentalStatus? Status { get; set; }
         public Guid? RenterId { get; set; }
+        public string? Search { get; set; }
         public string? RentalNumber { get; set; }
         public DateTime? StartDateFrom { get; set; }
         public DateTime? StartDateTo { get; set; }
