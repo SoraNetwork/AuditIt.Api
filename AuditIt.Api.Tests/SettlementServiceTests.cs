@@ -173,7 +173,7 @@ public class SettlementServiceTests
     }
 
     [Fact]
-    public async Task GetPreviewAsync_keepsOwnerSharesSeparatePerRentalItem()
+    public async Task GetPreviewAsync_mergesOwnerSharesIntoSingleTotalLine()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -253,22 +253,11 @@ public class SettlementServiceTests
 
         Assert.NotNull(preview);
         Assert.Equal(500m, preview!.ItemOwnerAmount);
-        Assert.Collection(
-            preview.OwnerShares,
-            share =>
-            {
-                Assert.Equal("Owner", share.OwnerName);
-                Assert.Equal("CAM-001", share.ItemShortId);
-                Assert.Equal("Camera A", share.ItemName);
-                Assert.Equal(125m, share.Amount);
-            },
-            share =>
-            {
-                Assert.Equal("Owner", share.OwnerName);
-                Assert.Equal("CAM-002", share.ItemShortId);
-                Assert.Equal("Camera B", share.ItemName);
-                Assert.Equal(375m, share.Amount);
-            });
+        var ownerShare = Assert.Single(preview.OwnerShares);
+        Assert.Equal("Owner", ownerShare.OwnerName);
+        Assert.Null(ownerShare.ItemShortId);
+        Assert.Null(ownerShare.ItemName);
+        Assert.Equal(500m, ownerShare.Amount);
         Assert.Contains("CAM-001", preview.MarkdownText);
         Assert.Contains("CAM-002", preview.MarkdownText);
     }

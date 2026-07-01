@@ -72,6 +72,13 @@ namespace AuditIt.Api.Services
                         || item.ItemNameSnapshot.Contains(search)));
             }
 
+            if (query.PendingSettlement)
+            {
+                q = q.Where(r =>
+                    (r.Status == RentalStatus.Returned || r.Status == RentalStatus.Renewed)
+                    && r.SettlementNotifiedAt == null);
+            }
+
             var startDateFrom = query.StartDateFrom.HasValue
                 ? RentalDateRules.ToBusinessDate(query.StartDateFrom.Value)
                 : (DateTime?)null;
@@ -377,6 +384,18 @@ namespace AuditIt.Api.Services
             var rental = await _context.Rentals
                 .Include(r => r.Renter)
                 .Include(r => r.Items)
+                    .ThenInclude(ri => ri.ItemDefinition)
+                        .ThenInclude(d => d!.Category)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.ItemDefinition)
+                            .ThenInclude(d => d!.Category)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.Warehouse)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.Listings)
                 .Include(r => r.Shipments)
                     .ThenInclude(s => s.OriginWarehouse)
                 .FirstOrDefaultAsync(r => r.Id == id);
@@ -3086,19 +3105,26 @@ namespace AuditIt.Api.Services
             Shipments = rental.Shipments.Select(ToShipmentDto).ToList()
         };
 
-        private static RentalItemDto ToItemDto(RentalItem rentalItem) => new()
+        private static RentalItemDto ToItemDto(RentalItem rentalItem)
         {
-            Id = rentalItem.Id,
-            ItemId = rentalItem.ItemId,
-            ItemDefinitionId = rentalItem.ItemDefinitionId,
-            ItemShortIdSnapshot = rentalItem.ItemShortIdSnapshot,
-            ItemNameSnapshot = rentalItem.ItemNameSnapshot,
-            PerItemPrice = rentalItem.PerItemPrice,
-            ReturnedAt = rentalItem.ReturnedAt,
-            ReturnCondition = rentalItem.ReturnCondition,
-            ReturnNotes = rentalItem.ReturnNotes,
-            ListingRemarks = rentalItem.ListingRemarksSnapshot
-        };
+            var definition = rentalItem.ItemDefinition ?? rentalItem.Item?.ItemDefinition;
+
+            return new RentalItemDto
+            {
+                Id = rentalItem.Id,
+                ItemId = rentalItem.ItemId,
+                ItemDefinitionId = rentalItem.ItemDefinitionId,
+                CategoryId = definition?.CategoryId,
+                CategoryName = definition?.Category?.Name ?? string.Empty,
+                ItemShortIdSnapshot = rentalItem.ItemShortIdSnapshot,
+                ItemNameSnapshot = rentalItem.ItemNameSnapshot,
+                PerItemPrice = rentalItem.PerItemPrice,
+                ReturnedAt = rentalItem.ReturnedAt,
+                ReturnCondition = rentalItem.ReturnCondition,
+                ReturnNotes = rentalItem.ReturnNotes,
+                ListingRemarks = rentalItem.ListingRemarksSnapshot
+            };
+        }
 
         private static RentalShipmentDto ToShipmentDto(RentalShipment shipment) => new()
         {

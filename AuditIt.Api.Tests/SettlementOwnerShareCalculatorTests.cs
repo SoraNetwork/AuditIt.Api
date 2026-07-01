@@ -7,7 +7,7 @@ namespace AuditIt.Api.Tests;
 public class SettlementOwnerShareCalculatorTests
 {
     [Fact]
-    public void BuildOwnerShares_keepsEachRentalItemAsSeparateSettlementLine()
+    public void BuildOwnerShares_mergesDistinctOwnersIntoSingleSettlementLine()
     {
         var rental = new Rental
         {
@@ -18,36 +18,25 @@ public class SettlementOwnerShareCalculatorTests
                     ItemShortIdSnapshot = "CAM-001",
                     ItemNameSnapshot = "Camera A",
                     PerItemPrice = 100m,
-                    Item = new Item { OwnerUserNamesSnapshot = "Owner" }
+                    Item = new Item { OwnerUserNamesSnapshot = "Owner,Alice" }
                 },
                 new RentalItem
                 {
                     ItemShortIdSnapshot = "CAM-002",
                     ItemNameSnapshot = "Camera B",
                     PerItemPrice = 300m,
-                    Item = new Item { OwnerUserNamesSnapshot = "Owner" }
+                    Item = new Item { OwnerUserNamesSnapshot = "alice,Bob" }
                 }
             }
         };
 
         var shares = SettlementOwnerShareCalculator.BuildOwnerShares(rental, 1000m, 50m);
 
-        Assert.Collection(
-            shares,
-            share =>
-            {
-                Assert.Equal("Owner", share.OwnerName);
-                Assert.Equal("CAM-001", share.ItemShortId);
-                Assert.Equal("Camera A", share.ItemName);
-                Assert.Equal(125m, share.Amount);
-            },
-            share =>
-            {
-                Assert.Equal("Owner", share.OwnerName);
-                Assert.Equal("CAM-002", share.ItemShortId);
-                Assert.Equal("Camera B", share.ItemName);
-                Assert.Equal(375m, share.Amount);
-            });
+        var share = Assert.Single(shares);
+        Assert.Equal("Owner,Alice,Bob", share.OwnerName);
+        Assert.Null(share.ItemShortId);
+        Assert.Null(share.ItemName);
+        Assert.Equal(500m, share.Amount);
     }
 
     [Fact]

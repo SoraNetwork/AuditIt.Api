@@ -46,6 +46,8 @@ namespace AuditIt.Api.Models
         public int Id { get; set; }
         public Guid? ItemId { get; set; }
         public int? ItemDefinitionId { get; set; }
+        public int? CategoryId { get; set; }
+        public string CategoryName { get; set; } = string.Empty;
         public string ItemShortIdSnapshot { get; set; } = string.Empty;
         public string ItemNameSnapshot { get; set; } = string.Empty;
         public decimal? PerItemPrice { get; set; }
@@ -335,6 +337,7 @@ namespace AuditIt.Api.Models
         public string? RentalNumber { get; set; }
         public DateTime? StartDateFrom { get; set; }
         public DateTime? StartDateTo { get; set; }
+        public bool PendingSettlement { get; set; }
         public int Page { get; set; } = 1;
         public int PageSize { get; set; } = 50;
     }
