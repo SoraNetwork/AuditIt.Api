@@ -101,6 +101,16 @@ namespace AuditIt.Api.Migrations
                     b.Property<DateTime>("EntryDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DeletedBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("ItemDefinitionId")
                         .HasColumnType("INTEGER");
 

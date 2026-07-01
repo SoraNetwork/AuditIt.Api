@@ -38,6 +38,13 @@ namespace AuditIt.Api.Models
 
         public ItemStatus Status { get; set; }
 
+        public bool IsDeleted { get; set; }
+
+        public DateTime? DeletedAt { get; set; }
+
+        [StringLength(100)]
+        public string? DeletedBy { get; set; }
+
         public DateTime LastUpdated { get; set; } = DateTime.UtcNow;
 
         public DateTime EntryDate { get; set; } = DateTime.UtcNow;

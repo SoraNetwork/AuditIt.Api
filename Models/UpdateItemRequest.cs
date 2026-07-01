@@ -4,5 +4,6 @@ namespace AuditIt.Api.Models
     {
         public string? Destination { get; set; }
         public ItemStatus? Status { get; set; }
+        public bool PermanentlyHidden { get; set; }
     }
 }

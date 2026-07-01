@@ -457,7 +457,34 @@ namespace AuditIt.Api.Controllers
         [RequirePermission(PermissionCodes.ItemDelete)]
         public async Task<ActionResult<ItemDto>> Dispose(Guid id, [FromBody] UpdateItemRequest request)
         {
-            return await UpdateItemStatus(id, ItemStatus.Disposed, AuditAction.Dispose, request.Destination);
+            return await UpdateItemStatus(id, ItemStatus.Disposed, AuditAction.Dispose, request.Destination, request.PermanentlyHidden);
+        }
+
+        [HttpPut("{id}/hide-permanently")]
+        [RequirePermission(PermissionCodes.ItemDelete)]
+        public async Task<IActionResult> HidePermanently(Guid id)
+        {
+            var item = await _context.Items
+                .IgnoreQueryFilters()
+                .Include(i => i.ItemDefinition)
+                .Include(i => i.Warehouse)
+                .FirstOrDefaultAsync(i => i.Id == id);
+
+            if (item == null || item.IsDeleted)
+            {
+                return NotFound();
+            }
+
+            if (item.Status != ItemStatus.Disposed)
+            {
+                return BadRequest("只有已处置物品可以转为永远不可见。");
+            }
+
+            MarkItemDeleted(item);
+            await LogAudit(item, AuditAction.Dispose, item.ItemDefinition?.Name ?? "Unknown Item", item.Warehouse?.Name ?? "Unknown Warehouse", "转为永远不可见");
+            await _context.SaveChangesAsync();
+
+            return NoContent();
         }
 
         // POST: api/Items/update-status/batch
@@ -548,7 +575,7 @@ namespace AuditIt.Api.Controllers
             return Ok(ToItemDto(item));
         }
 
-        private async Task<ActionResult<ItemDto>> UpdateItemStatus(Guid id, ItemStatus newStatus, AuditAction action, string? destination)
+        private async Task<ActionResult<ItemDto>> UpdateItemStatus(Guid id, ItemStatus newStatus, AuditAction action, string? destination, bool permanentlyHidden = false)
         {
             var item = await _context.Items
                 .Include(i => i.ItemDefinition)
@@ -556,6 +583,10 @@ namespace AuditIt.Api.Controllers
                 .FirstOrDefaultAsync(i => i.Id == id);
 
             if (item == null) return NotFound();
+            if (permanentlyHidden && action != AuditAction.Dispose)
+            {
+                return BadRequest("只有处置物品时可以设置永远不可见。");
+            }
 
             item.Status = newStatus;
             item.LastUpdated = DateTime.UtcNow;
@@ -572,10 +603,28 @@ namespace AuditIt.Api.Controllers
             _context.Entry(item).State = EntityState.Modified;
 
             await LogAudit(item, action, item.ItemDefinition.Name, item.Warehouse.Name, destination);
+
+            if (permanentlyHidden)
+            {
+                MarkItemDeleted(item);
+            }
             
             await _context.SaveChangesAsync();
 
+            if (permanentlyHidden)
+            {
+                return NoContent();
+            }
+
             return Ok(ToItemDto(item));
+        }
+
+        private void MarkItemDeleted(Item item)
+        {
+            item.IsDeleted = true;
+            item.DeletedAt = DateTime.UtcNow;
+            item.DeletedBy = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            item.LastUpdated = DateTime.UtcNow;
         }
 
         private async Task LogAudit(Item item, AuditAction action, string itemName, string warehouseName, string? destination)

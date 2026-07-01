@@ -15,6 +15,9 @@ namespace AuditIt.Api.Services
 
         public async Task<IEnumerable<ItemListingDto>> GetByItemAsync(Guid itemId)
         {
+            var itemExists = await _context.Items.AnyAsync(i => i.Id == itemId);
+            if (!itemExists) return Array.Empty<ItemListingDto>();
+
             return await _context.ItemListings
                 .Where(l => l.ItemId == itemId)
                 .OrderByDescending(l => l.UpdatedAt)
@@ -45,7 +48,9 @@ namespace AuditIt.Api.Services
 
         public async Task<ItemListingDto?> UpdateAsync(int id, UpdateItemListingDto dto)
         {
-            var listing = await _context.ItemListings.FindAsync(id);
+            var listing = await _context.ItemListings
+                .Where(l => _context.Items.Any(i => i.Id == l.ItemId))
+                .FirstOrDefaultAsync(l => l.Id == id);
             if (listing == null) return null;
 
             if (dto.Platform.HasValue) listing.Platform = dto.Platform.Value;
@@ -61,7 +66,9 @@ namespace AuditIt.Api.Services
 
         public async Task<bool> DeleteAsync(int id)
         {
-            var listing = await _context.ItemListings.FindAsync(id);
+            var listing = await _context.ItemListings
+                .Where(l => _context.Items.Any(i => i.Id == l.ItemId))
+                .FirstOrDefaultAsync(l => l.Id == id);
             if (listing == null) return false;
             _context.ItemListings.Remove(listing);
             await _context.SaveChangesAsync();

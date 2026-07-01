@@ -27,7 +27,9 @@ namespace AuditIt.Api.Controllers
         [RequirePermission(PermissionCodes.AuditLogView)]
         public async Task<ActionResult<IEnumerable<AuditLog>>> GetAuditLogs([FromQuery] Guid? itemId)
         {
-            var query = _context.AuditLogs.AsQueryable();
+            var query = _context.AuditLogs
+                .Where(log => _context.Items.Any(item => item.Id == log.ItemId))
+                .AsQueryable();
 
             if (itemId.HasValue)
             {

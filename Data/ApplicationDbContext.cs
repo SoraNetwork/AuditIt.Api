@@ -35,6 +35,9 @@ namespace AuditIt.Api.Data
             base.OnModelCreating(modelBuilder);
 
             modelBuilder.Entity<Item>()
+                .HasQueryFilter(i => !i.IsDeleted);
+
+            modelBuilder.Entity<Item>()
                 .HasIndex(i => i.ShortId)
                 .IsUnique(false);
 
