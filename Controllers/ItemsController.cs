@@ -160,6 +160,9 @@ namespace AuditIt.Api.Controllers
                     || r.StartDate <= rangeEnd.AddDays(1)
                     || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
                     && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
+                        || (r.HasRenewalIntent
+                            && r.RenewalIntentEndDate.HasValue
+                            && r.RenewalIntentEndDate.Value >= rangeStart.AddDays(-1))
                         || r.ActualEndDate >= rangeStart.AddDays(-1)
                         || r.Items.Any(ri => ri.ReturnedAt >= rangeStart.AddDays(-1))
                         || ((r.RenewedFromRentalId != null
@@ -173,7 +176,11 @@ namespace AuditIt.Api.Controllers
                 .Include(r => r.Shipments)
                 .Where(r => r.Status == RentalStatus.Pending)
                 .Where(r => r.Items.Any(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null))
-                .Where(r => r.ExpectedShipDate <= rangeEnd.AddDays(1) && r.ExpectedEndDate >= rangeStart.AddDays(-1))
+                .Where(r => r.ExpectedShipDate <= rangeEnd.AddDays(1)
+                    && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
+                        || (r.HasRenewalIntent
+                            && r.RenewalIntentEndDate.HasValue
+                            && r.RenewalIntentEndDate.Value >= rangeStart.AddDays(-1))))
                 .ToListAsync();
 
             var busy = rentals
@@ -194,7 +201,7 @@ namespace AuditIt.Api.Controllers
                     .Select(ri =>
                     {
                         var startAt = RentalDateRules.OccupancyStartDate(r);
-                        var endAt = RentalDateRules.EndOfBusinessDay(r.ExpectedEndDate);
+                        var endAt = RentalDateRules.EndOfBusinessDay(RentalDateRules.EffectiveExpectedEndDate(r));
                         return new ItemBusyPeriodDto
                         {
                             RentalId = r.Id,
@@ -206,6 +213,10 @@ namespace AuditIt.Api.Controllers
                             EndAt = endAt > rangeEnd ? rangeEnd : endAt,
                             IsOpen = true,
                             IsUncertain = true,
+                            HasRenewalIntent = r.HasRenewalIntent,
+                            RenewalIntentEndDate = r.HasRenewalIntent && r.RenewalIntentEndDate.HasValue
+                                ? RentalDateRules.ToBusinessDate(r.RenewalIntentEndDate.Value)
+                                : null,
                             OccupancyStatus = ItemOccupancyStatus.Scheduled
                         };
                     }))
@@ -757,8 +768,11 @@ namespace AuditIt.Api.Controllers
             var startAt = OccupancyStartDate(rental);
             var endDay = RentalDateRules.OccupancyEndDate(rental, rentalItem, rangeEnd);
             var endAt = RentalDateRules.EndOfBusinessDay(endDay);
-            var expectedEndAt = RentalDateRules.EndOfBusinessDay(rental.ExpectedEndDate);
-            var returningStart = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate).AddDays(1);
+            var expectedEndDay = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
+            var effectiveExpectedEndDay = RentalDateRules.EffectiveExpectedEndDate(rental);
+            var expectedEndAt = RentalDateRules.EndOfBusinessDay(expectedEndDay);
+            var renewalIntentEndAt = RentalDateRules.EndOfBusinessDay(effectiveExpectedEndDay);
+            var returningStart = effectiveExpectedEndDay.AddDays(1);
             var isOpen = rentalItem.ReturnedAt == null
                 && rental.Status != RentalStatus.Returned
                 && rental.Status != RentalStatus.Renewed;
@@ -772,6 +786,26 @@ namespace AuditIt.Api.Controllers
                     scheduledEnd > rangeEnd ? rangeEnd : scheduledEnd,
                     isOpen,
                     ItemOccupancyStatus.Scheduled);
+                if (period.EndAt >= period.StartAt)
+                {
+                    yield return period;
+                }
+            }
+
+            if (rental.HasRenewalIntent
+                && rental.RenewalIntentEndDate.HasValue
+                && effectiveExpectedEndDay > expectedEndDay
+                && endAt >= expectedEndDay.AddDays(1)
+                && renewalIntentEndAt >= rangeStart)
+            {
+                var renewalIntentPeriodStart = new[] { startAt, expectedEndDay.AddDays(1), rangeStart }.Max();
+                var renewalIntentPeriodEnd = new[] { endAt, renewalIntentEndAt, rangeEnd }.Min();
+                var period = BuildBusyPeriod(
+                    rental,
+                    renewalIntentPeriodStart,
+                    renewalIntentPeriodEnd,
+                    isOpen,
+                    ItemOccupancyStatus.RenewalIntent);
                 if (period.EndAt >= period.StartAt)
                 {
                     yield return period;
@@ -811,6 +845,10 @@ namespace AuditIt.Api.Controllers
                 EndAt = endAt,
                 IsOpen = isOpen,
                 IsUncertain = false,
+                HasRenewalIntent = rental.HasRenewalIntent,
+                RenewalIntentEndDate = rental.HasRenewalIntent && rental.RenewalIntentEndDate.HasValue
+                    ? RentalDateRules.ToBusinessDate(rental.RenewalIntentEndDate.Value)
+                    : null,
                 OccupancyStatus = status
             };
 

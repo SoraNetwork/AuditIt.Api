@@ -15,6 +15,8 @@ namespace AuditIt.Api.Models
         public DateTime ExpectedShipDate { get; set; }
         public DateTime ExpectedEndDate { get; set; }
         public DateTime? ActualEndDate { get; set; }
+        public bool HasRenewalIntent { get; set; }
+        public DateTime? RenewalIntentEndDate { get; set; }
         public decimal TotalPrice { get; set; }
         public decimal? Deposit { get; set; }
         public decimal OtherFee { get; set; }
@@ -89,6 +91,10 @@ namespace AuditIt.Api.Models
         [Required]
         public DateTime ExpectedEndDate { get; set; }
 
+        public bool HasRenewalIntent { get; set; }
+
+        public DateTime? RenewalIntentEndDate { get; set; }
+
         [Range(0, double.MaxValue)]
         public decimal TotalPrice { get; set; }
 
@@ -119,6 +125,8 @@ namespace AuditIt.Api.Models
         public DateTime? StartDate { get; set; }
         public DateTime? ExpectedShipDate { get; set; }
         public DateTime? ExpectedEndDate { get; set; }
+        public bool? HasRenewalIntent { get; set; }
+        public DateTime? RenewalIntentEndDate { get; set; }
         [Range(0, double.MaxValue)]
         public decimal? TotalPrice { get; set; }
         [Range(0, double.MaxValue)]
@@ -137,9 +145,18 @@ namespace AuditIt.Api.Models
         public string? CreatedBy { get; set; }
 
         public string? SenderName { get; set; }
+
+        public bool AllowScheduleConflict { get; set; }
     }
 
     public class CreateRentalResult
+    {
+        public RentalDto? Rental { get; set; }
+        public string? Error { get; set; }
+        public RentalCreateConflictDto? Conflict { get; set; }
+    }
+
+    public class UpdateRentalResult
     {
         public RentalDto? Rental { get; set; }
         public string? Error { get; set; }
@@ -217,6 +234,8 @@ namespace AuditIt.Api.Models
         public string ItemName { get; set; } = string.Empty;
         public DateTime StartDate { get; set; }
         public DateTime ExpectedEndDate { get; set; }
+        public bool HasRenewalIntent { get; set; }
+        public DateTime? RenewalIntentEndDate { get; set; }
         public bool HasOutboundShipment { get; set; }
         public string? ConflictReason { get; set; }
     }
@@ -249,6 +268,8 @@ namespace AuditIt.Api.Models
         public Guid? RenterId { get; set; }
         public string? RenterName { get; set; }
         public RentalStatus? RentalStatus { get; set; }
+        public bool HasRenewalIntent { get; set; }
+        public DateTime? RenewalIntentEndDate { get; set; }
         public int? ReminderId { get; set; }
         public string Title { get; set; } = string.Empty;
         public string? Description { get; set; }

@@ -157,7 +157,11 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Shipments)
                     .ThenInclude(s => s.OriginWarehouse)
                 .Where(r => r.Status != RentalStatus.Cancelled)
-                .Where(r => (r.StartDate <= queryTo && r.ExpectedEndDate >= queryFrom)
+                .Where(r => (r.StartDate <= queryTo
+                        && (r.ExpectedEndDate >= queryFrom
+                            || (r.HasRenewalIntent
+                                && r.RenewalIntentEndDate.HasValue
+                                && r.RenewalIntentEndDate.Value >= queryFrom)))
                     || (r.ExpectedShipDate <= queryTo
                         && r.Status == RentalStatus.Pending
                         && r.RenewedFromRentalId == null
@@ -176,12 +180,13 @@ namespace AuditIt.Api.Services
                 var startDate = RentalDateRules.ToBusinessDate(rental.StartDate);
                 var expectedShipDate = RentalDateRules.ToBusinessDate(rental.ExpectedShipDate);
                 var expectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
+                var effectiveExpectedEndDate = RentalDateRules.EffectiveExpectedEndDate(rental);
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
                 var hasInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
                 var hasRentalStarted = HasRentalStarted(rental);
                 var hasOpenItems = !IsClosedStatus(rental.Status)
                     && rental.Items.Any(i => i.ReturnedAt == null);
-                var rentalPeriodOverlaps = RentalDateRules.Overlaps(rental.StartDate, rental.ExpectedEndDate, from, to);
+                var rentalPeriodOverlaps = RentalDateRules.Overlaps(rental.StartDate, effectiveExpectedEndDate, from, to);
 
                 if (rentalPeriodOverlaps
                     && rental.Status != RentalStatus.Renewed
@@ -197,10 +202,14 @@ namespace AuditIt.Api.Services
                         RenterId = rental.RenterId,
                         RenterName = rental.Renter?.Name,
                         RentalStatus = rental.Status,
+                        HasRenewalIntent = rental.HasRenewalIntent,
+                        RenewalIntentEndDate = NormalizeRenewalIntentEndDate(rental.HasRenewalIntent, rental.RenewalIntentEndDate),
                         Title = $"租期 {rental.RentalNumber}",
-                        Description = $"{rental.Renter?.Name ?? "-"} | {rental.Items.Count} 件物品",
+                        Description = rental.HasRenewalIntent && rental.RenewalIntentEndDate.HasValue
+                            ? $"{rental.Renter?.Name ?? "-"} | {rental.Items.Count} 件物品 | 续租意愿至 {RentalDateRules.Format(rental.RenewalIntentEndDate.Value)}"
+                            : $"{rental.Renter?.Name ?? "-"} | {rental.Items.Count} 件物品",
                         StartAt = startDate,
-                        EndAt = expectedEndDate,
+                        EndAt = effectiveExpectedEndDate,
                         AllDay = true,
                         IsOpen = !IsClosedStatus(rental.Status)
                     });
@@ -225,6 +234,8 @@ namespace AuditIt.Api.Services
                             RenterId = rental.RenterId,
                             RenterName = rental.Renter?.Name,
                             RentalStatus = rental.Status,
+                            HasRenewalIntent = rental.HasRenewalIntent,
+                            RenewalIntentEndDate = NormalizeRenewalIntentEndDate(rental.HasRenewalIntent, rental.RenewalIntentEndDate),
                             Title = $"需要发货 {rental.RentalNumber}",
                             Description = $"{rental.Renter?.Name ?? "-"} | 预计发货",
                             StartAt = expectedShipDate,
@@ -240,7 +251,7 @@ namespace AuditIt.Api.Services
                     && !rental.RenewedToRentalId.HasValue
                     && hasOpenItems)
                 {
-                    var returnRequiredStart = expectedEndDate.AddDays(1);
+                    var returnRequiredStart = effectiveExpectedEndDate.AddDays(1);
                     var returnRequiredEnd = returnRequiredStart < today
                         ? (today > to.Date ? to.Date : today)
                         : returnRequiredStart;
@@ -250,7 +261,7 @@ namespace AuditIt.Api.Services
                         {
                             Id = $"return-required-{rental.Id}",
                             Kind = RentalCalendarEventKind.ReturnRequired,
-                            Level = expectedEndDate.AddDays(1) < today || rental.Status == RentalStatus.Overdue
+                            Level = effectiveExpectedEndDate.AddDays(1) < today || rental.Status == RentalStatus.Overdue
                                 ? ReminderLevel.Critical
                                 : ReminderLevel.Warning,
                             RentalId = rental.Id,
@@ -258,6 +269,8 @@ namespace AuditIt.Api.Services
                             RenterId = rental.RenterId,
                             RenterName = rental.Renter?.Name,
                             RentalStatus = rental.Status,
+                            HasRenewalIntent = rental.HasRenewalIntent,
+                            RenewalIntentEndDate = NormalizeRenewalIntentEndDate(rental.HasRenewalIntent, rental.RenewalIntentEndDate),
                             Title = $"需要收货 {rental.RentalNumber}",
                             Description = $"{rental.Renter?.Name ?? "-"} | 租期结束，登记回货物流后消除",
                             StartAt = returnRequiredStart,
@@ -282,6 +295,8 @@ namespace AuditIt.Api.Services
                         RenterId = rental.RenterId,
                         RenterName = rental.Renter?.Name,
                         RentalStatus = rental.Status,
+                        HasRenewalIntent = rental.HasRenewalIntent,
+                        RenewalIntentEndDate = NormalizeRenewalIntentEndDate(rental.HasRenewalIntent, rental.RenewalIntentEndDate),
                         Title = shipment.Direction == ShipmentDirection.Outbound
                             ? $"已发货 {rental.RentalNumber}"
                             : $"回货物流 {rental.RentalNumber}",
@@ -361,6 +376,10 @@ namespace AuditIt.Api.Services
                         RenterId = reminderRental?.RenterId,
                         RenterName = reminderRental?.Renter?.Name,
                         RentalStatus = reminderRental?.Status,
+                        HasRenewalIntent = reminderRental?.HasRenewalIntent ?? false,
+                        RenewalIntentEndDate = reminderRental == null
+                            ? null
+                            : NormalizeRenewalIntentEndDate(reminderRental.HasRenewalIntent, reminderRental.RenewalIntentEndDate),
                         ReminderId = reminder.Id,
                         Title = reminder.Title,
                         Description = reminder.Message,
@@ -446,6 +465,20 @@ namespace AuditIt.Api.Services
                 };
             }
 
+            var hasRenewalIntent = dto.HasRenewalIntent;
+            var renewalIntentEndDate = dto.RenewalIntentEndDate.HasValue
+                ? RentalDateRules.ToBusinessDate(dto.RenewalIntentEndDate.Value)
+                : (DateTime?)null;
+            var renewalIntentError = ValidateRenewalIntent(hasRenewalIntent, renewalIntentEndDate, expectedEndDate);
+            if (renewalIntentError != null)
+            {
+                return new CreateRentalResult { Error = renewalIntentError };
+            }
+            var occupancyEndDate = RentalDateRules.EffectiveExpectedEndDate(
+                expectedEndDate,
+                hasRenewalIntent,
+                renewalIntentEndDate);
+
             var items = new List<Item>();
             if (hasItems)
             {
@@ -481,8 +514,8 @@ namespace AuditIt.Api.Services
                 .Select(item => item.ItemDefinitionId)
                 .Concat(dto.ItemDefinitionIds ?? new List<int>())
                 .ToList();
-            var itemConflicts = await ValidateCreateConflictsAsync(distinctItemIds, expectedShipDate, expectedEndDate);
-            var defConflicts = await ValidateItemDefinitionConflictsAsync(definitionDemand, expectedShipDate, expectedEndDate);
+            var itemConflicts = await ValidateCreateConflictsAsync(distinctItemIds, expectedShipDate, occupancyEndDate);
+            var defConflicts = await ValidateItemDefinitionConflictsAsync(definitionDemand, expectedShipDate, occupancyEndDate);
 
             if ((itemConflicts != null || defConflicts.Count > 0) && !dto.AllowScheduleConflict)
             {
@@ -513,6 +546,8 @@ namespace AuditIt.Api.Services
                 StartDate = startDate,
                 ExpectedShipDate = expectedShipDate,
                 ExpectedEndDate = expectedEndDate,
+                HasRenewalIntent = hasRenewalIntent,
+                RenewalIntentEndDate = hasRenewalIntent ? renewalIntentEndDate : null,
                 TotalPrice = dto.TotalPrice,
                 Deposit = dto.Deposit,
                 OtherFee = dto.OtherFee,
@@ -640,6 +675,12 @@ namespace AuditIt.Api.Services
                 ? RentalDateRules.ToBusinessDate(dto.StartDate.Value)
                 : sourceEndDate.AddDays(1);
             var expectedEndDate = RentalDateRules.ToBusinessDate(dto.ExpectedEndDate);
+            var hasRenewalIntent = false;
+            DateTime? renewalIntentEndDate = null;
+            var occupancyEndDate = RentalDateRules.EffectiveExpectedEndDate(
+                expectedEndDate,
+                hasRenewalIntent,
+                renewalIntentEndDate);
 
             if (startDate <= sourceEndDate)
             {
@@ -652,13 +693,13 @@ namespace AuditIt.Api.Services
             }
 
             var itemIds = activeItems.Where(ri => ri.ItemId.HasValue).Select(ri => ri.ItemId!.Value).Distinct().ToList();
-            var conflict = await ValidateCreateConflictsAsync(itemIds, startDate, expectedEndDate, source.Id);
+            var conflict = await ValidateCreateConflictsAsync(itemIds, startDate, occupancyEndDate, source.Id);
             var definitionDemand = activeItems
                 .Select(ri => ri.Item?.ItemDefinitionId ?? ri.ItemDefinitionId)
                 .Where(id => id.HasValue)
                 .Select(id => id!.Value)
                 .ToList();
-            var defConflict = await ValidateItemDefinitionConflictsAsync(definitionDemand, startDate, expectedEndDate, source.Id);
+            var defConflict = await ValidateItemDefinitionConflictsAsync(definitionDemand, startDate, occupancyEndDate, source.Id);
 
             if ((conflict != null || defConflict.Count > 0) && !dto.AllowScheduleConflict)
             {
@@ -686,6 +727,8 @@ namespace AuditIt.Api.Services
                 StartDate = startDate,
                 ExpectedShipDate = startDate,
                 ExpectedEndDate = expectedEndDate,
+                HasRenewalIntent = hasRenewalIntent,
+                RenewalIntentEndDate = renewalIntentEndDate,
                 TotalPrice = dto.TotalPrice,
                 Deposit = dto.Deposit ?? source.Deposit,
                 OtherFee = dto.OtherFee,
@@ -757,7 +800,7 @@ namespace AuditIt.Api.Services
             };
         }
 
-        public async Task<(RentalDto? rental, string? error)> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser)
+        public async Task<UpdateRentalResult> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser)
         {
             var rental = await _context.Rentals
                 .Include(r => r.Renter)
@@ -772,12 +815,12 @@ namespace AuditIt.Api.Services
 
             if (rental == null)
             {
-                return (null, "租赁单不存在。");
+                return new UpdateRentalResult { Error = "租赁单不存在。" };
             }
 
             if (IsClosedStatus(rental.Status))
             {
-                return (null, "已结束的租赁单不可修改。");
+                return new UpdateRentalResult { Error = "已结束的租赁单不可修改。" };
             }
 
             var changes = new List<string>();
@@ -798,22 +841,43 @@ namespace AuditIt.Api.Services
 
             if (nextExpectedEndDate < nextStartDate)
             {
-                return (null, "预计结束日期不能早于开始日期。");
+                return new UpdateRentalResult { Error = "预计结束日期不能早于开始日期。" };
             }
+
+            var nextHasRenewalIntent = dto.HasRenewalIntent ?? rental.HasRenewalIntent;
+            var nextRenewalIntentEndDate = dto.HasRenewalIntent == false
+                ? null
+                : dto.RenewalIntentEndDate.HasValue
+                    ? RentalDateRules.ToBusinessDate(dto.RenewalIntentEndDate.Value)
+                    : rental.RenewalIntentEndDate.HasValue
+                        ? RentalDateRules.ToBusinessDate(rental.RenewalIntentEndDate.Value)
+                        : (DateTime?)null;
+            var renewalIntentError = ValidateRenewalIntent(nextHasRenewalIntent, nextRenewalIntentEndDate, nextExpectedEndDate);
+            if (renewalIntentError != null)
+            {
+                return new UpdateRentalResult { Error = renewalIntentError };
+            }
+
+            var currentOccupancyEndDate = RentalDateRules.EffectiveExpectedEndDate(rental);
+            var nextOccupancyEndDate = RentalDateRules.EffectiveExpectedEndDate(
+                nextExpectedEndDate,
+                nextHasRenewalIntent,
+                nextRenewalIntentEndDate);
 
             if ((dto.StartDate.HasValue && nextStartDate != currentStartDate)
                 || (dto.ExpectedShipDate.HasValue && nextExpectedShipDate != currentExpectedShipDate)
-                || (dto.ExpectedEndDate.HasValue && nextExpectedEndDate != currentExpectedEndDate))
+                || (dto.ExpectedEndDate.HasValue && nextExpectedEndDate != currentExpectedEndDate)
+                || nextOccupancyEndDate != currentOccupancyEndDate)
             {
                 var itemIds = rental.Items.Where(ri => ri.ReturnedAt == null && ri.ItemId.HasValue).Select(ri => ri.ItemId!.Value).ToList();
                 var conflict = await ValidateCreateConflictsAsync(
                     itemIds,
                     nextExpectedShipDate,
-                    nextExpectedEndDate,
+                    nextOccupancyEndDate,
                     rental.Id);
-                if (conflict != null)
+                if (conflict != null && !dto.AllowScheduleConflict)
                 {
-                    return (null, conflict.Message);
+                    return new UpdateRentalResult { Conflict = conflict };
                 }
 
                 var definitionDemand = rental.Items
@@ -822,10 +886,18 @@ namespace AuditIt.Api.Services
                     .Where(id => id.HasValue)
                     .Select(id => id!.Value)
                     .ToList();
-                var defConflict = await ValidateItemDefinitionConflictsAsync(definitionDemand, nextExpectedShipDate, nextExpectedEndDate, rental.Id);
-                if (defConflict.Count > 0)
+                var defConflict = await ValidateItemDefinitionConflictsAsync(definitionDemand, nextExpectedShipDate, nextOccupancyEndDate, rental.Id);
+                if (defConflict.Count > 0 && !dto.AllowScheduleConflict)
                 {
-                    return (null, string.Join("; ", defConflict.Select(c => c.ConflictReason)));
+                    return new UpdateRentalResult
+                    {
+                        Conflict = new RentalCreateConflictDto
+                        {
+                            Message = "租赁时间或续租意愿存在冲突。",
+                            PendingShipmentConflicts = defConflict.Where(c => !c.HasOutboundShipment).ToList(),
+                            ShippedConflicts = defConflict.Where(c => c.HasOutboundShipment).ToList()
+                        }
+                    };
                 }
             }
 
@@ -834,7 +906,7 @@ namespace AuditIt.Api.Services
                 var nextRenter = await _context.Renters.FindAsync(dto.RenterId.Value);
                 if (nextRenter == null)
                 {
-                    return (null, "租客不存在。");
+                    return new UpdateRentalResult { Error = "租客不存在。" };
                 }
 
                 changes.Add($"租客：{rental.Renter?.Name ?? rental.RenterId.ToString()} -> {nextRenter.Name}");
@@ -872,6 +944,18 @@ namespace AuditIt.Api.Services
                         rental.Status = HasRentalStarted(rental) ? RentalStatus.Active : RentalStatus.Pending;
                     }
                 }
+            }
+
+            var nextNormalizedRenewalIntentEndDate = NormalizeRenewalIntentEndDate(nextHasRenewalIntent, nextRenewalIntentEndDate);
+            var currentNormalizedRenewalIntentEndDate = NormalizeRenewalIntentEndDate(rental.HasRenewalIntent, rental.RenewalIntentEndDate);
+            if (nextHasRenewalIntent != rental.HasRenewalIntent
+                || nextNormalizedRenewalIntentEndDate != currentNormalizedRenewalIntentEndDate)
+            {
+                changes.Add($"续租意愿：{FormatRenewalIntent(rental.HasRenewalIntent, rental.RenewalIntentEndDate)} -> {FormatRenewalIntent(nextHasRenewalIntent, nextRenewalIntentEndDate)}");
+                rental.HasRenewalIntent = nextHasRenewalIntent;
+                rental.RenewalIntentEndDate = nextNormalizedRenewalIntentEndDate;
+                scheduleOrTargetChanged = true;
+                extended = nextOccupancyEndDate > currentOccupancyEndDate || extended;
             }
 
             if (dto.TotalPrice.HasValue && dto.TotalPrice.Value != rental.TotalPrice)
@@ -955,7 +1039,7 @@ namespace AuditIt.Api.Services
 
             if (changes.Count == 0)
             {
-                return (await GetByIdAsync(id), null);
+                return new UpdateRentalResult { Rental = await GetByIdAsync(id) };
             }
 
             rental.UpdatedAt = DateTime.UtcNow;
@@ -986,7 +1070,7 @@ namespace AuditIt.Api.Services
 
             await NotifyStatusChangeAsync(rental, "信息已更新", currentUser, summary);
 
-            return (await GetByIdAsync(id), null);
+            return new UpdateRentalResult { Rental = await GetByIdAsync(id) };
         }
 
         public async Task<RentalShipmentResult> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser)
@@ -1932,7 +2016,9 @@ namespace AuditIt.Api.Services
                         ItemShortId = rentalItem.ItemShortIdSnapshot,
                         ItemName = rentalItem.ItemNameSnapshot,
                         StartDate = RentalDateRules.ToBusinessDate(rental.StartDate),
-                        ExpectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
+                        ExpectedEndDate = RentalDateRules.EffectiveExpectedEndDate(rental),
+                        HasRenewalIntent = rental.HasRenewalIntent,
+                        RenewalIntentEndDate = NormalizeRenewalIntentEndDate(rental.HasRenewalIntent, rental.RenewalIntentEndDate),
                         HasOutboundShipment = hasRentalStarted
                     };
 
@@ -2142,7 +2228,11 @@ namespace AuditIt.Api.Services
                         ItemShortId = $"[分类库存不足] {def.Name}",
                         ItemName = def.Name,
                         StartDate = worstRental != null ? RentalDateRules.ToBusinessDate(worstRental.StartDate) : startDay,
-                        ExpectedEndDate = worstRental != null ? RentalDateRules.ToBusinessDate(worstRental.ExpectedEndDate) : expectedEndDay,
+                        ExpectedEndDate = worstRental != null ? RentalDateRules.EffectiveExpectedEndDate(worstRental) : expectedEndDay,
+                        HasRenewalIntent = worstRental?.HasRenewalIntent ?? false,
+                        RenewalIntentEndDate = worstRental == null
+                            ? null
+                            : NormalizeRenewalIntentEndDate(worstRental.HasRenewalIntent, worstRental.RenewalIntentEndDate),
                         HasOutboundShipment = worstRental != null ? HasRentalStarted(worstRental) : true,
                         ConflictReason = $"库存不足（库存: {totalStock}, 占用: {maxOccupancy}, 普通借出: {maxManualLoanOccupancy}, 本单需要: {requestedQty}）"
                     });
@@ -2339,7 +2429,9 @@ namespace AuditIt.Api.Services
                 ItemShortId = rentalItem.ItemShortIdSnapshot,
                 ItemName = rentalItem.ItemNameSnapshot,
                 StartDate = RentalDateRules.ToBusinessDate(rental.StartDate),
-                ExpectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
+                ExpectedEndDate = RentalDateRules.EffectiveExpectedEndDate(rental),
+                HasRenewalIntent = rental.HasRenewalIntent,
+                RenewalIntentEndDate = NormalizeRenewalIntentEndDate(rental.HasRenewalIntent, rental.RenewalIntentEndDate),
                 HasOutboundShipment = hasOutboundShipment,
                 ConflictReason = reason
             };
@@ -3025,6 +3117,36 @@ namespace AuditIt.Api.Services
         private static string? NormalizeNullableText(string? value) =>
             string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+        private static DateTime? NormalizeRenewalIntentEndDate(bool hasRenewalIntent, DateTime? renewalIntentEndDate) =>
+            hasRenewalIntent && renewalIntentEndDate.HasValue
+                ? RentalDateRules.ToBusinessDate(renewalIntentEndDate.Value)
+                : null;
+
+        private static string? ValidateRenewalIntent(bool hasRenewalIntent, DateTime? renewalIntentEndDate, DateTime expectedEndDate)
+        {
+            if (!hasRenewalIntent)
+            {
+                return null;
+            }
+
+            if (!renewalIntentEndDate.HasValue)
+            {
+                return "选择续租意愿为是时，必须填写续租意愿日期。";
+            }
+
+            if (RentalDateRules.ToBusinessDate(renewalIntentEndDate.Value) < RentalDateRules.ToBusinessDate(expectedEndDate))
+            {
+                return "续租意愿日期不能早于预计结束日期。";
+            }
+
+            return null;
+        }
+
+        private static string FormatRenewalIntent(bool hasRenewalIntent, DateTime? renewalIntentEndDate) =>
+            hasRenewalIntent && renewalIntentEndDate.HasValue
+                ? $"是，至 {RentalDateRules.Format(renewalIntentEndDate.Value)}"
+                : "否";
+
         private static string? NormalizeAssignedTo(string? assignedTo)
         {
             var normalized = SplitUsers(assignedTo)
@@ -3079,6 +3201,8 @@ namespace AuditIt.Api.Services
             ExpectedShipDate = RentalDateRules.ToBusinessDate(rental.ExpectedShipDate),
             ExpectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate),
             ActualEndDate = rental.ActualEndDate,
+            HasRenewalIntent = rental.HasRenewalIntent,
+            RenewalIntentEndDate = NormalizeRenewalIntentEndDate(rental.HasRenewalIntent, rental.RenewalIntentEndDate),
             TotalPrice = rental.TotalPrice,
             Deposit = rental.Deposit,
             OtherFee = rental.OtherFee,

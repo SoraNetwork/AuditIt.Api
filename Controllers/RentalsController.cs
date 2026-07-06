@@ -97,9 +97,10 @@ namespace AuditIt.Api.Controllers
         public async Task<ActionResult<RentalDto>> Update(Guid id, [FromBody] UpdateRentalDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-            var (rental, error) = await _rentals.UpdateAsync(id, dto, CurrentUser());
-            if (error != null) return BadRequest(error);
-            return Ok(rental);
+            var result = await _rentals.UpdateAsync(id, dto, CurrentUser());
+            if (result.Conflict != null) return Conflict(result.Conflict);
+            if (result.Error != null) return BadRequest(result.Error);
+            return Ok(result.Rental);
         }
 
         [HttpPost("{id:guid}/renew")]

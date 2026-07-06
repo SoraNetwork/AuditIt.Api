@@ -145,6 +145,9 @@ namespace AuditIt.Api.Controllers
                     || r.StartDate <= rangeEnd.AddDays(1)
                     || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
                     && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
+                        || (r.HasRenewalIntent
+                            && r.RenewalIntentEndDate.HasValue
+                            && r.RenewalIntentEndDate.Value >= rangeStart.AddDays(-1))
                         || r.ActualEndDate >= rangeStart.AddDays(-1)
                         || r.Items.Any(ri => ri.ReturnedAt >= rangeStart.AddDays(-1))
                         || ((r.RenewedFromRentalId != null
@@ -206,6 +209,8 @@ namespace AuditIt.Api.Controllers
                     detail.RenterId,
                     detail.IsUncertain,
                     detail.IsManualLoan,
+                    detail.HasRenewalIntent,
+                    detail.RenewalIntentEndDate,
                     detail.OccupancyStatus);
 
                 if (detailBuckets[dayIndex].TryGetValue(key, out var existing))
@@ -246,6 +251,8 @@ namespace AuditIt.Api.Controllers
                         Quantity = detail.Quantity,
                         IsUncertain = detail.IsUncertain,
                         IsManualLoan = detail.IsManualLoan,
+                        HasRenewalIntent = detail.HasRenewalIntent,
+                        RenewalIntentEndDate = detail.RenewalIntentEndDate,
                         OccupancyStatus = detail.OccupancyStatus
                     });
                 }
@@ -256,6 +263,7 @@ namespace AuditIt.Api.Controllers
                 var startDay = RentalDateRules.OccupancyStartDate(rental);
                 var endDay = RentalDateRules.OccupancyEndDate(rental, rentalItem, rangeEnd);
                 var expectedEndDay = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
+                var effectiveExpectedEndDay = RentalDateRules.EffectiveExpectedEndDate(rental);
 
                 var detail = new ItemDefinitionDailyOccupancyDto
                 {
@@ -265,7 +273,11 @@ namespace AuditIt.Api.Controllers
                     RenterId = rental.RenterId,
                     RenterName = rental.Renter?.Name,
                     Quantity = 1,
-                    IsUncertain = isUncertain
+                    IsUncertain = isUncertain,
+                    HasRenewalIntent = rental.HasRenewalIntent,
+                    RenewalIntentEndDate = rental.HasRenewalIntent && rental.RenewalIntentEndDate.HasValue
+                        ? RentalDateRules.ToBusinessDate(rental.RenewalIntentEndDate.Value)
+                        : null
                 };
 
                 var scheduledEnd = endDay < expectedEndDay ? endDay : expectedEndDay;
@@ -275,7 +287,20 @@ namespace AuditIt.Api.Controllers
                     AddSegment(startDay, scheduledEnd, detail);
                 }
 
-                var returningStart = expectedEndDay.AddDays(1);
+                if (rental.HasRenewalIntent
+                    && rental.RenewalIntentEndDate.HasValue
+                    && effectiveExpectedEndDay > expectedEndDay)
+                {
+                    var renewalIntentStart = expectedEndDay.AddDays(1);
+                    var renewalIntentEnd = endDay < effectiveExpectedEndDay ? endDay : effectiveExpectedEndDay;
+                    if (renewalIntentStart <= renewalIntentEnd)
+                    {
+                        detail.OccupancyStatus = ItemOccupancyStatus.RenewalIntent;
+                        AddSegment(renewalIntentStart, renewalIntentEnd, detail);
+                    }
+                }
+
+                var returningStart = effectiveExpectedEndDay.AddDays(1);
                 if (returningStart <= endDay)
                 {
                     detail.OccupancyStatus = ItemOccupancyStatus.Returning;

@@ -41,6 +41,24 @@ namespace AuditIt.Api.Services
         public static bool Overlaps(DateTime startDate, DateTime expectedEndDate, DateTime from, DateTime to) =>
             ToBusinessDate(startDate) <= to.Date && ToBusinessDate(expectedEndDate) >= from.Date;
 
+        public static DateTime EffectiveExpectedEndDate(
+            DateTime expectedEndDate,
+            bool hasRenewalIntent,
+            DateTime? renewalIntentEndDate)
+        {
+            var expectedEnd = ToBusinessDate(expectedEndDate);
+            if (!hasRenewalIntent || !renewalIntentEndDate.HasValue)
+            {
+                return expectedEnd;
+            }
+
+            var renewalIntentEnd = ToBusinessDate(renewalIntentEndDate.Value);
+            return renewalIntentEnd > expectedEnd ? renewalIntentEnd : expectedEnd;
+        }
+
+        public static DateTime EffectiveExpectedEndDate(Rental rental) =>
+            EffectiveExpectedEndDate(rental.ExpectedEndDate, rental.HasRenewalIntent, rental.RenewalIntentEndDate);
+
         public static bool HasOutboundShipment(Rental rental) =>
             rental.Shipments.Any(shipment => shipment.Direction == ShipmentDirection.Outbound);
 
@@ -136,7 +154,7 @@ namespace AuditIt.Api.Services
                 rental,
                 null,
                 OccupancyEndDate(
-                rental.ExpectedEndDate,
+                EffectiveExpectedEndDate(rental),
                 rental.ActualEndDate,
                 openEndedUntil: OpenEndedUntil(
                     rental.ActualEndDate,
@@ -150,7 +168,7 @@ namespace AuditIt.Api.Services
                 rental,
                 rentalItem,
                 OccupancyEndDate(
-                rental.ExpectedEndDate,
+                EffectiveExpectedEndDate(rental),
                 rental.ActualEndDate,
                 rentalItem.ReturnedAt,
                 OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt, HasRentalStarted(rental), openEndedRangeEnd),

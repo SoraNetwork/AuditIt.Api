@@ -367,6 +367,9 @@ namespace AuditIt.Api.Migrations
                     b.Property<DateTime>("ExpectedShipDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("HasRenewalIntent")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Notes")
                         .HasMaxLength(500)
                         .HasColumnType("TEXT");
@@ -380,6 +383,9 @@ namespace AuditIt.Api.Migrations
 
                     b.Property<int?>("RenewalSequence")
                         .HasColumnType("INTEGER");
+
+                    b.Property<DateTime?>("RenewalIntentEndDate")
+                        .HasColumnType("TEXT");
 
                     b.Property<Guid?>("RenewedFromRentalId")
                         .HasColumnType("TEXT");

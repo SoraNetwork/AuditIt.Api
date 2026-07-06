@@ -21,6 +21,8 @@ namespace AuditIt.Api.Models
         public bool IsOpen { get; set; }
         public bool IsUncertain { get; set; }
         public bool IsManualLoan { get; set; }
+        public bool HasRenewalIntent { get; set; }
+        public DateTime? RenewalIntentEndDate { get; set; }
         public ItemOccupancyStatus OccupancyStatus { get; set; } = ItemOccupancyStatus.Scheduled;
     }
 
@@ -59,12 +61,15 @@ namespace AuditIt.Api.Models
         public int Quantity { get; set; }
         public bool IsUncertain { get; set; }
         public bool IsManualLoan { get; set; }
+        public bool HasRenewalIntent { get; set; }
+        public DateTime? RenewalIntentEndDate { get; set; }
         public ItemOccupancyStatus OccupancyStatus { get; set; } = ItemOccupancyStatus.Scheduled;
     }
 
     public enum ItemOccupancyStatus
     {
         Scheduled,
-        Returning
+        Returning,
+        RenewalIntent
     }
 }

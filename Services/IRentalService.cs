@@ -13,7 +13,7 @@ namespace AuditIt.Api.Services
         Task<RentalDto?> GetByIdAsync(Guid id);
         Task<CreateRentalResult> CreateAsync(CreateRentalDto dto, string? currentUser);
         Task<RenewRentalResult> RenewAsync(Guid id, RenewRentalDto dto, string? currentUser);
-        Task<(RentalDto? rental, string? error)> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser);
+        Task<UpdateRentalResult> UpdateAsync(Guid id, UpdateRentalDto dto, string? currentUser);
         Task<RentalShipmentResult> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> MarkDeliveredAsync(Guid rentalId, int shipmentId, DeliverShipmentDto dto, string? currentUser);
         Task<(RentalDto? rental, string? error)> ReturnAsync(Guid rentalId, ReturnRentalDto dto, string? currentUser);
