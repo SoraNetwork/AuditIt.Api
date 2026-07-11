@@ -223,16 +223,16 @@ namespace AuditIt.Api.Services
         {
             var lines = new List<string>
             {
-                $"Action: renter {action}",
-                $"Renter: {renter.Name}",
-                $"Phone: {renter.Phone ?? "-"}"
+                $"操作: renter {action}",
+                $"租客: {renter.Name}",
+                $"手机: {renter.Phone ?? "-"}"
             };
 
-            if (!string.IsNullOrWhiteSpace(renter.XianyuId)) lines.Add($"Xianyu: {renter.XianyuId}");
-            if (!string.IsNullOrWhiteSpace(renter.TaobaoId)) lines.Add($"Taobao: {renter.TaobaoId}");
-            if (!string.IsNullOrWhiteSpace(renter.XiaohongshuId)) lines.Add($"Xiaohongshu: {renter.XiaohongshuId}");
-            if (!string.IsNullOrWhiteSpace(currentUser)) lines.Add($"Operator: {currentUser}");
-            if (!string.IsNullOrWhiteSpace(extra)) lines.Add($"Changes: {extra}");
+            if (!string.IsNullOrWhiteSpace(renter.XianyuId)) lines.Add($"闲鱼: {renter.XianyuId}");
+            if (!string.IsNullOrWhiteSpace(renter.TaobaoId)) lines.Add($"淘宝: {renter.TaobaoId}");
+            if (!string.IsNullOrWhiteSpace(renter.XiaohongshuId)) lines.Add($"小红书: {renter.XiaohongshuId}");
+            if (!string.IsNullOrWhiteSpace(currentUser)) lines.Add($"操作人: {currentUser}");
+            if (!string.IsNullOrWhiteSpace(extra)) lines.Add($"修改: {extra}");
 
             return string.Join("\n", lines);
         }
@@ -240,14 +240,14 @@ namespace AuditIt.Api.Services
         private static string? BuildChangeSummary(Renter renter, UpdateRenterDto dto)
         {
             var changes = new List<string>();
-            AddChange(changes, "Name", renter.Name, dto.Name);
-            AddChange(changes, "Phone", renter.Phone, Normalize(dto.Phone));
-            AddChange(changes, "IdCardNo", renter.IdCardNo, dto.IdCardNo);
-            AddChange(changes, "XianyuId", renter.XianyuId, dto.XianyuId);
-            AddChange(changes, "TaobaoId", renter.TaobaoId, dto.TaobaoId);
-            AddChange(changes, "XiaohongshuId", renter.XiaohongshuId, dto.XiaohongshuId);
-            AddChange(changes, "DefaultAddress", renter.DefaultAddress, dto.DefaultAddress);
-            AddChange(changes, "Notes", renter.Notes, dto.Notes);
+            AddChange(changes, "姓名", renter.Name, dto.Name);
+            AddChange(changes, "手机号", renter.Phone, Normalize(dto.Phone));
+            AddChange(changes, "身份证", renter.IdCardNo, dto.IdCardNo);
+            AddChange(changes, "闲鱼", renter.XianyuId, dto.XianyuId);
+            AddChange(changes, "淘宝", renter.TaobaoId, dto.TaobaoId);
+            AddChange(changes, "小红书", renter.XiaohongshuId, dto.XiaohongshuId);
+            AddChange(changes, "默认地址", renter.DefaultAddress, dto.DefaultAddress);
+            AddChange(changes, "备注", renter.Notes, dto.Notes);
             return changes.Count == 0 ? null : string.Join("; ", changes);
         }
 
