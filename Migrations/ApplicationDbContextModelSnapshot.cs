@@ -367,6 +367,9 @@ namespace AuditIt.Api.Migrations
                     b.Property<DateTime>("ExpectedEndDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("ExpectedReturnDate")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("ExpectedShipDate")
                         .HasColumnType("TEXT");
 

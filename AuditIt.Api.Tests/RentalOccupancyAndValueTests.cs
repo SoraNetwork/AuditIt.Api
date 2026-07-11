@@ -1128,7 +1128,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task DefinitionOccupancy_ReturnedRentalOccupiesThroughExpectedEndOnly()
+    public async Task DefinitionOccupancy_ReturnedRentalOccupiesThroughActualReturnDate()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -1195,8 +1195,8 @@ public class RentalOccupancyAndValueTests
         Assert.Equal(1, beforeReturnDay.OccupiedCount);
         Assert.Equal(1, returnDay.OccupiedCount);
         Assert.Equal(ItemOccupancyStatus.Scheduled, Assert.Single(returnDay.Details).OccupancyStatus);
-        Assert.Equal(1, expectedEndDay.OccupiedCount);
-        Assert.Equal(ItemOccupancyStatus.Scheduled, Assert.Single(expectedEndDay.Details).OccupancyStatus);
+        Assert.Equal(0, expectedEndDay.OccupiedCount);
+        Assert.Empty(expectedEndDay.Details);
         Assert.Equal(0, afterExpectedEndDay.OccupiedCount);
         Assert.Empty(afterExpectedEndDay.Details);
     }
@@ -1228,7 +1228,7 @@ public class RentalOccupancyAndValueTests
         var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
         var rentalId = Guid.NewGuid();
         var expectedEndDate = new DateTime(2099, 6, 12, 0, 0, 0, DateTimeKind.Utc);
-        var returnBufferDate = expectedEndDate.AddDays(1);
+        var returnBufferDate = expectedEndDate.AddDays(2);
 
         context.Rentals.Add(new Rental
         {
@@ -1292,7 +1292,7 @@ public class RentalOccupancyAndValueTests
         var sourceEndDate = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
         var renewalStartDate = sourceEndDate.AddDays(1);
         var renewalEndDate = new DateTime(2099, 6, 15, 0, 0, 0, DateTimeKind.Utc);
-        var renewalBufferDate = renewalEndDate.AddDays(1);
+        var renewalBufferDate = renewalEndDate.AddDays(2);
 
         context.Rentals.AddRange(
             new Rental
@@ -1389,7 +1389,7 @@ public class RentalOccupancyAndValueTests
         var sourceEndDate = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
         var renewalStartDate = sourceEndDate.AddDays(1);
         var renewalEndDate = new DateTime(2099, 6, 15, 0, 0, 0, DateTimeKind.Utc);
-        var renewalBufferDate = renewalEndDate.AddDays(1);
+        var renewalBufferDate = renewalEndDate.AddDays(2);
 
         context.Rentals.AddRange(
             new Rental
@@ -1721,7 +1721,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task DefinitionOccupancy_ExtendsOpenRentalAfterExpectedEndOnlyUntilToday()
+    public async Task DefinitionOccupancy_ExtendsOpenRentalAfterExpectedEndUntilExpectedReturnDate()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -1795,12 +1795,12 @@ public class RentalOccupancyAndValueTests
         Assert.Equal(ItemOccupancyStatus.Scheduled, Assert.Single(expectedEndDay.Details).OccupancyStatus);
         Assert.Equal(1, todayStock.OccupiedCount);
         Assert.Equal(ItemOccupancyStatus.Returning, Assert.Single(todayStock.Details).OccupancyStatus);
-        Assert.Equal(0, futureStock.OccupiedCount);
-        Assert.Empty(futureStock.Details);
+        Assert.Equal(1, futureStock.OccupiedCount);
+        Assert.Equal(ItemOccupancyStatus.Returning, Assert.Single(futureStock.Details).OccupancyStatus);
     }
 
     [Fact]
-    public async Task ItemAvailability_ExtendsOpenRentalAfterExpectedEndOnlyUntilToday()
+    public async Task ItemAvailability_ExtendsOpenRentalAfterExpectedEndUntilExpectedReturnDate()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -1872,12 +1872,12 @@ public class RentalOccupancyAndValueTests
         Assert.Equal(expectedEndDate, scheduled.StartAt);
         Assert.Equal(expectedEndDate.AddDays(1).AddTicks(-1), scheduled.EndAt);
         Assert.Equal(today, returning.StartAt);
-        Assert.Equal(today.AddDays(1).AddTicks(-1), returning.EndAt);
-        Assert.DoesNotContain(calendar.BusyPeriods, period => period.StartAt.Date > today);
+        Assert.Equal(futureDate.AddDays(1).AddTicks(-1), returning.EndAt);
+        Assert.DoesNotContain(calendar.BusyPeriods, period => period.StartAt.Date > futureDate);
     }
 
     [Fact]
-    public async Task ItemAvailability_DoesNotShowReturnedRentalOnReturnDateAfterExpectedEnd()
+    public async Task ItemAvailability_ShowsReturnedRentalThroughActualReturnDateAfterExpectedEnd()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -1943,11 +1943,13 @@ public class RentalOccupancyAndValueTests
         var ok = Assert.IsType<OkObjectResult>(action.Result);
         var calendar = Assert.IsType<ItemAvailabilityCalendarDto>(ok.Value);
 
-        Assert.Empty(calendar.BusyPeriods);
+        var busy = Assert.Single(calendar.BusyPeriods);
+        Assert.Equal(today, busy.StartAt);
+        Assert.Equal(today.AddDays(1).AddTicks(-1), busy.EndAt);
     }
 
     [Fact]
-    public async Task CreateAsync_DoesNotConflictWithReturnedDefinitionOnReturnDate()
+    public async Task CreateAsync_DoesNotConflictWithReturnedDefinitionAfterReturnDate()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -2019,9 +2021,9 @@ public class RentalOccupancyAndValueTests
         {
             Renter = new RenterInlineDto { Name = "Next Tenant", Phone = "13900139000" },
             ItemDefinitionIds = new List<int> { definition.Id },
-            StartDate = today,
-            ExpectedShipDate = today,
-            ExpectedEndDate = today.AddDays(1)
+            StartDate = today.AddDays(1),
+            ExpectedShipDate = today.AddDays(1),
+            ExpectedEndDate = today.AddDays(2)
         }, "TestUser");
 
         Assert.Null(result.Conflict);
@@ -2327,7 +2329,7 @@ public class RentalOccupancyAndValueTests
         var rentalId = Guid.NewGuid();
         var today = BusinessToday();
         var expectedEndDate = today.AddDays(-1);
-        var futureStartDate = today.AddDays(1);
+        var futureStartDate = today.AddDays(2);
 
         context.Rentals.Add(new Rental
         {
@@ -2378,7 +2380,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task Calendar_ShowsReturnRequiredForRenewalRentalDayAfterExpectedEndWithoutOutboundShipment()
+    public async Task Calendar_ShowsReturnRequiredForRenewalRentalOnExpectedReturnDateWithoutOutboundShipment()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -2439,7 +2441,7 @@ public class RentalOccupancyAndValueTests
             item.Kind == RentalCalendarEventKind.ReturnRequired
             && item.RentalId == rentalId);
 
-        var returnRequiredDay = expectedEndDate.AddDays(1);
+        var returnRequiredDay = expectedEndDate.AddDays(2);
         var nextDayEvents = await rentalService.GetCalendarAsync(
             new RentalCalendarQueryParameters { From = returnRequiredDay, To = returnRequiredDay },
             "Alice",
@@ -2477,7 +2479,7 @@ public class RentalOccupancyAndValueTests
         var sourceEndDate = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
         var renewalStartDate = sourceEndDate.AddDays(1);
         var renewalEndDate = new DateTime(2099, 6, 15, 0, 0, 0, DateTimeKind.Utc);
-        var returnRequiredDay = renewalEndDate.AddDays(1);
+        var returnRequiredDay = renewalEndDate.AddDays(2);
 
         context.Rentals.AddRange(
             new Rental

@@ -144,7 +144,8 @@ namespace AuditIt.Api.Controllers
                 .Where(r => (r.ExpectedShipDate <= rangeEnd.AddDays(1)
                     || r.StartDate <= rangeEnd.AddDays(1)
                     || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
-                    && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
+                    && (r.ExpectedEndDate >= rangeStart.AddDays(-3)
+                        || r.ExpectedReturnDate >= rangeStart.AddDays(-1)
                         || (r.HasRenewalIntent
                             && r.RenewalIntentEndDate.HasValue
                             && r.RenewalIntentEndDate.Value >= rangeStart.AddDays(-1))
@@ -280,6 +281,9 @@ namespace AuditIt.Api.Controllers
                     HasRenewalIntent = rental.HasRenewalIntent,
                     RenewalIntentEndDate = rental.HasRenewalIntent && rental.RenewalIntentEndDate.HasValue
                         ? RentalDateRules.ToBusinessDate(rental.RenewalIntentEndDate.Value)
+                        : null,
+                    ExpectedReturnDate = rental.ExpectedReturnDate.HasValue
+                        ? RentalDateRules.ToBusinessDate(rental.ExpectedReturnDate.Value)
                         : null
                 };
 

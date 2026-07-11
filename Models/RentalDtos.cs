@@ -14,6 +14,7 @@ namespace AuditIt.Api.Models
         public DateTime StartDate { get; set; }
         public DateTime ExpectedShipDate { get; set; }
         public DateTime ExpectedEndDate { get; set; }
+        public DateTime? ExpectedReturnDate { get; set; }
         public DateTime? ActualEndDate { get; set; }
         public bool HasRenewalIntent { get; set; }
         public DateTime? RenewalIntentEndDate { get; set; }
@@ -91,6 +92,8 @@ namespace AuditIt.Api.Models
         [Required]
         public DateTime ExpectedEndDate { get; set; }
 
+        public DateTime? ExpectedReturnDate { get; set; }
+
         public bool HasRenewalIntent { get; set; }
 
         public DateTime? RenewalIntentEndDate { get; set; }
@@ -125,6 +128,7 @@ namespace AuditIt.Api.Models
         public DateTime? StartDate { get; set; }
         public DateTime? ExpectedShipDate { get; set; }
         public DateTime? ExpectedEndDate { get; set; }
+        public DateTime? ExpectedReturnDate { get; set; }
         public bool? HasRenewalIntent { get; set; }
         public DateTime? RenewalIntentEndDate { get; set; }
         [Range(0, double.MaxValue)]
