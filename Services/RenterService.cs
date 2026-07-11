@@ -7,10 +7,17 @@ namespace AuditIt.Api.Services
     public class RenterService : IRenterService
     {
         private readonly ApplicationDbContext _context;
+        private readonly IIdentityService _identityService;
+        private readonly IEnumerable<INotificationChannel> _notificationChannels;
 
-        public RenterService(ApplicationDbContext context)
+        public RenterService(
+            ApplicationDbContext context,
+            IIdentityService identityService,
+            IEnumerable<INotificationChannel> notificationChannels)
         {
             _context = context;
+            _identityService = identityService;
+            _notificationChannels = notificationChannels;
         }
 
         public async Task<IEnumerable<RenterDto>> SearchAsync(string? keyword, int limit)
@@ -56,13 +63,16 @@ namespace AuditIt.Api.Services
             };
             _context.Renters.Add(renter);
             await _context.SaveChangesAsync();
+            await NotifyAdminsAsync(renter, "created", currentUser);
             return ToDto(renter);
         }
 
-        public async Task<RenterDto?> UpdateAsync(Guid id, UpdateRenterDto dto)
+        public async Task<RenterDto?> UpdateAsync(Guid id, UpdateRenterDto dto, string? currentUser)
         {
             var renter = await _context.Renters.FindAsync(id);
             if (renter == null) return null;
+
+            var changes = BuildChangeSummary(renter, dto);
 
             renter.Name = dto.Name;
             renter.Phone = Normalize(dto.Phone);
@@ -75,6 +85,7 @@ namespace AuditIt.Api.Services
             renter.LastUpdated = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
+            await NotifyAdminsAsync(renter, "updated", currentUser, changes);
             return ToDto(renter);
         }
 
@@ -150,6 +161,108 @@ namespace AuditIt.Api.Services
         {
             if (string.IsNullOrWhiteSpace(phone)) return null;
             return phone.Trim();
+        }
+
+        private async Task NotifyAdminsAsync(Renter renter, string action, string? currentUser, string? extra = null)
+        {
+            try
+            {
+                var admins = await _identityService.GetUsersInRoleAsync(BuiltInRoles.Admin);
+                var targets = admins
+                    .Where(user => !string.IsNullOrWhiteSpace(user))
+                    .Select(user => user.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (targets.Count == 0)
+                {
+                    return;
+                }
+
+                var now = DateTime.UtcNow;
+                var title = $"Renter {action}: {renter.Name}";
+                var message = BuildRenterNotificationMessage(renter, action, currentUser, extra);
+                var reminders = targets.Select(target => new Reminder
+                {
+                    Type = ReminderType.Manual,
+                    Level = ReminderLevel.Info,
+                    RelatedEntityType = "Renter",
+                    RelatedEntityId = renter.Id.ToString(),
+                    Title = title,
+                    Message = message,
+                    TargetUser = target,
+                    DueAt = now,
+                    CreatedAt = now
+                }).ToList();
+
+                _context.Reminders.AddRange(reminders);
+                await _context.SaveChangesAsync();
+
+                foreach (var reminder in reminders)
+                {
+                    foreach (var channel in _notificationChannels)
+                    {
+                        try
+                        {
+                            await channel.DeliverAsync(reminder, default);
+                        }
+                        catch
+                        {
+                            // Notification side-channel failures should not block renter edits.
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Notification failures should not block renter edits.
+            }
+        }
+
+        private static string BuildRenterNotificationMessage(Renter renter, string action, string? currentUser, string? extra)
+        {
+            var lines = new List<string>
+            {
+                $"Action: renter {action}",
+                $"Renter: {renter.Name}",
+                $"Phone: {renter.Phone ?? "-"}"
+            };
+
+            if (!string.IsNullOrWhiteSpace(renter.XianyuId)) lines.Add($"Xianyu: {renter.XianyuId}");
+            if (!string.IsNullOrWhiteSpace(renter.TaobaoId)) lines.Add($"Taobao: {renter.TaobaoId}");
+            if (!string.IsNullOrWhiteSpace(renter.XiaohongshuId)) lines.Add($"Xiaohongshu: {renter.XiaohongshuId}");
+            if (!string.IsNullOrWhiteSpace(currentUser)) lines.Add($"Operator: {currentUser}");
+            if (!string.IsNullOrWhiteSpace(extra)) lines.Add($"Changes: {extra}");
+
+            return string.Join("\n", lines);
+        }
+
+        private static string? BuildChangeSummary(Renter renter, UpdateRenterDto dto)
+        {
+            var changes = new List<string>();
+            AddChange(changes, "Name", renter.Name, dto.Name);
+            AddChange(changes, "Phone", renter.Phone, Normalize(dto.Phone));
+            AddChange(changes, "IdCardNo", renter.IdCardNo, dto.IdCardNo);
+            AddChange(changes, "XianyuId", renter.XianyuId, dto.XianyuId);
+            AddChange(changes, "TaobaoId", renter.TaobaoId, dto.TaobaoId);
+            AddChange(changes, "XiaohongshuId", renter.XiaohongshuId, dto.XiaohongshuId);
+            AddChange(changes, "DefaultAddress", renter.DefaultAddress, dto.DefaultAddress);
+            AddChange(changes, "Notes", renter.Notes, dto.Notes);
+            return changes.Count == 0 ? null : string.Join("; ", changes);
+        }
+
+        private static void AddChange(List<string> changes, string field, string? before, string? after)
+        {
+            if (!string.Equals(before ?? string.Empty, after ?? string.Empty, StringComparison.Ordinal))
+            {
+                changes.Add($"{field}: {Truncate(before)} -> {Truncate(after)}");
+            }
+        }
+
+        private static string Truncate(string? value)
+        {
+            var normalized = string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
+            return normalized.Length <= 40 ? normalized : normalized[..40] + "...";
         }
 
         internal static RenterDto ToDto(Renter r) => new()

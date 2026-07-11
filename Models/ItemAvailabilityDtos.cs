@@ -23,6 +23,7 @@ namespace AuditIt.Api.Models
         public bool IsManualLoan { get; set; }
         public bool HasRenewalIntent { get; set; }
         public DateTime? RenewalIntentEndDate { get; set; }
+        public DateTime? ExpectedReturnDate { get; set; }
         public ItemOccupancyStatus OccupancyStatus { get; set; } = ItemOccupancyStatus.Scheduled;
     }
 
@@ -63,6 +64,7 @@ namespace AuditIt.Api.Models
         public bool IsManualLoan { get; set; }
         public bool HasRenewalIntent { get; set; }
         public DateTime? RenewalIntentEndDate { get; set; }
+        public DateTime? ExpectedReturnDate { get; set; }
         public ItemOccupancyStatus OccupancyStatus { get; set; } = ItemOccupancyStatus.Scheduled;
     }
 

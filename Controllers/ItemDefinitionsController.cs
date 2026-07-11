@@ -183,6 +183,7 @@ namespace AuditIt.Api.Controllers
                 {
                     i.ShortId,
                     i.LastUpdated,
+                    i.ExpectedReturnDate,
                     OutboundAt = _context.AuditLogs
                         .Where(log => log.ItemId == i.Id && log.Action == AuditAction.Outbound)
                         .OrderByDescending(log => log.Timestamp)
@@ -211,6 +212,7 @@ namespace AuditIt.Api.Controllers
                     detail.IsManualLoan,
                     detail.HasRenewalIntent,
                     detail.RenewalIntentEndDate,
+                    detail.ExpectedReturnDate,
                     detail.OccupancyStatus);
 
                 if (detailBuckets[dayIndex].TryGetValue(key, out var existing))
@@ -253,6 +255,7 @@ namespace AuditIt.Api.Controllers
                         IsManualLoan = detail.IsManualLoan,
                         HasRenewalIntent = detail.HasRenewalIntent,
                         RenewalIntentEndDate = detail.RenewalIntentEndDate,
+                        ExpectedReturnDate = detail.ExpectedReturnDate,
                         OccupancyStatus = detail.OccupancyStatus
                     });
                 }
@@ -330,7 +333,7 @@ namespace AuditIt.Api.Controllers
             {
                 AddSegment(
                     RentalDateRules.ToBusinessDate(manualLoan.OutboundAt ?? manualLoan.LastUpdated),
-                    rangeEnd.Date,
+                    ResolveManualLoanEndDate(manualLoan.ExpectedReturnDate, rangeEnd),
                     new ItemDefinitionDailyOccupancyDto
                     {
                         RentalId = Guid.Empty,
@@ -338,6 +341,9 @@ namespace AuditIt.Api.Controllers
                         RentalStatus = RentalStatus.Active,
                         Quantity = 1,
                         IsManualLoan = true,
+                        ExpectedReturnDate = manualLoan.ExpectedReturnDate.HasValue
+                            ? RentalDateRules.ToBusinessDate(manualLoan.ExpectedReturnDate.Value)
+                            : null,
                         OccupancyStatus = ItemOccupancyStatus.Scheduled
                     });
             }
@@ -529,6 +535,11 @@ namespace AuditIt.Api.Controllers
         {
             return _context.ItemDefinitions.Any(e => e.Id == id);
         }
+
+        private static DateTime ResolveManualLoanEndDate(DateTime? expectedReturnDate, DateTime rangeEnd) =>
+            expectedReturnDate.HasValue
+                ? RentalDateRules.ToBusinessDate(expectedReturnDate.Value)
+                : rangeEnd;
 
         private static bool HasRentalStarted(Rental rental) =>
             rental.RenewedFromRentalId.HasValue

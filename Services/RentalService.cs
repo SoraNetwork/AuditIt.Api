@@ -777,6 +777,10 @@ namespace AuditIt.Api.Services
             source.RenewedToRentalNumber = renewalNumber;
             source.UpdatedAt = now;
             source.UpdatedBy = currentUser;
+
+            source.HasRenewalIntent = false;
+            source.RenewalIntentEndDate = null;
+
             await DismissOpenRentalAutoRemindersAsync(source.Id, currentUser);
 
             await _context.SaveChangesAsync();
@@ -1546,6 +1550,8 @@ namespace AuditIt.Api.Services
             {
                 rental.Status = RentalStatus.Returned;
                 rental.ActualEndDate = now;
+                rental.HasRenewalIntent = false;
+                rental.RenewalIntentEndDate = null;
                 await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser);
             }
             else
@@ -1611,6 +1617,8 @@ namespace AuditIt.Api.Services
 
             rental.Status = RentalStatus.Cancelled;
             rental.ActualEndDate = now;
+            rental.HasRenewalIntent = false;
+            rental.RenewalIntentEndDate = null;
             await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser);
 
             var reason = NormalizeNullableText(dto.Reason);

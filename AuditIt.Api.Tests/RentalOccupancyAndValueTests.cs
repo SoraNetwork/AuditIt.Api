@@ -2559,7 +2559,7 @@ public class RentalOccupancyAndValueTests
         public Task<IEnumerable<RenterDto>> SearchAsync(string? keyword, int limit) => Task.FromResult(Enumerable.Empty<RenterDto>());
         public Task<RenterDto?> GetByIdAsync(Guid id) => Task.FromResult<RenterDto?>(null);
         public Task<RenterDto> CreateAsync(CreateRenterDto dto, string? currentUser) => throw new NotImplementedException();
-        public Task<RenterDto?> UpdateAsync(Guid id, UpdateRenterDto dto) => Task.FromResult<RenterDto?>(null);
+        public Task<RenterDto?> UpdateAsync(Guid id, UpdateRenterDto dto, string? currentUser) => Task.FromResult<RenterDto?>(null);
         public Task<bool> DeleteAsync(Guid id) => Task.FromResult(false);
         public Task<Renter> ResolveOrUpsertAsync(RenterInlineDto inline, string? currentUser) => Task.FromResult(new Renter
         {

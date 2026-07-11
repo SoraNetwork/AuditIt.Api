@@ -101,6 +101,9 @@ namespace AuditIt.Api.Migrations
                     b.Property<DateTime>("EntryDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("ExpectedReturnDate")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("TEXT");
 
