@@ -63,7 +63,7 @@ namespace AuditIt.Api.Services
             };
             _context.Renters.Add(renter);
             await _context.SaveChangesAsync();
-            await NotifyAdminsAsync(renter, "created", currentUser);
+            await NotifyAdminsAsync(renter, "创建", currentUser);
             return ToDto(renter);
         }
 
@@ -85,7 +85,7 @@ namespace AuditIt.Api.Services
             renter.LastUpdated = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
-            await NotifyAdminsAsync(renter, "updated", currentUser, changes);
+            await NotifyAdminsAsync(renter, "信息更新", currentUser, changes);
             return ToDto(renter);
         }
 
@@ -180,7 +180,7 @@ namespace AuditIt.Api.Services
                 }
 
                 var now = DateTime.UtcNow;
-                var title = $"Renter {action}: {renter.Name}";
+                var title = $"租客 {action}: {renter.Name}";
                 var message = BuildRenterNotificationMessage(renter, action, currentUser, extra);
                 var reminders = targets.Select(target => new Reminder
                 {
@@ -223,7 +223,7 @@ namespace AuditIt.Api.Services
         {
             var lines = new List<string>
             {
-                $"操作: renter {action}",
+                $"操作: 租客 {action}",
                 $"租客: {renter.Name}",
                 $"手机: {renter.Phone ?? "-"}"
             };
