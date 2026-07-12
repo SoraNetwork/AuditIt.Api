@@ -180,8 +180,12 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
   - `status?: RentalStatus`
   - `renterId?: guid`
   - `rentalNumber?: string`
+  - `search?: string`
   - `startDateFrom?: datetime`
   - `startDateTo?: datetime`
+  - `pendingSettlement?: boolean`
+  - `sortField?: expectedShipDate | startDate | expectedEndDate | expectedReturnDate`
+  - `sortOrder?: ascend | descend`
   - `page?: number`
   - `pageSize?: number`
 - Response: `{ items: RentalDto[]; total: number }`

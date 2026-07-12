@@ -98,7 +98,7 @@ namespace AuditIt.Api.Services
 
             var page = Math.Max(1, query.Page);
             var pageSize = Math.Clamp(query.PageSize, 1, 200);
-            var ordered = q.OrderByDescending(r => r.CreatedAt);
+            var ordered = ApplyListSorting(q, query);
 
             List<Rental> rows;
             int total;
@@ -125,6 +125,55 @@ namespace AuditIt.Api.Services
             }
 
             return (rows.Select(ToDto), total);
+        }
+
+        private static IOrderedQueryable<Rental> ApplyListSorting(IQueryable<Rental> query, RentalQueryParameters parameters)
+        {
+            var sortField = parameters.SortField?.Trim();
+            var descending = string.Equals(parameters.SortOrder, "descend", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(parameters.SortOrder, "desc", StringComparison.OrdinalIgnoreCase);
+
+            return sortField?.ToLowerInvariant() switch
+            {
+                "expectedshipdate" => ApplyNonNullableDateSorting(query, r => r.ExpectedShipDate, descending),
+                "startdate" => ApplyNonNullableDateSorting(query, r => r.StartDate, descending),
+                "expectedenddate" => ApplyNonNullableDateSorting(query, r => r.ExpectedEndDate, descending),
+                "expectedreturndate" => ApplyNullableDateSorting(query, descending),
+                _ => query
+                    .OrderByDescending(r => r.CreatedAt)
+                    .ThenByDescending(r => r.Id)
+            };
+        }
+
+        private static IOrderedQueryable<Rental> ApplyNonNullableDateSorting(
+            IQueryable<Rental> query,
+            System.Linq.Expressions.Expression<Func<Rental, DateTime>> selector,
+            bool descending)
+        {
+            return descending
+                ? query
+                    .OrderByDescending(selector)
+                    .ThenByDescending(r => r.CreatedAt)
+                    .ThenByDescending(r => r.Id)
+                : query
+                    .OrderBy(selector)
+                    .ThenByDescending(r => r.CreatedAt)
+                    .ThenByDescending(r => r.Id);
+        }
+
+        private static IOrderedQueryable<Rental> ApplyNullableDateSorting(IQueryable<Rental> query, bool descending)
+        {
+            return descending
+                ? query
+                    .OrderBy(r => !r.ExpectedReturnDate.HasValue)
+                    .ThenByDescending(r => r.ExpectedReturnDate)
+                    .ThenByDescending(r => r.CreatedAt)
+                    .ThenByDescending(r => r.Id)
+                : query
+                    .OrderBy(r => !r.ExpectedReturnDate.HasValue)
+                    .ThenBy(r => r.ExpectedReturnDate)
+                    .ThenByDescending(r => r.CreatedAt)
+                    .ThenByDescending(r => r.Id);
         }
 
         public async Task<IReadOnlyList<RentalCalendarEventDto>> GetCalendarAsync(
