@@ -22,7 +22,11 @@ namespace AuditIt.Api.Services
                 q = q.Where(r =>
                     r.Name.Contains(k) ||
                     (r.Phone != null && r.Phone.Contains(k)) ||
-                    (r.IdCardNo != null && r.IdCardNo.Contains(k)));
+                    (r.IdCardNo != null && r.IdCardNo.Contains(k)) ||
+                    (r.TaobaoId !=null && r.TaobaoId.Contains(k)) ||
+                    (r.XianyuId != null && r.XianyuId.Contains(k)) ||
+                    (r.XiaohongshuId != null && r.XiaohongshuId.Contains(k))
+                    );
             }
 
             return await q.OrderByDescending(r => r.LastUpdated)
