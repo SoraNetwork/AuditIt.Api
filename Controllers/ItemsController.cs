@@ -99,6 +99,7 @@ namespace AuditIt.Api.Controllers
                 LastUpdated = i.LastUpdated.ToString("O"),
                 EntryDate = i.EntryDate.ToString("O"),
                 CurrentDestination = i.CurrentDestination,
+                ExpectedReturnDate = i.ExpectedReturnDate,
                 ItemDefinitionName = i.ItemDefinition?.Name ?? string.Empty,
                 WarehouseName = i.Warehouse?.Name ?? string.Empty,
             };
@@ -159,7 +160,8 @@ namespace AuditIt.Api.Controllers
                 .Where(r => (r.ExpectedShipDate <= rangeEnd.AddDays(1)
                     || r.StartDate <= rangeEnd.AddDays(1)
                     || r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.ShippedAt <= rangeEnd.AddDays(1)))
-                    && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
+                    && (r.ExpectedEndDate >= rangeStart.AddDays(-3)
+                        || r.ExpectedReturnDate >= rangeStart.AddDays(-1)
                         || (r.HasRenewalIntent
                             && r.RenewalIntentEndDate.HasValue
                             && r.RenewalIntentEndDate.Value >= rangeStart.AddDays(-1))
@@ -177,7 +179,8 @@ namespace AuditIt.Api.Controllers
                 .Where(r => r.Status == RentalStatus.Pending)
                 .Where(r => r.Items.Any(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null))
                 .Where(r => r.ExpectedShipDate <= rangeEnd.AddDays(1)
-                    && (r.ExpectedEndDate >= rangeStart.AddDays(-1)
+                    && (r.ExpectedEndDate >= rangeStart.AddDays(-3)
+                        || r.ExpectedReturnDate >= rangeStart.AddDays(-1)
                         || (r.HasRenewalIntent
                             && r.RenewalIntentEndDate.HasValue
                             && r.RenewalIntentEndDate.Value >= rangeStart.AddDays(-1))))
@@ -195,13 +198,17 @@ namespace AuditIt.Api.Controllers
                 .ToList();
 
             var uncertainBusy = uncertainRentals
-                .Where(r => RentalDateRules.Overlaps(r.ExpectedShipDate, r.ExpectedEndDate, rangeStart, rangeEnd))
+                .Where(r => RentalDateRules.Overlaps(
+                    RentalDateRules.OccupancyStartDate(r),
+                    RentalDateRules.OccupancyEndDate(r, rangeEnd),
+                    rangeStart,
+                    rangeEnd))
                 .SelectMany(r => r.Items
                     .Where(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null)
                     .Select(ri =>
                     {
                         var startAt = RentalDateRules.OccupancyStartDate(r);
-                        var endAt = RentalDateRules.EndOfBusinessDay(RentalDateRules.EffectiveExpectedEndDate(r));
+                        var endAt = RentalDateRules.EndOfBusinessDay(RentalDateRules.EffectiveExpectedReturnDate(r));
                         return new ItemBusyPeriodDto
                         {
                             RentalId = r.Id,
@@ -216,6 +223,9 @@ namespace AuditIt.Api.Controllers
                             HasRenewalIntent = r.HasRenewalIntent,
                             RenewalIntentEndDate = r.HasRenewalIntent && r.RenewalIntentEndDate.HasValue
                                 ? RentalDateRules.ToBusinessDate(r.RenewalIntentEndDate.Value)
+                                : null,
+                            ExpectedReturnDate = r.ExpectedReturnDate.HasValue
+                                ? RentalDateRules.ToBusinessDate(r.ExpectedReturnDate.Value)
                                 : null,
                             OccupancyStatus = ItemOccupancyStatus.Scheduled
                         };
@@ -245,12 +255,15 @@ namespace AuditIt.Api.Controllers
                         RentalNumber = "普通借出",
                         RentalStatus = RentalStatus.Active,
                         StartAt = loanStart < rangeStart ? rangeStart : loanStart,
-                        EndAt = rangeEnd,
-                        IsOpen = true,
-                        IsUncertain = false,
-                        IsManualLoan = true,
-                        OccupancyStatus = ItemOccupancyStatus.Scheduled
-                    });
+                            EndAt = ResolveManualLoanEndDate(item.ExpectedReturnDate, rangeEnd),
+                            IsOpen = !item.ExpectedReturnDate.HasValue,
+                            IsUncertain = false,
+                            IsManualLoan = true,
+                            ExpectedReturnDate = item.ExpectedReturnDate.HasValue
+                                ? RentalDateRules.ToBusinessDate(item.ExpectedReturnDate.Value)
+                                : null,
+                            OccupancyStatus = ItemOccupancyStatus.Scheduled
+                        });
                 }
             }
 
@@ -410,6 +423,14 @@ namespace AuditIt.Api.Controllers
 
             item.Remarks = dto.Remarks;
             item.CurrentDestination = dto.CurrentDestination;
+            if (dto.ClearExpectedReturnDate == true)
+            {
+                item.ExpectedReturnDate = null;
+            }
+            else if (dto.ExpectedReturnDate.HasValue)
+            {
+                item.ExpectedReturnDate = RentalDateRules.ToBusinessDate(dto.ExpectedReturnDate.Value);
+            }
             item.ItemValue = dto.ItemValue;
             item.LastUpdated = DateTime.UtcNow;
 
@@ -444,7 +465,7 @@ namespace AuditIt.Api.Controllers
         [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<ActionResult<ItemDto>> Outbound(Guid id, [FromBody] UpdateItemRequest request)
         {
-            return await UpdateItemStatus(id, ItemStatus.LoanedOut, AuditAction.Outbound, request.Destination);
+            return await UpdateItemStatus(id, ItemStatus.LoanedOut, AuditAction.Outbound, request.Destination, expectedReturnDate: request.ExpectedReturnDate);
         }
 
         // PUT: api/Items/{id}/check
@@ -586,7 +607,13 @@ namespace AuditIt.Api.Controllers
             return Ok(ToItemDto(item));
         }
 
-        private async Task<ActionResult<ItemDto>> UpdateItemStatus(Guid id, ItemStatus newStatus, AuditAction action, string? destination, bool permanentlyHidden = false)
+        private async Task<ActionResult<ItemDto>> UpdateItemStatus(
+            Guid id,
+            ItemStatus newStatus,
+            AuditAction action,
+            string? destination,
+            bool permanentlyHidden = false,
+            DateTime? expectedReturnDate = null)
         {
             var item = await _context.Items
                 .Include(i => i.ItemDefinition)
@@ -605,10 +632,18 @@ namespace AuditIt.Api.Controllers
             if (action == AuditAction.Outbound || action == AuditAction.Dispose)
             {
                 item.CurrentDestination = destination;
+                item.ExpectedReturnDate = action == AuditAction.Outbound && expectedReturnDate.HasValue
+                    ? RentalDateRules.ToBusinessDate(expectedReturnDate.Value)
+                    : null;
             }
             else if (action == AuditAction.Return)
             {
                 item.CurrentDestination = null;
+                item.ExpectedReturnDate = null;
+            }
+            else if (action == AuditAction.Check)
+            {
+                item.ExpectedReturnDate = null;
             }
             
             _context.Entry(item).State = EntityState.Modified;
@@ -849,8 +884,16 @@ namespace AuditIt.Api.Controllers
                 RenewalIntentEndDate = rental.HasRenewalIntent && rental.RenewalIntentEndDate.HasValue
                     ? RentalDateRules.ToBusinessDate(rental.RenewalIntentEndDate.Value)
                     : null,
+                ExpectedReturnDate = rental.ExpectedReturnDate.HasValue
+                    ? RentalDateRules.ToBusinessDate(rental.ExpectedReturnDate.Value)
+                    : null,
                 OccupancyStatus = status
             };
+
+        private static DateTime ResolveManualLoanEndDate(DateTime? expectedReturnDate, DateTime rangeEnd) =>
+            expectedReturnDate.HasValue
+                ? RentalDateRules.ToBusinessDate(expectedReturnDate.Value)
+                : rangeEnd;
 
         private static bool HasRentalStarted(Rental rental) =>
             RentalDateRules.HasRentalStarted(rental);

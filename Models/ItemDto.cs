@@ -19,6 +19,7 @@ namespace AuditIt.Api.Models
 
         public ItemStatus Status { get; set; }
         public string? CurrentDestination { get; set; }
+        public DateTime? ExpectedReturnDate { get; set; }
         public string? Remarks { get; set; }
         public string? PhotoUrl { get; set; }
 

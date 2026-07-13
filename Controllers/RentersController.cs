@@ -47,7 +47,7 @@ namespace AuditIt.Api.Controllers
         public async Task<ActionResult<RenterDto>> Update(Guid id, [FromBody] UpdateRenterDto dto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
-            var updated = await _renters.UpdateAsync(id, dto);
+            var updated = await _renters.UpdateAsync(id, dto, CurrentUser());
             return updated == null ? NotFound() : Ok(updated);
         }
 

@@ -58,6 +58,8 @@ namespace AuditIt.Api.Models
         [StringLength(200)]
         public string? CurrentDestination { get; set; }
 
+        public DateTime? ExpectedReturnDate { get; set; }
+
         public decimal? ItemValue { get; set; }
 
         public virtual ICollection<ItemListing> Listings { get; set; } = new List<ItemListing>();

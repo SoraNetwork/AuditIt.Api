@@ -59,6 +59,29 @@ namespace AuditIt.Api.Services
         public static DateTime EffectiveExpectedEndDate(Rental rental) =>
             EffectiveExpectedEndDate(rental.ExpectedEndDate, rental.HasRenewalIntent, rental.RenewalIntentEndDate);
 
+        public static DateTime DefaultExpectedReturnDate(DateTime expectedEndDate) =>
+            ToBusinessDate(expectedEndDate).AddDays(2);
+
+        public static DateTime EffectiveExpectedReturnDate(
+            DateTime expectedEndDate,
+            DateTime? expectedReturnDate,
+            bool hasRenewalIntent,
+            DateTime? renewalIntentEndDate)
+        {
+            var plannedReturn = expectedReturnDate.HasValue
+                ? ToBusinessDate(expectedReturnDate.Value)
+                : DefaultExpectedReturnDate(expectedEndDate);
+            var effectiveEnd = EffectiveExpectedEndDate(expectedEndDate, hasRenewalIntent, renewalIntentEndDate);
+            return plannedReturn > effectiveEnd ? plannedReturn : effectiveEnd;
+        }
+
+        public static DateTime EffectiveExpectedReturnDate(Rental rental) =>
+            EffectiveExpectedReturnDate(
+                rental.ExpectedEndDate,
+                rental.ExpectedReturnDate,
+                rental.HasRenewalIntent,
+                rental.RenewalIntentEndDate);
+
         public static bool HasOutboundShipment(Rental rental) =>
             rental.Shipments.Any(shipment => shipment.Direction == ShipmentDirection.Outbound);
 
@@ -126,7 +149,8 @@ namespace AuditIt.Api.Services
             DateTime? returnedAt = null,
             DateTime? openEndedUntil = null,
             bool includeReturnBuffer = true,
-            DateTime? releasedFromRentalAt = null)
+            DateTime? releasedFromRentalAt = null,
+            DateTime? expectedReturnDate = null)
         {
             var expectedEnd = ToBusinessDate(expectedEndDate);
             if (releasedFromRentalAt.HasValue)
@@ -134,12 +158,24 @@ namespace AuditIt.Api.Services
                 return ToBusinessDate(releasedFromRentalAt.Value);
             }
 
-            if (returnedAt.HasValue || actualEndDate.HasValue || !includeReturnBuffer)
+            if (returnedAt.HasValue)
+            {
+                return ToBusinessDate(returnedAt.Value);
+            }
+
+            if (actualEndDate.HasValue)
+            {
+                return ToBusinessDate(actualEndDate.Value);
+            }
+
+            if (!includeReturnBuffer)
             {
                 return expectedEnd;
             }
 
-            var bufferedEnd = expectedEnd.AddDays(1);
+            var bufferedEnd = expectedReturnDate.HasValue
+                ? ToBusinessDate(expectedReturnDate.Value)
+                : DefaultExpectedReturnDate(expectedEnd);
             if (!openEndedUntil.HasValue)
             {
                 return bufferedEnd;
@@ -155,13 +191,14 @@ namespace AuditIt.Api.Services
                 null,
                 OccupancyEndDate(
                 EffectiveExpectedEndDate(rental),
-                rental.ActualEndDate,
-                openEndedUntil: OpenEndedUntil(
                     rental.ActualEndDate,
+                    openEndedUntil: OpenEndedUntil(
+                        rental.ActualEndDate,
                     null,
                     HasRentalStarted(rental) && rental.Items.Any(item => item.ReturnedAt == null),
-                    openEndedRangeEnd),
-                includeReturnBuffer: ShouldUseReturnBuffer(rental)));
+                        openEndedRangeEnd),
+                includeReturnBuffer: ShouldUseReturnBuffer(rental),
+                expectedReturnDate: EffectiveExpectedReturnDate(rental)));
 
         public static DateTime OccupancyEndDate(Rental rental, RentalItem rentalItem, DateTime openEndedRangeEnd) =>
             ExtendReturnedRenewalEndDate(
@@ -173,7 +210,8 @@ namespace AuditIt.Api.Services
                 rentalItem.ReturnedAt,
                 OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt, HasRentalStarted(rental), openEndedRangeEnd),
                 ShouldUseReturnBuffer(rental),
-                EffectiveReleasedFromRentalAt(rentalItem)));
+                EffectiveReleasedFromRentalAt(rentalItem),
+                EffectiveExpectedReturnDate(rental)));
 
         private static DateTime ExtendReturnedRenewalEndDate(Rental rental, RentalItem? rentalItem, DateTime endDate)
         {
@@ -219,11 +257,12 @@ namespace AuditIt.Api.Services
             DateTime? openEndedUntil = null,
             bool includeReturnBuffer = true,
             DateTime? releasedFromRentalAt = null,
-            DateTime? historicalOccupancyStartDate = null)
+            DateTime? historicalOccupancyStartDate = null,
+            DateTime? expectedReturnDate = null)
         {
             var businessDay = day.Date;
             return OccupancyStartDate(expectedShipDate, shipments, historicalOccupancyStartDate) <= businessDay
-                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt, openEndedUntil, includeReturnBuffer, releasedFromRentalAt) >= businessDay;
+                && OccupancyEndDate(expectedEndDate, actualEndDate, returnedAt, openEndedUntil, includeReturnBuffer, releasedFromRentalAt, expectedReturnDate) >= businessDay;
         }
 
         public static string Format(DateTime value) => ToBusinessDate(value).ToString("yyyy-MM-dd");

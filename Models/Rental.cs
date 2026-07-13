@@ -36,6 +36,8 @@ namespace AuditIt.Api.Models
 
         public DateTime ExpectedEndDate { get; set; }
 
+        public DateTime? ExpectedReturnDate { get; set; }
+
         public DateTime? ActualEndDate { get; set; }
 
         public bool HasRenewalIntent { get; set; }

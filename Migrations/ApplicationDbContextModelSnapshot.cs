@@ -101,6 +101,9 @@ namespace AuditIt.Api.Migrations
                     b.Property<DateTime>("EntryDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("ExpectedReturnDate")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("TEXT");
 
@@ -362,6 +365,9 @@ namespace AuditIt.Api.Migrations
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<DateTime>("ExpectedEndDate")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("ExpectedReturnDate")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTime>("ExpectedShipDate")

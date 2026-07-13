@@ -8,6 +8,8 @@ namespace AuditIt.Api.Models
         public string? SerialNumber { get; set; }
         public string? Remarks { get; set; }
         public string? CurrentDestination { get; set; }
+        public DateTime? ExpectedReturnDate { get; set; }
+        public bool? ClearExpectedReturnDate { get; set; }
         public decimal? ItemValue { get; set; }
         public List<string>? OwnerUserNames { get; set; }
         public bool? ClearOwnerUser { get; set; }
