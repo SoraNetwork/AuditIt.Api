@@ -44,5 +44,7 @@ namespace AuditIt.Api.Models
 
         [StringLength(100)]
         public string? CreatedBy { get; set; }
+
+        public virtual ICollection<RentalShipmentItem> RentalItems { get; set; } = new List<RentalShipmentItem>();
     }
 }

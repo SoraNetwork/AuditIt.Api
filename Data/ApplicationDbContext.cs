@@ -21,6 +21,7 @@ namespace AuditIt.Api.Data
         public DbSet<Rental> Rentals { get; set; }
         public DbSet<RentalItem> RentalItems { get; set; }
         public DbSet<RentalShipment> RentalShipments { get; set; }
+        public DbSet<RentalShipmentItem> RentalShipmentItems { get; set; }
         public DbSet<ItemListing> ItemListings { get; set; }
         public DbSet<Reminder> Reminders { get; set; }
         public DbSet<SettlementSetting> SettlementSettings { get; set; }
@@ -67,6 +68,21 @@ namespace AuditIt.Api.Data
 
             modelBuilder.Entity<RentalShipment>()
                 .HasIndex(s => s.TrackingNumber);
+
+            modelBuilder.Entity<RentalShipmentItem>()
+                .HasKey(link => new { link.RentalShipmentId, link.RentalItemId });
+
+            modelBuilder.Entity<RentalShipmentItem>()
+                .HasOne(link => link.RentalShipment)
+                .WithMany(shipment => shipment.RentalItems)
+                .HasForeignKey(link => link.RentalShipmentId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<RentalShipmentItem>()
+                .HasOne(link => link.RentalItem)
+                .WithMany(item => item.ShipmentLinks)
+                .HasForeignKey(link => link.RentalItemId)
+                .OnDelete(DeleteBehavior.Cascade);
 
             modelBuilder.Entity<ItemListing>()
                 .HasIndex(l => l.ItemId);

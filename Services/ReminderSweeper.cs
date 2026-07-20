@@ -93,6 +93,7 @@ namespace AuditIt.Api.Services
             var candidates = await db.Rentals
                 .Include(r => r.Renter)
                 .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
                 .Include(r => r.Items)
                 .Where(r => r.Status == RentalStatus.Pending
                          || r.Status == RentalStatus.Active
@@ -111,7 +112,7 @@ namespace AuditIt.Api.Services
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
                 var hasInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
                 var hasDeliveredOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
-                var hasDeliveredInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue);
+                var hasDeliveredInboundShipment = HasDeliveredInboundShipmentForAllOpenItems(rental);
                 var isRenewal = rental.RenewedFromRentalId.HasValue;
                 var hasRentalStarted = hasOutboundShipment || isRenewal;
                 var isRenewedForward = rental.RenewedToRentalId.HasValue;
@@ -367,6 +368,7 @@ namespace AuditIt.Api.Services
             var rentals = await db.Rentals
                 .Include(r => r.Items)
                 .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
                 .Where(r => rentalIds.Contains(r.Id))
                 .ToDictionaryAsync(r => r.Id, ct);
 
@@ -417,7 +419,7 @@ namespace AuditIt.Api.Services
                     rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound)
                     || !rental.Items.Any(i => i.ReturnedAt == null),
                 ReminderType.RentalReturnUnsigned =>
-                    rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue)
+                    HasDeliveredInboundShipmentForAllOpenItems(rental)
                     || (rental.Status == RentalStatus.Returned
                         && !rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound)),
                 _ => false
@@ -427,5 +429,33 @@ namespace AuditIt.Api.Services
         private static bool HasRentalStarted(Rental rental) =>
             rental.RenewedFromRentalId.HasValue
             || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+
+        private static bool HasDeliveredInboundShipmentForAllOpenItems(Rental rental)
+        {
+            var openItems = rental.Items
+                .Where(item => !item.ReturnedAt.HasValue)
+                .ToList();
+            if (openItems.Count == 0)
+            {
+                return true;
+            }
+
+            var deliveredInboundShipments = rental.Shipments
+                .Where(shipment => shipment.Direction == ShipmentDirection.Inbound && shipment.DeliveredAt.HasValue)
+                .ToList();
+
+            // An empty link set is the legacy/whole-rental representation. Keep it
+            // covering the whole rental so existing shipments retain their meaning.
+            if (deliveredInboundShipments.Any(shipment => shipment.RentalItems.Count == 0))
+            {
+                return true;
+            }
+
+            var coveredItemIds = deliveredInboundShipments
+                .SelectMany(shipment => shipment.RentalItems.Select(link => link.RentalItemId))
+                .ToHashSet();
+
+            return openItems.All(item => coveredItemIds.Contains(item.Id));
+        }
     }
 }

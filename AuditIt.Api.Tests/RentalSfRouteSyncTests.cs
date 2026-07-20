@@ -242,6 +242,70 @@ public class RentalSfRouteSyncTests
         Assert.Equal(RentalStatus.Active, savedRental.Status);
     }
 
+    [Fact]
+    public async Task SyncSfRoutesAsync_UsesAdminPhoneTailAfterRenterAndCreatorFallbacks()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var adminRole = new Role { Name = BuiltInRoles.Admin, Description = "Administrator", IsBuiltIn = true };
+        var admin = new User { Name = "Admin User", Mobile = "13900139000", Status = UserStatus.Active };
+        var creator = new User { Name = "Creator", Mobile = "13700137000", Status = UserStatus.Active };
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20260602-0001",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            CreatedBy = creator.Name,
+            Status = RentalStatus.Active,
+            StartDate = new DateTime(2026, 6, 2),
+            ExpectedShipDate = new DateTime(2026, 6, 1),
+            ExpectedEndDate = new DateTime(2026, 6, 5),
+            TotalPrice = 100m
+        };
+        rental.Shipments.Add(new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            TrackingNumber = "SF1234567890",
+            ShippedAt = new DateTime(2026, 6, 1)
+        });
+
+        context.Roles.Add(adminRole);
+        context.Users.AddRange(admin, creator);
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+        context.UserRoles.Add(new UserRole { UserId = admin.Id, RoleId = adminRole.Id, AssignedBy = "system" });
+        await context.SaveChangesAsync();
+
+        var sfExpress = new AdminFallbackSfExpressService("9000");
+        var service = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            Array.Empty<INotificationChannel>(),
+            sfExpress,
+            new StubSettlementService());
+
+        var (result, error) = await service.SyncSfRoutesAsync(rental.Id, forceRefresh: true, "tester");
+
+        Assert.Null(error);
+        Assert.NotNull(result);
+        var route = Assert.Single(result!.Shipments);
+        Assert.Equal("9000", route.CheckPhoneNo);
+        Assert.Single(route.Routes);
+        Assert.Equal(new[] { "8000", "7000", "9000" }, sfExpress.RequestedPhoneTails);
+    }
+
     private static Rental BuildRental(string rentalNumber, Renter renter, DateTime expectedEndDate, DateTime createdAt) => new()
     {
         Id = Guid.NewGuid(),
@@ -296,6 +360,38 @@ public class RentalSfRouteSyncTests
                         Remark = "已签收"
                     }
                 }
+            }).ToList();
+
+            return Task.FromResult(results);
+        }
+    }
+
+    private sealed class AdminFallbackSfExpressService : ISfExpressService
+    {
+        private readonly string _adminPhoneTail;
+
+        public AdminFallbackSfExpressService(string adminPhoneTail)
+        {
+            _adminPhoneTail = adminPhoneTail;
+        }
+
+        public List<string> RequestedPhoneTails { get; } = new();
+
+        public Task<IReadOnlyList<SfRouteQueryResult>> QueryRoutesAsync(
+            IReadOnlyList<SfRouteQueryItem> items,
+            bool forceRefresh,
+            CancellationToken ct = default)
+        {
+            RequestedPhoneTails.AddRange(items.Select(item => item.CheckPhoneNo));
+            IReadOnlyList<SfRouteQueryResult> results = items.Select(item => new SfRouteQueryResult
+            {
+                ShipmentId = item.ShipmentId,
+                TrackingNumber = item.TrackingNumber,
+                CheckPhoneNo = item.CheckPhoneNo,
+                Queryable = true,
+                Routes = item.CheckPhoneNo == _adminPhoneTail
+                    ? new List<SfRouteNodeDto> { new() { AcceptTime = "2026-06-02 10:00:00", Remark = "In transit" } }
+                    : new List<SfRouteNodeDto>()
             }).ToList();
 
             return Task.FromResult(results);

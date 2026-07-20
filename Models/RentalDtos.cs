@@ -73,6 +73,15 @@ namespace AuditIt.Api.Models
         public decimal? ShippingFee { get; set; }
         public string? Notes { get; set; }
         public string? CreatedBy { get; set; }
+        public List<RentalShipmentItemDto> Items { get; set; } = new();
+    }
+
+    public class RentalShipmentItemDto
+    {
+        public int RentalItemId { get; set; }
+        public Guid? ItemId { get; set; }
+        public string ItemShortIdSnapshot { get; set; } = string.Empty;
+        public string ItemNameSnapshot { get; set; } = string.Empty;
     }
 
     public class CreateRentalDto
@@ -84,6 +93,10 @@ namespace AuditIt.Api.Models
         public List<string> ItemIds { get; set; } = new();
 
         public List<int> ItemDefinitionIds { get; set; } = new();
+
+        // Optional for backward compatibility. When provided, the server derives
+        // TotalPrice from these per-rental-item prices.
+        public List<CreateRentalItemPriceDto> ItemPrices { get; set; } = new();
 
         public DateTime? StartDate { get; set; }
 
@@ -120,6 +133,16 @@ namespace AuditIt.Api.Models
         public string? AssignedTo { get; set; }
 
         public bool AllowScheduleConflict { get; set; }
+    }
+
+    public class CreateRentalItemPriceDto
+    {
+        public string? ItemId { get; set; }
+
+        public int? ItemDefinitionId { get; set; }
+
+        [Range(0, double.MaxValue)]
+        public decimal PerItemPrice { get; set; }
     }
 
     public class UpdateRentalDto
@@ -328,6 +351,10 @@ namespace AuditIt.Api.Models
         public ReturnCondition? Condition { get; set; }
         [StringLength(500)]
         public string? Notes { get; set; }
+
+        // When a damaged item needs repair, keep it occupied as a normal loan.
+        public bool RepairOccupancy { get; set; }
+        public DateTime? RepairExpectedReturnDate { get; set; }
     }
 
     public class CancelRentalDto

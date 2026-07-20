@@ -195,6 +195,7 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ### `POST /rentals`
 - Body: `CreateRentalDto`
+- `itemPrices` is optional for compatibility. When supplied, provide one `{ itemId | itemDefinitionId, perItemPrice }` for every selected item; the server calculates `totalPrice` from the entries.
 - Response: `RentalDto`
 
 ### `PUT /rentals/{id}`
@@ -203,6 +204,7 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ### `POST /rentals/{id}/ship`
 - Body: `CreateShipmentDto`
+- `CreateShipmentDto.ItemSelections` may contain one or more `{ rentalItemId, itemId }` entries when registering an inbound shipment. An empty list keeps legacy whole-rental semantics.
 - Response: `RentalDto`
 
 ### `POST /rentals/{id}/shipments/{shipmentId}/deliver`
@@ -211,6 +213,7 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ### `POST /rentals/{id}/return`
 - Body: `ReturnRentalDto`
+- When returning damaged items, set `repairOccupancy: true` and provide `repairExpectedReturnDate`. The returned physical items are then retained as a normal loan with destination/reason `损坏维修`.
 - Response: `RentalDto`
 
 ### `POST /rentals/{id}/cancel`

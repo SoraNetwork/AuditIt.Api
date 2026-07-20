@@ -566,6 +566,21 @@ namespace AuditIt.Api.Migrations
                     b.ToTable("RentalShipments");
                 });
 
+            modelBuilder.Entity("AuditIt.Api.Models.RentalShipmentItem", b =>
+                {
+                    b.Property<int>("RentalShipmentId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("RentalItemId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("RentalShipmentId", "RentalItemId");
+
+                    b.HasIndex("RentalItemId");
+
+                    b.ToTable("RentalShipmentItems");
+                });
+
             modelBuilder.Entity("AuditIt.Api.Models.Renter", b =>
                 {
                     b.Property<Guid>("Id")
@@ -925,6 +940,25 @@ namespace AuditIt.Api.Migrations
                     b.Navigation("OriginWarehouse");
 
                     b.Navigation("Rental");
+                });
+
+            modelBuilder.Entity("AuditIt.Api.Models.RentalShipmentItem", b =>
+                {
+                    b.HasOne("AuditIt.Api.Models.RentalItem", "RentalItem")
+                        .WithMany("ShipmentLinks")
+                        .HasForeignKey("RentalItemId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("AuditIt.Api.Models.RentalShipment", "RentalShipment")
+                        .WithMany("RentalItems")
+                        .HasForeignKey("RentalShipmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("RentalItem");
+
+                    b.Navigation("RentalShipment");
                 });
 
             modelBuilder.Entity("AuditIt.Api.Models.RolePermission", b =>

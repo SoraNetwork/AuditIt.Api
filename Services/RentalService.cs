@@ -37,6 +37,11 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Items)
                 .Include(r => r.Shipments)
                     .ThenInclude(s => s.OriginWarehouse)
+                .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
+                .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
+                        .ThenInclude(link => link.RentalItem)
                 .AsQueryable();
 
             if (query.Status.HasValue)
@@ -392,6 +397,7 @@ namespace AuditIt.Api.Services
                         .Include(r => r.Items)
                         .Include(r => r.Renter)
                         .Include(r => r.Shipments)
+                            .ThenInclude(s => s.RentalItems)
                         .Where(r => reminderRentalIds.Contains(r.Id))
                         .ToDictionaryAsync(r => r.Id);
 
@@ -468,6 +474,9 @@ namespace AuditIt.Api.Services
                         .ThenInclude(i => i!.Listings)
                 .Include(r => r.Shipments)
                     .ThenInclude(s => s.OriginWarehouse)
+                .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
+                        .ThenInclude(link => link.RentalItem)
                 .FirstOrDefaultAsync(r => r.Id == id);
 
             return rental == null ? null : ToDto(rental);
@@ -501,6 +510,67 @@ namespace AuditIt.Api.Services
                     distinctItemIds.Add(parsedItemId);
                 }
             }
+
+            var definitionIds = dto.ItemDefinitionIds ?? new List<int>();
+            var hasItemPrices = dto.ItemPrices != null && dto.ItemPrices.Count > 0;
+            var itemPricesByItemId = new Dictionary<Guid, decimal>();
+            var itemPricesByDefinitionId = new Dictionary<int, Queue<decimal>>();
+            if (hasItemPrices)
+            {
+                var expectedItemIds = distinctItemIds.ToHashSet();
+                var expectedDefinitionCounts = definitionIds
+                    .GroupBy(definitionId => definitionId)
+                    .ToDictionary(group => group.Key, group => group.Count());
+                var expectedPriceCount = expectedItemIds.Count + definitionIds.Count;
+                if (dto.ItemPrices!.Count != expectedPriceCount)
+                {
+                    return new CreateRentalResult { Error = "A rental price must be provided for every selected item." };
+                }
+
+                foreach (var price in dto.ItemPrices)
+                {
+                    var hasItemId = !string.IsNullOrWhiteSpace(price.ItemId);
+                    if (hasItemId == price.ItemDefinitionId.HasValue)
+                    {
+                        return new CreateRentalResult { Error = "Each rental price must identify either an item or an item definition." };
+                    }
+
+                    if (hasItemId)
+                    {
+                        if (!Guid.TryParse(price.ItemId, out var itemId)
+                            || !expectedItemIds.Contains(itemId)
+                            || !itemPricesByItemId.TryAdd(itemId, price.PerItemPrice))
+                        {
+                            return new CreateRentalResult { Error = "The rental price items do not match the selected items." };
+                        }
+                        continue;
+                    }
+
+                    var definitionId = price.ItemDefinitionId!.Value;
+                    if (!expectedDefinitionCounts.ContainsKey(definitionId))
+                    {
+                        return new CreateRentalResult { Error = "The rental price definitions do not match the selected item definitions." };
+                    }
+
+                    if (!itemPricesByDefinitionId.TryGetValue(definitionId, out var prices))
+                    {
+                        prices = new Queue<decimal>();
+                        itemPricesByDefinitionId[definitionId] = prices;
+                    }
+                    prices.Enqueue(price.PerItemPrice);
+                }
+
+                if (itemPricesByItemId.Count != expectedItemIds.Count
+                    || expectedDefinitionCounts.Any(expected => !itemPricesByDefinitionId.TryGetValue(expected.Key, out var prices)
+                        || prices.Count != expected.Value))
+                {
+                    return new CreateRentalResult { Error = "A rental price must be provided for every selected item." };
+                }
+            }
+
+            var totalPrice = hasItemPrices
+                ? dto.ItemPrices!.Sum(price => price.PerItemPrice)
+                : dto.TotalPrice;
 
             var now = DateTime.UtcNow;
             var startDate = RentalDateRules.ToBusinessDate(dto.StartDate ?? now);
@@ -609,7 +679,7 @@ namespace AuditIt.Api.Services
                 ExpectedReturnDate = expectedReturnDate,
                 HasRenewalIntent = hasRenewalIntent,
                 RenewalIntentEndDate = hasRenewalIntent ? renewalIntentEndDate : null,
-                TotalPrice = dto.TotalPrice,
+                TotalPrice = totalPrice,
                 Deposit = dto.Deposit,
                 OtherFee = dto.OtherFee,
                 ShippingAddress = NormalizeNullableText(dto.ShippingAddress) ?? renter.DefaultAddress,
@@ -635,13 +705,14 @@ namespace AuditIt.Api.Services
                     ItemId = item.Id,
                     ItemShortIdSnapshot = item.ShortId,
                     ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty,
-                    ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks
+                    ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks,
+                    PerItemPrice = hasItemPrices ? itemPricesByItemId[item.Id] : null
                 });
 
                 LogAudit(item, AuditAction.RentalCreated, rentalNumber, currentUser);
             }
 
-            foreach (var defId in dto.ItemDefinitionIds ?? new List<int>())
+            foreach (var defId in definitionIds)
             {
                 var def = await _context.ItemDefinitions.FindAsync(defId);
                 if (def == null) continue;
@@ -653,7 +724,8 @@ namespace AuditIt.Api.Services
                     ItemDefinitionId = defId,
                     ItemShortIdSnapshot = "待选择",
                     ItemNameSnapshot = def.Name,
-                    ListingRemarksSnapshot = null
+                    ListingRemarksSnapshot = null,
+                    PerItemPrice = hasItemPrices ? itemPricesByDefinitionId[defId].Dequeue() : null
                 });
             }
 
@@ -1267,6 +1339,34 @@ namespace AuditIt.Api.Services
                 }
             }
 
+            var selectedInboundItemIds = new HashSet<int>();
+            if (dto.Direction == ShipmentDirection.Inbound && dto.ItemSelections != null)
+            {
+                foreach (var selection in dto.ItemSelections)
+                {
+                    if (!selectedInboundItemIds.Add(selection.RentalItemId))
+                    {
+                        return new RentalShipmentResult { Error = "The same rental item cannot be selected more than once." };
+                    }
+
+                    var rentalItem = rental.Items.FirstOrDefault(ri => ri.Id == selection.RentalItemId);
+                    if (rentalItem == null)
+                    {
+                        return new RentalShipmentResult { Error = $"Rental item {selection.RentalItemId} was not found." };
+                    }
+
+                    if (!rentalItem.ItemId.HasValue || rentalItem.ItemId.Value != selection.ItemId)
+                    {
+                        return new RentalShipmentResult { Error = "The selected return-shipment item does not match the rental item." };
+                    }
+
+                    if (rentalItem.ReturnedAt.HasValue)
+                    {
+                        return new RentalShipmentResult { Error = $"Item {rentalItem.ItemShortIdSnapshot} has already been returned and cannot be linked to a new return shipment." };
+                    }
+                }
+            }
+
             var shippedAt = dto.ShippedAt ?? DateTime.UtcNow;
             var shipment = new RentalShipment
             {
@@ -1280,6 +1380,14 @@ namespace AuditIt.Api.Services
                 Notes = NormalizeNullableText(dto.Notes),
                 CreatedBy = currentUser
             };
+            var linkedRentalItems = dto.Direction == ShipmentDirection.Outbound
+                ? rental.Items.Where(ri => ri.ReturnedAt == null).ToList()
+                : rental.Items.Where(ri => selectedInboundItemIds.Contains(ri.Id)).ToList();
+            foreach (var rentalItem in linkedRentalItems)
+            {
+                shipment.RentalItems.Add(new RentalShipmentItem { RentalItemId = rentalItem.Id });
+            }
+
             _context.RentalShipments.Add(shipment);
 
             var logisticsSummary = BuildShipmentSummary(dto.Carrier, shipment.TrackingNumber);
@@ -1289,7 +1397,7 @@ namespace AuditIt.Api.Services
                     ? RentalStatus.Overdue
                     : RentalStatus.Active;
 
-                foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null))
+                foreach (var rentalItem in linkedRentalItems)
                 {
                     if (rentalItem.Item == null)
                     {
@@ -1317,7 +1425,7 @@ namespace AuditIt.Api.Services
                     ReminderType.RentalDueSoon,
                     ReminderType.RentalOverdue);
 
-                foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null))
+                foreach (var rentalItem in linkedRentalItems)
                 {
                     if (rentalItem.Item == null)
                     {
@@ -1347,6 +1455,7 @@ namespace AuditIt.Api.Services
         {
             var shipment = await _context.RentalShipments
                 .Include(s => s.OriginWarehouse)
+                .Include(s => s.RentalItems)
                 .FirstOrDefaultAsync(s => s.Id == shipmentId && s.RentalId == rentalId);
 
             if (shipment == null)
@@ -1363,9 +1472,18 @@ namespace AuditIt.Api.Services
                 .Include(r => r.Items)
                     .ThenInclude(ri => ri.Item)
                         .ThenInclude(i => i!.Warehouse)
+                .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
                 .FirstAsync(r => r.Id == rentalId);
 
-            foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null))
+            var linkedRentalItemIds = shipment.RentalItems
+                .Select(link => link.RentalItemId)
+                .ToHashSet();
+            var deliveredItems = linkedRentalItemIds.Count > 0
+                ? rental.Items.Where(ri => linkedRentalItemIds.Contains(ri.Id) && ri.ReturnedAt == null)
+                : rental.Items.Where(ri => ri.ReturnedAt == null);
+
+            foreach (var rentalItem in deliveredItems)
             {
                 if (rentalItem.Item == null)
                 {
@@ -1384,7 +1502,10 @@ namespace AuditIt.Api.Services
             }
             else
             {
-                await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalReturnUnsigned);
+                if (HasDeliveredInboundShipmentForAllOpenItems(rental))
+                {
+                    await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalReturnUnsigned);
+                }
             }
 
             await _context.SaveChangesAsync();
@@ -1434,6 +1555,7 @@ namespace AuditIt.Api.Services
 
             var renterPhoneTail = ResolvePhoneTail(rental.Renter?.Phone);
             var creatorPhoneTail = await ResolveCreatorPhoneTailAsync(rental.CreatedBy, ct);
+            var adminPhoneTails = await ResolveAdminPhoneTailsAsync(ct);
             var routeResults = new List<SfRouteQueryResult>();
 
             if (!string.IsNullOrWhiteSpace(renterPhoneTail))
@@ -1442,25 +1564,32 @@ namespace AuditIt.Api.Services
                 routeResults.AddRange(await _sfExpressService.QueryRoutesAsync(renterQueryItems, forceRefresh, ct));
             }
 
-            var shouldTryCreatorPhone = !string.IsNullOrWhiteSpace(creatorPhoneTail)
-                && !string.Equals(creatorPhoneTail, renterPhoneTail, StringComparison.Ordinal);
-            if (shouldTryCreatorPhone)
+            var fallbackPhoneTails = new[] { creatorPhoneTail }
+                .Concat(adminPhoneTails)
+                .Where(phoneTail => !string.IsNullOrWhiteSpace(phoneTail))
+                .Select(phoneTail => phoneTail!)
+                .Where(phoneTail => !string.Equals(phoneTail, renterPhoneTail, StringComparison.Ordinal))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            foreach (var fallbackPhoneTail in fallbackPhoneTails)
             {
                 var routeResultsByShipmentId = routeResults.ToDictionary(r => r.ShipmentId);
                 var fallbackShipments = sfShipments
-                    .Where(shipment => string.IsNullOrWhiteSpace(renterPhoneTail)
-                        || !routeResultsByShipmentId.TryGetValue(shipment.Id, out var route)
-                        || ShouldFallbackToCreatorPhone(route))
+                    .Where(shipment => !routeResultsByShipmentId.TryGetValue(shipment.Id, out var route)
+                        || ShouldFallbackToAlternativePhone(route))
                     .ToList();
 
-                if (fallbackShipments.Count > 0)
+                if (fallbackShipments.Count == 0)
                 {
-                    var fallbackIds = fallbackShipments.Select(s => s.Id).ToHashSet();
-                    routeResults.RemoveAll(route => fallbackIds.Contains(route.ShipmentId));
-
-                    var creatorQueryItems = BuildSfRouteQueryItems(fallbackShipments, creatorPhoneTail!);
-                    routeResults.AddRange(await _sfExpressService.QueryRoutesAsync(creatorQueryItems, forceRefresh, ct));
+                    continue;
                 }
+
+                var fallbackIds = fallbackShipments.Select(s => s.Id).ToHashSet();
+                routeResults.RemoveAll(route => fallbackIds.Contains(route.ShipmentId));
+
+                var fallbackQueryItems = BuildSfRouteQueryItems(fallbackShipments, fallbackPhoneTail);
+                routeResults.AddRange(await _sfExpressService.QueryRoutesAsync(fallbackQueryItems, forceRefresh, ct));
             }
 
             if (routeResults.Count == 0)
@@ -1472,7 +1601,7 @@ namespace AuditIt.Api.Services
                         ShipmentId = shipment.Id,
                         TrackingNumber = shipment.TrackingNumber ?? string.Empty,
                         Queryable = false,
-                        Error = "租客手机号和建单人钉钉手机号均不足 4 位，无法按顺丰运单号+手机号后四位查询。"
+                        Error = "租客、建单人和 Admin 手机号均不足 4 位，无法按顺丰运单号+手机号后四位查询。"
                     });
                 }
             }
@@ -1620,6 +1749,28 @@ namespace AuditIt.Api.Services
             }
 
             var now = DateTime.UtcNow;
+            var shouldCreateRepairOccupancy = dto.RepairOccupancy;
+            if (shouldCreateRepairOccupancy
+                && dto.Condition is not ReturnCondition.MinorDamage and not ReturnCondition.MajorDamage)
+            {
+                return (null, "仅损坏商品可以登记维修占用。");
+            }
+
+            DateTime? repairExpectedReturnDate = null;
+            if (shouldCreateRepairOccupancy)
+            {
+                if (!dto.RepairExpectedReturnDate.HasValue)
+                {
+                    return (null, "请选择维修占用结束日期。");
+                }
+
+                repairExpectedReturnDate = RentalDateRules.ToBusinessDate(dto.RepairExpectedReturnDate.Value);
+                if (repairExpectedReturnDate.Value < RentalDateRules.Today(now))
+                {
+                    return (null, "维修占用结束日期不能早于今天。");
+                }
+            }
+
             foreach (var rentalItem in targets)
             {
                 rentalItem.ReturnedAt = now;
@@ -1633,10 +1784,17 @@ namespace AuditIt.Api.Services
 
                 rentalItem.Item.Status = dto.Condition == ReturnCondition.Lost
                     ? ItemStatus.SuspectedMissing
-                    : ItemStatus.InStock;
-                rentalItem.Item.CurrentDestination = null;
+                    : shouldCreateRepairOccupancy
+                        ? ItemStatus.LoanedOut
+                        : ItemStatus.InStock;
+                rentalItem.Item.CurrentDestination = shouldCreateRepairOccupancy ? "损坏维修" : null;
+                rentalItem.Item.ExpectedReturnDate = repairExpectedReturnDate;
                 rentalItem.Item.LastUpdated = now;
                 LogAudit(rentalItem.Item, AuditAction.RentalReturned, rental.RentalNumber, currentUser, dto.Notes);
+                if (shouldCreateRepairOccupancy)
+                {
+                    LogManualLoanAudit(rentalItem.Item, currentUser, "损坏维修");
+                }
             }
 
             var allReturned = rental.Items.All(ri => ri.ReturnedAt != null);
@@ -1664,7 +1822,9 @@ namespace AuditIt.Api.Services
                 rental,
                 allReturned ? "已全部归还" : "部分归还",
                 currentUser,
-                $"归还 {targets.Count} 件");
+                shouldCreateRepairOccupancy
+                    ? $"归还 {targets.Count} 件，已转为损坏维修占用至 {repairExpectedReturnDate:yyyy-MM-dd}"
+                    : $"归还 {targets.Count} 件");
 
             return (await GetByIdAsync(rentalId), null);
         }
@@ -2890,6 +3050,22 @@ namespace AuditIt.Api.Services
             });
         }
 
+        private void LogManualLoanAudit(Item item, string? user, string destination)
+        {
+            _context.AuditLogs.Add(new AuditLog
+            {
+                Timestamp = DateTime.UtcNow,
+                Action = AuditAction.Outbound,
+                ItemId = item.Id,
+                ItemShortId = item.ShortId,
+                ItemName = item.ItemDefinition?.Name ?? string.Empty,
+                WarehouseId = item.WarehouseId,
+                WarehouseName = item.Warehouse?.Name ?? string.Empty,
+                User = user ?? "Unknown User",
+                Destination = destination
+            });
+        }
+
         private static bool HasOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
 
@@ -2912,8 +3088,33 @@ namespace AuditIt.Api.Services
         private static bool HasDeliveredOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound && s.DeliveredAt.HasValue);
 
-        private static bool HasDeliveredInboundShipment(Rental rental) =>
-            rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && s.DeliveredAt.HasValue);
+        private static bool HasDeliveredInboundShipmentForAllOpenItems(Rental rental)
+        {
+            var openItems = rental.Items
+                .Where(item => !item.ReturnedAt.HasValue)
+                .ToList();
+            if (openItems.Count == 0)
+            {
+                return true;
+            }
+
+            var deliveredInboundShipments = rental.Shipments
+                .Where(shipment => shipment.Direction == ShipmentDirection.Inbound && shipment.DeliveredAt.HasValue)
+                .ToList();
+
+            // An empty link set is the legacy/whole-rental representation. Keep it
+            // covering the whole rental so existing shipments retain their meaning.
+            if (deliveredInboundShipments.Any(shipment => shipment.RentalItems.Count == 0))
+            {
+                return true;
+            }
+
+            var coveredItemIds = deliveredInboundShipments
+                .SelectMany(shipment => shipment.RentalItems.Select(link => link.RentalItemId))
+                .ToHashSet();
+
+            return openItems.All(item => coveredItemIds.Contains(item.Id));
+        }
 
         private static bool HasPendingInboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound && !s.DeliveredAt.HasValue);
@@ -2939,6 +3140,26 @@ namespace AuditIt.Api.Services
             return ResolvePhoneTail(mobile);
         }
 
+        private async Task<IReadOnlyList<string>> ResolveAdminPhoneTailsAsync(CancellationToken ct)
+        {
+            var mobiles = await _context.UserRoles
+                .AsNoTracking()
+                .Where(userRole => userRole.Role != null
+                    && userRole.Role.Name == BuiltInRoles.Admin
+                    && userRole.User != null
+                    && userRole.User.Status == UserStatus.Active)
+                .OrderBy(userRole => userRole.User!.Name)
+                .Select(userRole => userRole.User!.Mobile)
+                .ToListAsync(ct);
+
+            return mobiles
+                .Select(ResolvePhoneTail)
+                .Where(phoneTail => !string.IsNullOrWhiteSpace(phoneTail))
+                .Select(phoneTail => phoneTail!)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        }
+
         private static List<SfRouteQueryItem> BuildSfRouteQueryItems(
             IEnumerable<RentalShipment> shipments,
             string phoneTail) =>
@@ -2950,7 +3171,7 @@ namespace AuditIt.Api.Services
                 })
                 .ToList();
 
-        private static bool ShouldFallbackToCreatorPhone(SfRouteQueryResult route) =>
+        private static bool ShouldFallbackToAlternativePhone(SfRouteQueryResult route) =>
             route.Routes.Count == 0;
 
         private static string? ResolvePhoneTail(string? phone)
@@ -3078,7 +3299,7 @@ namespace AuditIt.Api.Services
                 ReminderType.RentalDueSoon or ReminderType.RentalOverdue =>
                     HasInboundShipment(rental) || !rental.Items.Any(i => i.ReturnedAt == null),
                 ReminderType.RentalReturnUnsigned =>
-                    HasDeliveredInboundShipment(rental)
+                    HasDeliveredInboundShipmentForAllOpenItems(rental)
                     || (rental.Status == RentalStatus.Returned && !HasInboundShipment(rental)),
                 _ => false
             };
@@ -3370,7 +3591,14 @@ namespace AuditIt.Api.Services
             DeliveredAt = shipment.DeliveredAt,
             ShippingFee = shipment.ShippingFee,
             Notes = shipment.Notes,
-            CreatedBy = shipment.CreatedBy
+            CreatedBy = shipment.CreatedBy,
+            Items = shipment.RentalItems.Select(link => new RentalShipmentItemDto
+            {
+                RentalItemId = link.RentalItemId,
+                ItemId = link.RentalItem?.ItemId,
+                ItemShortIdSnapshot = link.RentalItem?.ItemShortIdSnapshot ?? string.Empty,
+                ItemNameSnapshot = link.RentalItem?.ItemNameSnapshot ?? string.Empty,
+            }).ToList()
         };
     }
 }

@@ -49,5 +49,7 @@ namespace AuditIt.Api.Models
 
         [StringLength(500)]
         public string? ReturnNotes { get; set; }
+
+        public virtual ICollection<RentalShipmentItem> ShipmentLinks { get; set; } = new List<RentalShipmentItem>();
     }
 }
