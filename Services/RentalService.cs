@@ -1518,6 +1518,26 @@ namespace AuditIt.Api.Services
             return (await GetByIdAsync(rentalId), null);
         }
 
+        public async Task<(RentalDto? rental, string? error)> UpdateShipmentAsync(Guid rentalId, int shipmentId, UpdateShipmentDto dto, string? currentUser)
+        {
+            var shipment = await _context.RentalShipments
+                .FirstOrDefaultAsync(s => s.Id == shipmentId && s.RentalId == rentalId);
+            if (shipment == null)
+            {
+                return (null, "物流记录不存在。");
+            }
+
+            var rental = await _context.Rentals.FirstAsync(r => r.Id == rentalId);
+            shipment.ShippingFee = dto.ShippingFee;
+            rental.UpdatedAt = DateTime.UtcNow;
+            rental.UpdatedBy = currentUser;
+
+            await _context.SaveChangesAsync();
+            await NotifyStatusChangeAsync(rental, "物流运费已更新", currentUser);
+
+            return (await GetByIdAsync(rentalId), null);
+        }
+
         public async Task<(SfRouteSyncResultDto? result, string? error)> SyncSfRoutesAsync(
             Guid rentalId,
             bool forceRefresh,
@@ -1739,19 +1759,43 @@ namespace AuditIt.Api.Services
                 return (null, "租赁尚未发货，请直接取消租赁。");
             }
 
-            var targets = (dto.RentalItemIds == null || dto.RentalItemIds.Count == 0)
+            var perItemReturns = dto.Items ?? new List<ReturnRentalItemDto>();
+            var conditionByRentalItemId = new Dictionary<int, ReturnCondition>();
+            var hasPerItemConditions = perItemReturns.Count > 0;
+            if (hasPerItemConditions)
+            {
+                foreach (var item in perItemReturns)
+                {
+                    if (!conditionByRentalItemId.TryAdd(item.RentalItemId, item.Condition ?? dto.Condition ?? ReturnCondition.Good))
+                    {
+                        return (null, "同一件商品不能重复登记归还状态。");
+                    }
+                }
+            }
+
+            var targetIds = hasPerItemConditions
+                ? conditionByRentalItemId.Keys.ToHashSet()
+                : dto.RentalItemIds?.ToHashSet();
+            var targets = targetIds == null || targetIds.Count == 0
                 ? rental.Items.Where(ri => ri.ReturnedAt == null).ToList()
-                : rental.Items.Where(ri => dto.RentalItemIds.Contains(ri.Id) && ri.ReturnedAt == null).ToList();
+                : rental.Items.Where(ri => targetIds.Contains(ri.Id) && ri.ReturnedAt == null).ToList();
 
             if (targets.Count == 0)
             {
                 return (null, "没有可归还的商品。");
             }
 
+            if (hasPerItemConditions && targets.Count != conditionByRentalItemId.Count)
+            {
+                return (null, "部分归还商品不存在或已归还。");
+            }
+
             var now = DateTime.UtcNow;
             var shouldCreateRepairOccupancy = dto.RepairOccupancy;
             if (shouldCreateRepairOccupancy
-                && dto.Condition is not ReturnCondition.MinorDamage and not ReturnCondition.MajorDamage)
+                && !targets.Any(ri => (conditionByRentalItemId.TryGetValue(ri.Id, out var condition)
+                    ? condition
+                    : dto.Condition ?? ReturnCondition.Good) is ReturnCondition.MinorDamage or ReturnCondition.MajorDamage))
             {
                 return (null, "仅损坏商品可以登记维修占用。");
             }
@@ -1773,8 +1817,14 @@ namespace AuditIt.Api.Services
 
             foreach (var rentalItem in targets)
             {
+                var condition = conditionByRentalItemId.TryGetValue(rentalItem.Id, out var perItemCondition)
+                    ? perItemCondition
+                    : dto.Condition ?? ReturnCondition.Good;
+                var itemNeedsRepairOccupancy = shouldCreateRepairOccupancy
+                    && condition is ReturnCondition.MinorDamage or ReturnCondition.MajorDamage;
+
                 rentalItem.ReturnedAt = now;
-                rentalItem.ReturnCondition = dto.Condition;
+                rentalItem.ReturnCondition = condition;
                 rentalItem.ReturnNotes = NormalizeNullableText(dto.Notes);
 
                 if (rentalItem.Item == null)
@@ -1782,16 +1832,16 @@ namespace AuditIt.Api.Services
                     continue;
                 }
 
-                rentalItem.Item.Status = dto.Condition == ReturnCondition.Lost
+                rentalItem.Item.Status = condition == ReturnCondition.Lost
                     ? ItemStatus.SuspectedMissing
-                    : shouldCreateRepairOccupancy
+                    : itemNeedsRepairOccupancy
                         ? ItemStatus.LoanedOut
                         : ItemStatus.InStock;
-                rentalItem.Item.CurrentDestination = shouldCreateRepairOccupancy ? "损坏维修" : null;
-                rentalItem.Item.ExpectedReturnDate = repairExpectedReturnDate;
+                rentalItem.Item.CurrentDestination = itemNeedsRepairOccupancy ? "损坏维修" : null;
+                rentalItem.Item.ExpectedReturnDate = itemNeedsRepairOccupancy ? repairExpectedReturnDate : null;
                 rentalItem.Item.LastUpdated = now;
                 LogAudit(rentalItem.Item, AuditAction.RentalReturned, rental.RentalNumber, currentUser, dto.Notes);
-                if (shouldCreateRepairOccupancy)
+                if (itemNeedsRepairOccupancy)
                 {
                     LogManualLoanAudit(rentalItem.Item, currentUser, "损坏维修");
                 }
@@ -1823,7 +1873,7 @@ namespace AuditIt.Api.Services
                 allReturned ? "已全部归还" : "部分归还",
                 currentUser,
                 shouldCreateRepairOccupancy
-                    ? $"归还 {targets.Count} 件，已转为损坏维修占用至 {repairExpectedReturnDate:yyyy-MM-dd}"
+                    ? $"归还 {targets.Count} 件，其中 {targets.Count(ri => (conditionByRentalItemId.TryGetValue(ri.Id, out var condition) ? condition : dto.Condition ?? ReturnCondition.Good) is ReturnCondition.MinorDamage or ReturnCondition.MajorDamage)} 件已转为损坏维修占用至 {repairExpectedReturnDate:yyyy-MM-dd}"
                     : $"归还 {targets.Count} 件");
 
             return (await GetByIdAsync(rentalId), null);

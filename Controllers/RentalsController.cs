@@ -134,6 +134,16 @@ namespace AuditIt.Api.Controllers
             return Ok(rental);
         }
 
+        [HttpPut("{id:guid}/shipments/{shipmentId:int}")]
+        [RequirePermission(PermissionCodes.RentalShip)]
+        public async Task<ActionResult<RentalDto>> UpdateShipment(Guid id, int shipmentId, [FromBody] UpdateShipmentDto dto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+            var (rental, error) = await _rentals.UpdateShipmentAsync(id, shipmentId, dto, CurrentUser());
+            if (error != null) return BadRequest(error);
+            return Ok(rental);
+        }
+
         [HttpPost("{id:guid}/return")]
         [RequirePermission(PermissionCodes.RentalReturn)]
         public async Task<ActionResult<RentalDto>> Return(Guid id, [FromBody] ReturnRentalDto dto)

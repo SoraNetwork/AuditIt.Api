@@ -151,6 +151,85 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task ReturnAsync_AcceptsPerItemConditions_AndOnlyOccupiesDamagedItemsForRepair()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var today = BusinessToday();
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var damagedItem = new Item { Id = Guid.NewGuid(), ShortId = "CAM-DAMAGE-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.LoanedOut };
+        var goodItem = new Item { Id = Guid.NewGuid(), ShortId = "CAM-GOOD-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.LoanedOut };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990101-0002",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Active,
+            StartDate = today.AddDays(-3),
+            ExpectedShipDate = today.AddDays(-4),
+            ExpectedEndDate = today.AddDays(2)
+        };
+        var damagedRentalItem = new RentalItem { Item = damagedItem, ItemShortIdSnapshot = damagedItem.ShortId, ItemNameSnapshot = definition.Name };
+        var goodRentalItem = new RentalItem { Item = goodItem, ItemShortIdSnapshot = goodItem.ShortId, ItemNameSnapshot = definition.Name };
+        rental.Items.Add(damagedRentalItem);
+        rental.Items.Add(goodRentalItem);
+        rental.Shipments.Add(new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = today.AddDays(-4)
+        });
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var service = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            Array.Empty<INotificationChannel>(),
+            new StubSfExpressService(),
+            new StubSettlementService());
+
+        var repairUntil = today.AddDays(5);
+        var (result, error) = await service.ReturnAsync(rental.Id, new ReturnRentalDto
+        {
+            Items = new List<ReturnRentalItemDto>
+            {
+                new() { RentalItemId = damagedRentalItem.Id, Condition = ReturnCondition.MinorDamage },
+                new() { RentalItemId = goodRentalItem.Id, Condition = ReturnCondition.Good }
+            },
+            RepairOccupancy = true,
+            RepairExpectedReturnDate = repairUntil
+        }, "TestUser");
+
+        Assert.Null(error);
+        Assert.NotNull(result);
+        Assert.Equal(ReturnCondition.MinorDamage, result!.Items.Single(item => item.ItemId == damagedItem.Id).ReturnCondition);
+        Assert.Equal(ReturnCondition.Good, result.Items.Single(item => item.ItemId == goodItem.Id).ReturnCondition);
+
+        var savedDamagedItem = await context.Items.SingleAsync(item => item.Id == damagedItem.Id);
+        Assert.Equal(ItemStatus.LoanedOut, savedDamagedItem.Status);
+        Assert.Equal("损坏维修", savedDamagedItem.CurrentDestination);
+        Assert.Equal(repairUntil, savedDamagedItem.ExpectedReturnDate);
+
+        var savedGoodItem = await context.Items.SingleAsync(item => item.Id == goodItem.Id);
+        Assert.Equal(ItemStatus.InStock, savedGoodItem.Status);
+        Assert.Null(savedGoodItem.CurrentDestination);
+        Assert.Null(savedGoodItem.ExpectedReturnDate);
+    }
+
+    [Fact]
     public async Task InboundShipment_CanBeLinkedToSelectedRentalItems_AndLegacyShipmentRemainsUnassigned()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

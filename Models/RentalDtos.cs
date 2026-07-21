@@ -344,10 +344,27 @@ namespace AuditIt.Api.Models
         public DateTime? DeliveredAt { get; set; }
     }
 
+    public class UpdateShipmentDto
+    {
+        [Range(0, double.MaxValue)]
+        public decimal? ShippingFee { get; set; }
+    }
+
+    public class ReturnRentalItemDto
+    {
+        [Required]
+        public int RentalItemId { get; set; }
+
+        public ReturnCondition? Condition { get; set; }
+    }
+
     public class ReturnRentalDto
     {
         // If null/empty, return all outstanding rental items.
         public List<int>? RentalItemIds { get; set; }
+
+        // Per-item condition takes precedence over the legacy global Condition.
+        public List<ReturnRentalItemDto> Items { get; set; } = new();
         public ReturnCondition? Condition { get; set; }
         [StringLength(500)]
         public string? Notes { get; set; }
