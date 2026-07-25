@@ -1538,6 +1538,119 @@ namespace AuditIt.Api.Services
             return (await GetByIdAsync(rentalId), null);
         }
 
+        public async Task<(RentalDto? rental, string? error)> DeleteShipmentAsync(
+            Guid rentalId,
+            int shipmentId,
+            string? currentUser)
+        {
+            var rental = await _context.Rentals
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.ItemDefinition)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.Warehouse)
+                .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
+                .FirstOrDefaultAsync(r => r.Id == rentalId);
+
+            if (rental == null)
+            {
+                return (null, "租赁单不存在。");
+            }
+
+            var shipment = rental.Shipments.FirstOrDefault(s => s.Id == shipmentId);
+            if (shipment == null)
+            {
+                return (null, "物流记录不存在。");
+            }
+
+            var remainingShipments = rental.Shipments
+                .Where(s => s.Id != shipmentId)
+                .ToList();
+            var hasRemainingOutbound = remainingShipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+            var hasRemainingInbound = remainingShipments.Any(s => s.Direction == ShipmentDirection.Inbound);
+
+            if (shipment.Direction == ShipmentDirection.Outbound
+                && !IsRenewal(rental)
+                && !hasRemainingOutbound
+                && hasRemainingInbound
+                && !IsClosedStatus(rental.Status))
+            {
+                return (null, "该发货物流之后仍有回货物流，请先删除相关回货物流。");
+            }
+
+            var now = DateTime.UtcNow;
+            var shipmentSummary = BuildShipmentSummary(shipment.Carrier, shipment.TrackingNumber);
+            var deletedShippingFee = shipment.ShippingFee ?? 0;
+            var remainingShippingFee = remainingShipments.Sum(s => s.ShippingFee ?? 0);
+
+            rental.Shipments.Remove(shipment);
+            _context.RentalShipments.Remove(shipment);
+
+            if (!IsClosedStatus(rental.Status))
+            {
+                if (!IsRenewal(rental) && !hasRemainingOutbound)
+                {
+                    rental.Status = RentalStatus.Pending;
+
+                    foreach (var rentalItem in rental.Items.Where(item => !item.ReturnedAt.HasValue))
+                    {
+                        var item = rentalItem.Item;
+                        if (item == null
+                            || item.Status != ItemStatus.LoanedOut
+                            || !string.Equals(
+                                item.CurrentDestination,
+                                $"租赁 {rental.RentalNumber}",
+                                StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+
+                        item.Status = ItemStatus.InStock;
+                        item.CurrentDestination = null;
+                        item.LastUpdated = now;
+                        LogAudit(
+                            item,
+                            AuditAction.RentalUpdated,
+                            rental.RentalNumber,
+                            currentUser,
+                            $"删除误挂发货物流 {shipmentSummary}，恢复在库");
+                    }
+                }
+                else
+                {
+                    rental.Status = !hasRemainingInbound
+                        && RentalDateRules.IsOverdue(rental.ExpectedEndDate, now)
+                            ? RentalStatus.Overdue
+                            : RentalStatus.Active;
+                }
+            }
+
+            var shipmentReminders = await _context.Reminders
+                .Where(reminder => reminder.RelatedEntityType == "RentalShipment"
+                    && reminder.RelatedEntityId == shipmentId.ToString()
+                    && reminder.DismissedAt == null)
+                .ToListAsync();
+            foreach (var reminder in shipmentReminders)
+            {
+                reminder.DismissedAt = now;
+                reminder.DismissedBy = currentUser;
+            }
+
+            rental.UpdatedAt = now;
+            rental.UpdatedBy = currentUser;
+
+            await _context.SaveChangesAsync();
+            await NotifyStatusChangeAsync(
+                rental,
+                shipment.Direction == ShipmentDirection.Outbound ? "已删除发货物流" : "已删除回货物流",
+                currentUser,
+                $"物流：{shipmentSummary}；删除运费：{FormatMoney(deletedShippingFee)}；运费合计已重算为 {FormatMoney(remainingShippingFee)}");
+
+            return (await GetByIdAsync(rentalId), null);
+        }
+
         public async Task<(SfRouteSyncResultDto? result, string? error)> SyncSfRoutesAsync(
             Guid rentalId,
             bool forceRefresh,
@@ -1973,6 +2086,62 @@ namespace AuditIt.Api.Services
 
             var desiredDefinitionIds = requestedDefinitionIds.Where(id => id > 0).ToList();
             var distinctDefinitionIds = desiredDefinitionIds.Distinct().ToList();
+            var requestedPrices = dto.ItemPrices ?? new List<CreateRentalItemPriceDto>();
+            var hasItemPrices = requestedPrices.Count > 0;
+            var itemPricesByItemId = new Dictionary<Guid, decimal>();
+            var itemPricesByDefinitionId = new Dictionary<int, Queue<decimal>>();
+            if (hasItemPrices)
+            {
+                var expectedItemIds = desiredItemIds.ToHashSet();
+                var expectedDefinitionCounts = desiredDefinitionIds
+                    .GroupBy(definitionId => definitionId)
+                    .ToDictionary(group => group.Key, group => group.Count());
+                if (requestedPrices.Count != expectedItemIds.Count + desiredDefinitionIds.Count)
+                {
+                    return new RentalItemsUpdateResult { Error = "每件租赁物品都必须填写对应金额。" };
+                }
+
+                foreach (var price in requestedPrices)
+                {
+                    var hasItemId = !string.IsNullOrWhiteSpace(price.ItemId);
+                    if (hasItemId == price.ItemDefinitionId.HasValue)
+                    {
+                        return new RentalItemsUpdateResult { Error = "每条金额必须且只能对应具体物品或物品定义。" };
+                    }
+
+                    if (hasItemId)
+                    {
+                        if (!Guid.TryParse(price.ItemId, out var itemId)
+                            || !expectedItemIds.Contains(itemId)
+                            || !itemPricesByItemId.TryAdd(itemId, price.PerItemPrice))
+                        {
+                            return new RentalItemsUpdateResult { Error = "具体物品金额与当前选择不匹配。" };
+                        }
+                        continue;
+                    }
+
+                    var definitionId = price.ItemDefinitionId!.Value;
+                    if (!expectedDefinitionCounts.ContainsKey(definitionId))
+                    {
+                        return new RentalItemsUpdateResult { Error = "物品定义金额与当前选择不匹配。" };
+                    }
+
+                    if (!itemPricesByDefinitionId.TryGetValue(definitionId, out var prices))
+                    {
+                        prices = new Queue<decimal>();
+                        itemPricesByDefinitionId[definitionId] = prices;
+                    }
+                    prices.Enqueue(price.PerItemPrice);
+                }
+
+                if (itemPricesByItemId.Count != expectedItemIds.Count
+                    || expectedDefinitionCounts.Any(expected =>
+                        !itemPricesByDefinitionId.TryGetValue(expected.Key, out var prices)
+                        || prices.Count != expected.Value))
+                {
+                    return new RentalItemsUpdateResult { Error = "每件租赁物品都必须填写对应金额。" };
+                }
+            }
 
             var rental = await _context.Rentals
                 .Include(r => r.Renter)
@@ -2081,7 +2250,10 @@ namespace AuditIt.Api.Services
                 removeRentalItems.AddRange(currentItems.Skip(keepCount));
             }
 
-            if (addItemIds.Count == 0 && addDefinitionIds.Count == 0 && removeRentalItems.Count == 0)
+            if (addItemIds.Count == 0
+                && addDefinitionIds.Count == 0
+                && removeRentalItems.Count == 0
+                && !hasItemPrices)
             {
                 return new RentalItemsUpdateResult { Rental = await GetByIdAsync(rentalId) };
             }
@@ -2132,6 +2304,32 @@ namespace AuditIt.Api.Services
                 .Where(i => addItemIds.Contains(i.Id))
                 .ToList();
 
+            if (hasItemPrices)
+            {
+                foreach (var rentalItem in activeRentalItems.Where(item =>
+                    item.ItemId.HasValue && desiredSet.Contains(item.ItemId.Value)))
+                {
+                    rentalItem.PerItemPrice = itemPricesByItemId[rentalItem.ItemId!.Value];
+                }
+
+                foreach (var (definitionId, currentItems) in currentUncertainByDefinition)
+                {
+                    var keepCount = desiredDefinitionCounts.TryGetValue(definitionId, out var desiredCount)
+                        ? desiredCount
+                        : 0;
+                    if (keepCount == 0)
+                    {
+                        continue;
+                    }
+
+                    var prices = itemPricesByDefinitionId[definitionId];
+                    foreach (var rentalItem in currentItems.Take(keepCount))
+                    {
+                        rentalItem.PerItemPrice = prices.Dequeue();
+                    }
+                }
+            }
+
             foreach (var rentalItem in removeRentalItems)
             {
                 if (hasRentalStarted)
@@ -2173,7 +2371,8 @@ namespace AuditIt.Api.Services
                     ItemId = item.Id,
                     ItemShortIdSnapshot = item.ShortId,
                     ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty,
-                    ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks
+                    ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks,
+                    PerItemPrice = hasItemPrices ? itemPricesByItemId[item.Id] : null
                 });
 
                 if (hasRentalStarted)
@@ -2196,8 +2395,14 @@ namespace AuditIt.Api.Services
                     ItemDefinitionId = definitionId,
                     ItemShortIdSnapshot = "待选择",
                     ItemNameSnapshot = definition.Name,
-                    ListingRemarksSnapshot = null
+                    ListingRemarksSnapshot = null,
+                    PerItemPrice = hasItemPrices ? itemPricesByDefinitionId[definitionId].Dequeue() : null
                 });
+            }
+
+            if (hasItemPrices)
+            {
+                rental.TotalPrice = requestedPrices.Sum(price => price.PerItemPrice);
             }
 
             rental.UpdatedAt = now;
@@ -2220,6 +2425,11 @@ namespace AuditIt.Api.Services
             if (removeRentalItems.Count > 0)
             {
                 summaryParts.Add($"移出 {removeRentalItems.Count} 件");
+            }
+
+            if (hasItemPrices)
+            {
+                summaryParts.Add($"金额合计更新为 {FormatMoney(rental.TotalPrice)}");
             }
 
             await NotifyStatusChangeAsync(
@@ -2272,10 +2482,23 @@ namespace AuditIt.Api.Services
                 }
             }
 
+            var activeItems = rental.Items.Where(item => !item.ReturnedAt.HasValue).ToList();
+            var recalculatedTotal = activeItems.Count > 0
+                && activeItems.All(item => item.PerItemPrice.HasValue);
+            if (recalculatedTotal)
+            {
+                rental.TotalPrice = activeItems.Sum(item => item.PerItemPrice!.Value);
+            }
+
             rental.UpdatedAt = DateTime.UtcNow;
             rental.UpdatedBy = currentUser;
 
             await _context.SaveChangesAsync();
+            await NotifyStatusChangeAsync(
+                rental,
+                "租赁物品信息已更新",
+                currentUser,
+                recalculatedTotal ? $"金额合计已重算为 {FormatMoney(rental.TotalPrice)}" : null);
 
             return (await GetByIdAsync(rentalId), null);
         }

@@ -163,7 +163,7 @@ namespace AuditIt.Api.Controllers
                     rangeStart,
                     rangeEnd))
                 .ToList();
-            var occupiedSpecificItemIds = overlappingRentals
+            var specificRentalPeriodsByItemId = overlappingRentals
                 .SelectMany(r => r.Items.Select(ri => new { Rental = r, RentalItem = ri }))
                 .Where(entry => entry.RentalItem.ItemId.HasValue
                     && entry.RentalItem.Item != null
@@ -173,15 +173,23 @@ namespace AuditIt.Api.Controllers
                         RentalDateRules.OccupancyEndDate(entry.Rental, entry.RentalItem, rangeEnd),
                         rangeStart,
                         rangeEnd))
-                .Select(entry => entry.RentalItem.ItemId!.Value)
-                .ToHashSet();
+                .Select(entry => new
+                {
+                    ItemId = entry.RentalItem.ItemId!.Value,
+                    StartDay = RentalDateRules.OccupancyStartDate(entry.Rental),
+                    EndDay = RentalDateRules.OccupancyEndDate(entry.Rental, entry.RentalItem, rangeEnd)
+                })
+                .GroupBy(entry => entry.ItemId)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(entry => (StartDay: entry.StartDay.Date, EndDay: entry.EndDay.Date)).ToList());
 
             var manualLoanCandidates = await _context.Items
                 .Where(i => i.ItemDefinitionId == id && i.Status == ItemStatus.LoanedOut)
                 .Where(i => i.CurrentDestination == null || !i.CurrentDestination.StartsWith("租赁 "))
-                .Where(i => !occupiedSpecificItemIds.Contains(i.Id))
                 .Select(i => new
                 {
+                    i.Id,
                     i.ShortId,
                     i.LastUpdated,
                     i.ExpectedReturnDate,
@@ -315,6 +323,44 @@ namespace AuditIt.Api.Controllers
                 }
             }
 
+            void AddManualLoanSegments(
+                Guid itemId,
+                DateTime startDay,
+                DateTime endDay,
+                ItemDefinitionDailyOccupancyDto detail)
+            {
+                var clippedStart = startDay.Date < rangeStart.Date ? rangeStart.Date : startDay.Date;
+                var clippedEnd = endDay.Date > rangeEnd.Date ? rangeEnd.Date : endDay.Date;
+                if (clippedEnd < clippedStart)
+                {
+                    return;
+                }
+
+                specificRentalPeriodsByItemId.TryGetValue(itemId, out var rentalPeriods);
+                DateTime? freeSegmentStart = null;
+
+                for (var day = clippedStart; day <= clippedEnd; day = day.AddDays(1))
+                {
+                    var occupiedByRental = rentalPeriods?.Any(period => period.StartDay <= day && period.EndDay >= day) == true;
+                    if (!occupiedByRental)
+                    {
+                        freeSegmentStart ??= day;
+                        continue;
+                    }
+
+                    if (freeSegmentStart.HasValue)
+                    {
+                        AddSegment(freeSegmentStart.Value, day.AddDays(-1), detail);
+                        freeSegmentStart = null;
+                    }
+                }
+
+                if (freeSegmentStart.HasValue)
+                {
+                    AddSegment(freeSegmentStart.Value, clippedEnd, detail);
+                }
+            }
+
             foreach (var rental in overlappingRentals)
             {
                 foreach (var rentalItem in rental.Items.Where(ri =>
@@ -335,7 +381,8 @@ namespace AuditIt.Api.Controllers
 
             foreach (var manualLoan in manualLoans.OrderBy(loan => loan.ShortId))
             {
-                AddSegment(
+                AddManualLoanSegments(
+                    manualLoan.Id,
                     RentalDateRules.ToBusinessDate(manualLoan.OutboundAt ?? manualLoan.LastUpdated),
                     ResolveManualLoanEndDate(manualLoan.ExpectedReturnDate, rangeEnd),
                     new ItemDefinitionDailyOccupancyDto

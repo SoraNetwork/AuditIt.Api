@@ -237,25 +237,29 @@ namespace AuditIt.Api.Controllers
                 .OrderByDescending(log => log.Timestamp)
                 .Select(log => (DateTime?)log.Timestamp)
                 .FirstOrDefaultAsync();
-            var hasSpecificRentalBusy = busy.Any(period => !period.IsManualLoan && !period.IsUncertain);
             var isManualLoan = item.Status == ItemStatus.LoanedOut
                 && outboundAt.HasValue
-                && (item.CurrentDestination == null || !item.CurrentDestination.StartsWith("租赁 ", StringComparison.Ordinal))
-                && !hasSpecificRentalBusy;
+                && (item.CurrentDestination == null || !item.CurrentDestination.StartsWith("租赁 ", StringComparison.Ordinal));
 
             if (isManualLoan)
             {
                 var loanStart = RentalDateRules.ToBusinessDate(outboundAt ?? item.LastUpdated);
+                var loanEnd = ResolveManualLoanEndDate(item.ExpectedReturnDate, rangeEnd);
 
-                if (loanStart <= rangeEnd)
+                if (loanStart <= rangeEnd && loanEnd >= rangeStart)
                 {
-                    busy.Add(new ItemBusyPeriodDto
+                    foreach (var availablePeriod in SubtractSpecificRentalPeriods(
+                        loanStart < rangeStart ? rangeStart : loanStart,
+                        loanEnd > rangeEnd ? rangeEnd : loanEnd,
+                        busy.Where(period => !period.IsManualLoan && !period.IsUncertain)))
                     {
-                        RentalId = Guid.Empty,
-                        RentalNumber = "普通借出",
-                        RentalStatus = RentalStatus.Active,
-                        StartAt = loanStart < rangeStart ? rangeStart : loanStart,
-                            EndAt = ResolveManualLoanEndDate(item.ExpectedReturnDate, rangeEnd),
+                        busy.Add(new ItemBusyPeriodDto
+                        {
+                            RentalId = Guid.Empty,
+                            RentalNumber = "普通借出",
+                            RentalStatus = RentalStatus.Active,
+                            StartAt = availablePeriod.StartAt,
+                            EndAt = availablePeriod.EndAt,
                             IsOpen = !item.ExpectedReturnDate.HasValue,
                             IsUncertain = false,
                             IsManualLoan = true,
@@ -264,6 +268,7 @@ namespace AuditIt.Api.Controllers
                                 : null,
                             OccupancyStatus = ItemOccupancyStatus.Scheduled
                         });
+                    }
                 }
             }
 
@@ -789,6 +794,46 @@ namespace AuditIt.Api.Controllers
             }
 
             return free;
+        }
+
+        private static IEnumerable<(DateTime StartAt, DateTime EndAt)> SubtractSpecificRentalPeriods(
+            DateTime startAt,
+            DateTime endAt,
+            IEnumerable<ItemBusyPeriodDto> rentalPeriods)
+        {
+            if (endAt < startAt)
+            {
+                yield break;
+            }
+
+            var cursor = startAt;
+            foreach (var period in rentalPeriods
+                .Where(period => period.EndAt >= startAt && period.StartAt <= endAt)
+                .OrderBy(period => period.StartAt)
+                .ThenBy(period => period.EndAt))
+            {
+                if (period.EndAt < cursor)
+                {
+                    continue;
+                }
+
+                if (period.StartAt > cursor)
+                {
+                    yield return (cursor, period.StartAt.AddTicks(-1));
+                }
+
+                if (period.EndAt >= cursor)
+                {
+                    cursor = period.EndAt.AddTicks(1);
+                }
+
+                if (cursor > endAt)
+                {
+                    yield break;
+                }
+            }
+
+            yield return (cursor, endAt);
         }
 
         private static DateTime OccupancyStartDate(Rental rental) =>

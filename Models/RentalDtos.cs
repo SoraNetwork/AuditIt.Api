@@ -226,6 +226,11 @@ namespace AuditIt.Api.Models
 
         public List<int> ItemDefinitionIds { get; set; } = new();
 
+        // When supplied, prices must cover every selected concrete item or
+        // item-definition placeholder. The service updates the item selection,
+        // the corresponding per-item prices, and TotalPrice atomically.
+        public List<CreateRentalItemPriceDto> ItemPrices { get; set; } = new();
+
         public bool AllowScheduleConflict { get; set; }
     }
 

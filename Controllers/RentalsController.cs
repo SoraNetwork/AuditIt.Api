@@ -144,6 +144,15 @@ namespace AuditIt.Api.Controllers
             return Ok(rental);
         }
 
+        [HttpDelete("{id:guid}/shipments/{shipmentId:int}")]
+        [RequirePermission(PermissionCodes.RentalShip)]
+        public async Task<ActionResult<RentalDto>> DeleteShipment(Guid id, int shipmentId)
+        {
+            var (rental, error) = await _rentals.DeleteShipmentAsync(id, shipmentId, CurrentUser());
+            if (error != null) return BadRequest(error);
+            return Ok(rental);
+        }
+
         [HttpPost("{id:guid}/return")]
         [RequirePermission(PermissionCodes.RentalReturn)]
         public async Task<ActionResult<RentalDto>> Return(Guid id, [FromBody] ReturnRentalDto dto)
