@@ -706,7 +706,7 @@ namespace AuditIt.Api.Services
                     ItemShortIdSnapshot = item.ShortId,
                     ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty,
                     ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks,
-                    PerItemPrice = hasItemPrices ? itemPricesByItemId[item.Id] : null
+                    PerItemPrice = hasItemPrices ? itemPricesByItemId[item.Id] : 0m
                 });
 
                 LogAudit(item, AuditAction.RentalCreated, rentalNumber, currentUser);
@@ -725,7 +725,7 @@ namespace AuditIt.Api.Services
                     ItemShortIdSnapshot = "待选择",
                     ItemNameSnapshot = def.Name,
                     ListingRemarksSnapshot = null,
-                    PerItemPrice = hasItemPrices ? itemPricesByDefinitionId[defId].Dequeue() : null
+                    PerItemPrice = hasItemPrices ? itemPricesByDefinitionId[defId].Dequeue() : 0m
                 });
             }
 
@@ -895,7 +895,7 @@ namespace AuditIt.Api.Services
                     ItemShortIdSnapshot = sourceItem.ItemShortIdSnapshot,
                     ItemNameSnapshot = sourceItem.ItemNameSnapshot,
                     ListingRemarksSnapshot = sourceItem.ListingRemarksSnapshot,
-                    PerItemPrice = sourceItem.PerItemPrice
+                    PerItemPrice = sourceItem.PerItemPrice ?? 0m
                 });
 
                 if (sourceItem.Item != null)
@@ -2372,7 +2372,7 @@ namespace AuditIt.Api.Services
                     ItemShortIdSnapshot = item.ShortId,
                     ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty,
                     ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks,
-                    PerItemPrice = hasItemPrices ? itemPricesByItemId[item.Id] : null
+                    PerItemPrice = hasItemPrices ? itemPricesByItemId[item.Id] : 0m
                 });
 
                 if (hasRentalStarted)
@@ -2396,7 +2396,7 @@ namespace AuditIt.Api.Services
                     ItemShortIdSnapshot = "待选择",
                     ItemNameSnapshot = definition.Name,
                     ListingRemarksSnapshot = null,
-                    PerItemPrice = hasItemPrices ? itemPricesByDefinitionId[definitionId].Dequeue() : null
+                    PerItemPrice = hasItemPrices ? itemPricesByDefinitionId[definitionId].Dequeue() : 0m
                 });
             }
 
@@ -3844,7 +3844,7 @@ namespace AuditIt.Api.Services
                 CategoryName = definition?.Category?.Name ?? string.Empty,
                 ItemShortIdSnapshot = rentalItem.ItemShortIdSnapshot,
                 ItemNameSnapshot = rentalItem.ItemNameSnapshot,
-                PerItemPrice = rentalItem.PerItemPrice,
+                PerItemPrice = rentalItem.PerItemPrice ?? 0m,
                 ReturnedAt = rentalItem.ReturnedAt,
                 ReturnCondition = rentalItem.ReturnCondition,
                 ReturnNotes = rentalItem.ReturnNotes,
