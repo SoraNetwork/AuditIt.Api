@@ -103,6 +103,7 @@ namespace AuditIt.Api.Services
 
             List<string>? managers = null;
             var created = new List<Reminder>();
+            created.AddRange(await ManualLoanReminderService.BuildOverdueRemindersAsync(db, now, ct));
 
             foreach (var rental in candidates)
             {

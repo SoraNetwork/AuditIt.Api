@@ -384,7 +384,7 @@ namespace AuditIt.Api.Controllers
                 AddManualLoanSegments(
                     manualLoan.Id,
                     RentalDateRules.ToBusinessDate(manualLoan.OutboundAt ?? manualLoan.LastUpdated),
-                    ResolveManualLoanEndDate(manualLoan.ExpectedReturnDate, rangeEnd),
+                    RentalDateRules.ManualLoanOccupancyEndDate(manualLoan.ExpectedReturnDate, today),
                     new ItemDefinitionDailyOccupancyDto
                     {
                         RentalId = Guid.Empty,
@@ -586,11 +586,6 @@ namespace AuditIt.Api.Controllers
         {
             return _context.ItemDefinitions.Any(e => e.Id == id);
         }
-
-        private static DateTime ResolveManualLoanEndDate(DateTime? expectedReturnDate, DateTime rangeEnd) =>
-            expectedReturnDate.HasValue
-                ? RentalDateRules.ToBusinessDate(expectedReturnDate.Value)
-                : rangeEnd;
 
         private static bool HasRentalStarted(Rental rental) =>
             rental.RenewedFromRentalId.HasValue

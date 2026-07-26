@@ -2613,6 +2613,7 @@ namespace AuditIt.Api.Services
                     i.Id,
                     i.ItemDefinitionId,
                     i.LastUpdated,
+                    i.ExpectedReturnDate,
                     OutboundAt = _context.AuditLogs
                         .Where(log => log.ItemId == i.Id && log.Action == AuditAction.Outbound)
                         .OrderByDescending(log => log.Timestamp)
@@ -2726,7 +2727,9 @@ namespace AuditIt.Api.Services
                 {
                     AddOccupancy(
                         RentalDateRules.ToBusinessDate(manualLoan.OutboundAt ?? manualLoan.LastUpdated),
-                        expectedEndDay,
+                        RentalDateRules.ManualLoanOccupancyEndDate(
+                            manualLoan.ExpectedReturnDate,
+                            RentalDateRules.Today(DateTime.UtcNow)),
                         null,
                         isManualLoan: true);
                 }

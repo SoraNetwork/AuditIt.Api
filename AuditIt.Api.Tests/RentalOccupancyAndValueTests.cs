@@ -2,7 +2,9 @@ using AuditIt.Api.Controllers;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
 using AuditIt.Api.Services;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -982,7 +984,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task DefinitionOccupancy_ManualLoanOccupiesUntilItemIsReturned()
+    public async Task DefinitionOccupancy_OpenManualLoanOccupiesThroughToday()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -1005,7 +1007,8 @@ public class RentalOccupancyAndValueTests
             ItemDefinition = definition,
             Status = ItemStatus.LoanedOut
         };
-        var loanDate = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
+        var today = BusinessToday();
+        var loanDate = today.AddDays(-2);
 
         context.Items.Add(item);
         context.AuditLogs.Add(new AuditLog
@@ -1026,15 +1029,19 @@ public class RentalOccupancyAndValueTests
         var action = await controller.GetOccupancyCalendar(
             definition.Id,
             loanDate.AddDays(-1),
-            loanDate.AddDays(1));
+            today.AddDays(1));
 
         var ok = Assert.IsType<OkObjectResult>(action.Result);
         var calendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(ok.Value);
         var beforeLoan = calendar.DailyStocks.Single(day => day.Date == loanDate.AddDays(-1));
         var loanDay = calendar.DailyStocks.Single(day => day.Date == loanDate);
+        var todayStock = calendar.DailyStocks.Single(day => day.Date == today);
+        var tomorrow = calendar.DailyStocks.Single(day => day.Date == today.AddDays(1));
 
         Assert.Equal(0, beforeLoan.OccupiedCount);
         Assert.Equal(1, loanDay.OccupiedCount);
+        Assert.Equal(1, todayStock.OccupiedCount);
+        Assert.Equal(0, tomorrow.OccupiedCount);
         var manualLoan = Assert.Single(loanDay.Details);
         Assert.Equal(Guid.Empty, manualLoan.RentalId);
         Assert.Equal("普通借出 (CAM-001)", manualLoan.RentalNumber);
@@ -1049,7 +1056,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task ItemAvailability_ManualLoanOccupiesUntilItemIsReturned()
+    public async Task ItemAvailability_OpenManualLoanOccupiesThroughToday()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -1072,7 +1079,8 @@ public class RentalOccupancyAndValueTests
             ItemDefinition = definition,
             Status = ItemStatus.LoanedOut
         };
-        var loanDate = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
+        var today = BusinessToday();
+        var loanDate = today.AddDays(-2);
 
         context.Items.Add(item);
         context.AuditLogs.Add(new AuditLog
@@ -1090,7 +1098,7 @@ public class RentalOccupancyAndValueTests
         await context.SaveChangesAsync();
 
         var controller = new ItemsController(context, new StubWebHostEnvironment());
-        var action = await controller.GetAvailability(item.Id, loanDate, loanDate.AddDays(1));
+        var action = await controller.GetAvailability(item.Id, loanDate, today.AddDays(2));
 
         var ok = Assert.IsType<OkObjectResult>(action.Result);
         var calendar = Assert.IsType<ItemAvailabilityCalendarDto>(ok.Value);
@@ -1099,7 +1107,8 @@ public class RentalOccupancyAndValueTests
         Assert.Equal(Guid.Empty, manualLoan.RentalId);
         Assert.Equal("普通借出", manualLoan.RentalNumber);
         Assert.Equal(loanDate, manualLoan.StartAt);
-        Assert.Equal(loanDate.AddDays(2).AddTicks(-1), manualLoan.EndAt);
+        Assert.Equal(today, manualLoan.EndAt);
+        Assert.True(manualLoan.IsOpen);
 
         item.Status = ItemStatus.InStock;
         await context.SaveChangesAsync();
@@ -1108,6 +1117,215 @@ public class RentalOccupancyAndValueTests
         var returnedOk = Assert.IsType<OkObjectResult>(returnedAction.Result);
         var returnedCalendar = Assert.IsType<ItemAvailabilityCalendarDto>(returnedOk.Value);
         Assert.Empty(returnedCalendar.BusyPeriods);
+    }
+
+    [Fact]
+    public async Task Calendars_OverdueManualLoanOccupiesThroughTodayButNotTomorrow()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var today = BusinessToday();
+        var expectedReturnDate = today.AddDays(-1);
+        var loanDate = today.AddDays(-3);
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-OVERDUE-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut,
+            CurrentDestination = "Manual borrower",
+            ExpectedReturnDate = expectedReturnDate
+        };
+
+        context.Items.Add(item);
+        context.AuditLogs.Add(new AuditLog
+        {
+            Timestamp = loanDate.AddHours(10),
+            Action = AuditAction.Outbound,
+            Item = item,
+            ItemShortId = item.ShortId,
+            ItemName = definition.Name,
+            Warehouse = warehouse,
+            WarehouseName = warehouse.Name,
+            User = "LoanOperator",
+            Destination = item.CurrentDestination
+        });
+        await context.SaveChangesAsync();
+
+        var itemController = new ItemsController(context, new StubWebHostEnvironment());
+        var itemAction = await itemController.GetAvailability(item.Id, loanDate, today.AddDays(1));
+        var itemOk = Assert.IsType<OkObjectResult>(itemAction.Result);
+        var itemCalendar = Assert.IsType<ItemAvailabilityCalendarDto>(itemOk.Value);
+        var manualLoan = Assert.Single(itemCalendar.BusyPeriods);
+        Assert.Equal(today, manualLoan.EndAt);
+        Assert.True(manualLoan.IsOpen);
+
+        var definitionController = new ItemDefinitionsController(context);
+        var definitionAction = await definitionController.GetOccupancyCalendar(
+            definition.Id,
+            expectedReturnDate,
+            today.AddDays(1));
+        var definitionOk = Assert.IsType<OkObjectResult>(definitionAction.Result);
+        var definitionCalendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(definitionOk.Value);
+
+        Assert.Equal(1, definitionCalendar.DailyStocks.Single(day => day.Date == expectedReturnDate).OccupiedCount);
+        Assert.Equal(1, definitionCalendar.DailyStocks.Single(day => day.Date == today).OccupiedCount);
+        Assert.Equal(0, definitionCalendar.DailyStocks.Single(day => day.Date == today.AddDays(1)).OccupiedCount);
+    }
+
+    [Fact]
+    public async Task ManualLoanReminder_TargetsLatestOutboundOperatorAndDeduplicatesByExpectedDate()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var now = DateTime.UtcNow;
+        var today = BusinessToday();
+        var expectedReturnDate = today.AddDays(-1);
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-REMINDER-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut,
+            CurrentDestination = "Manual borrower",
+            ExpectedReturnDate = expectedReturnDate
+        };
+
+        context.Items.Add(item);
+        context.AuditLogs.AddRange(
+            new AuditLog
+            {
+                Timestamp = now.AddDays(-5),
+                Action = AuditAction.Outbound,
+                Item = item,
+                ItemShortId = item.ShortId,
+                ItemName = definition.Name,
+                Warehouse = warehouse,
+                WarehouseName = warehouse.Name,
+                User = "OldOperator",
+                Destination = item.CurrentDestination
+            },
+            new AuditLog
+            {
+                Timestamp = now.AddDays(-3),
+                Action = AuditAction.Outbound,
+                Item = item,
+                ItemShortId = item.ShortId,
+                ItemName = definition.Name,
+                Warehouse = warehouse,
+                WarehouseName = warehouse.Name,
+                User = "LatestOperator",
+                Destination = item.CurrentDestination
+            });
+        await context.SaveChangesAsync();
+
+        var created = await ManualLoanReminderService.BuildOverdueRemindersAsync(context, now);
+        var reminder = Assert.Single(created);
+        Assert.Equal("LatestOperator", reminder.TargetUser);
+        Assert.Equal(ManualLoanReminderService.RelatedEntityType, reminder.RelatedEntityType);
+        Assert.Equal(expectedReturnDate, reminder.DueAt);
+
+        context.Reminders.Add(reminder);
+        await context.SaveChangesAsync();
+
+        var duplicate = await ManualLoanReminderService.BuildOverdueRemindersAsync(context, now);
+        Assert.Empty(duplicate);
+    }
+
+    [Fact]
+    public async Task UpdateExpectedReturnDate_ReschedulesManualLoanAndDismissesOldReminder()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var today = BusinessToday();
+        var newExpectedReturnDate = today.AddDays(3);
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-RESET-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut,
+            CurrentDestination = "Manual borrower",
+            ExpectedReturnDate = today.AddDays(-1)
+        };
+        var reminder = new Reminder
+        {
+            Type = ReminderType.Manual,
+            Level = ReminderLevel.Warning,
+            RelatedEntityType = ManualLoanReminderService.RelatedEntityType,
+            RelatedEntityId = item.Id.ToString(),
+            TargetUser = "LoanOperator",
+            Title = "Overdue",
+            DueAt = today.AddDays(-1)
+        };
+        context.Items.Add(item);
+        context.Reminders.Add(reminder);
+        await context.SaveChangesAsync();
+
+        var controller = new ItemsController(context, new StubWebHostEnvironment())
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        new[] { new Claim(ClaimTypes.NameIdentifier, "Scheduler") },
+                        "Test"))
+                }
+            }
+        };
+
+        var action = await controller.UpdateExpectedReturnDate(
+            item.Id,
+            new UpdateExpectedReturnDateRequest { ExpectedReturnDate = newExpectedReturnDate });
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var dto = Assert.IsType<ItemDto>(ok.Value);
+        Assert.Equal(newExpectedReturnDate, dto.ExpectedReturnDate);
+
+        var savedReminder = await context.Reminders.SingleAsync(saved => saved.Id == reminder.Id);
+        Assert.NotNull(savedReminder.DismissedAt);
+        Assert.Equal("Scheduler", savedReminder.DismissedBy);
+        Assert.Contains(context.AuditLogs, log =>
+            log.ItemId == item.Id
+            && log.Action == AuditAction.ExpectedReturnUpdated
+            && log.User == "Scheduler");
     }
 
     [Fact]
@@ -1299,7 +1517,7 @@ public class RentalOccupancyAndValueTests
         };
         var renter = new Renter { Id = Guid.NewGuid(), Name = "Future Tenant", Phone = "13900139000" };
         var rentalId = Guid.NewGuid();
-        var loanDate = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
+        var loanDate = BusinessToday().AddDays(-2);
         var futureShipDate = loanDate.AddDays(10);
 
         context.Items.Add(item);
@@ -1370,7 +1588,7 @@ public class RentalOccupancyAndValueTests
             ItemDefinition = definition,
             Status = ItemStatus.LoanedOut
         };
-        var loanDate = new DateTime(2099, 6, 10, 0, 0, 0, DateTimeKind.Utc);
+        var loanDate = BusinessToday().AddDays(-2);
 
         context.Items.Add(item);
         context.AuditLogs.Add(new AuditLog
@@ -1405,6 +1623,18 @@ public class RentalOccupancyAndValueTests
         }, "TestUser");
 
         Assert.NotNull(result.Conflict);
+
+        var futureResult = await rentalService.CreateAsync(new CreateRentalDto
+        {
+            Renter = new RenterInlineDto { Name = "Future Tenant", Phone = "13700137000" },
+            ItemDefinitionIds = new List<int> { definition.Id },
+            StartDate = BusinessToday().AddDays(1),
+            ExpectedShipDate = BusinessToday().AddDays(1),
+            ExpectedEndDate = BusinessToday().AddDays(2)
+        }, "TestUser");
+
+        Assert.Null(futureResult.Conflict);
+        Assert.NotNull(futureResult.Rental);
     }
 
     [Fact]

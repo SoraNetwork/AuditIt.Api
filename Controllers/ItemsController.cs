@@ -244,7 +244,7 @@ namespace AuditIt.Api.Controllers
             if (isManualLoan)
             {
                 var loanStart = RentalDateRules.ToBusinessDate(outboundAt ?? item.LastUpdated);
-                var loanEnd = ResolveManualLoanEndDate(item.ExpectedReturnDate, rangeEnd);
+                var loanEnd = RentalDateRules.ManualLoanOccupancyEndDate(item.ExpectedReturnDate, today);
 
                 if (loanStart <= rangeEnd && loanEnd >= rangeStart)
                 {
@@ -260,7 +260,8 @@ namespace AuditIt.Api.Controllers
                             RentalStatus = RentalStatus.Active,
                             StartAt = availablePeriod.StartAt,
                             EndAt = availablePeriod.EndAt,
-                            IsOpen = !item.ExpectedReturnDate.HasValue,
+                            IsOpen = !item.ExpectedReturnDate.HasValue
+                                || RentalDateRules.ToBusinessDate(item.ExpectedReturnDate.Value) < today,
                             IsUncertain = false,
                             IsManualLoan = true,
                             ExpectedReturnDate = item.ExpectedReturnDate.HasValue
@@ -428,13 +429,23 @@ namespace AuditIt.Api.Controllers
 
             item.Remarks = dto.Remarks;
             item.CurrentDestination = dto.CurrentDestination;
+            var previousExpectedReturnDate = item.ExpectedReturnDate;
             if (dto.ClearExpectedReturnDate == true)
             {
                 item.ExpectedReturnDate = null;
             }
             else if (dto.ExpectedReturnDate.HasValue)
             {
-                item.ExpectedReturnDate = RentalDateRules.ToBusinessDate(dto.ExpectedReturnDate.Value);
+                var expectedReturnDate = RentalDateRules.ToBusinessDate(dto.ExpectedReturnDate.Value);
+                if (item.Status == ItemStatus.LoanedOut
+                    && (item.CurrentDestination == null
+                        || !item.CurrentDestination.StartsWith("租赁 ", StringComparison.Ordinal))
+                    && expectedReturnDate < RentalDateRules.Today(DateTime.UtcNow))
+                {
+                    return BadRequest("预计回库时间不能早于今天。");
+                }
+
+                item.ExpectedReturnDate = expectedReturnDate;
             }
             item.ItemValue = dto.ItemValue;
             item.LastUpdated = DateTime.UtcNow;
@@ -459,9 +470,66 @@ namespace AuditIt.Api.Controllers
                 item.PhotoUrl = null;
             }
 
+            if (item.ExpectedReturnDate != previousExpectedReturnDate)
+            {
+                await DismissManualLoanRemindersAsync(item.Id);
+            }
+
             await _context.SaveChangesAsync();
 
             return NoContent();
+        }
+
+        // PUT: api/Items/{id}/expected-return
+        [HttpPut("{id}/expected-return")]
+        [RequirePermission(PermissionCodes.ItemUpdate)]
+        public async Task<ActionResult<ItemDto>> UpdateExpectedReturnDate(
+            Guid id,
+            [FromBody] UpdateExpectedReturnDateRequest request)
+        {
+            if (!request.ExpectedReturnDate.HasValue)
+            {
+                return BadRequest("请选择新的预计回库时间。");
+            }
+
+            var item = await _context.Items
+                .Include(i => i.ItemDefinition)
+                .Include(i => i.Warehouse)
+                .FirstOrDefaultAsync(i => i.Id == id);
+            if (item == null)
+            {
+                return NotFound();
+            }
+
+            var isManualLoan = item.Status == ItemStatus.LoanedOut
+                && (item.CurrentDestination == null
+                    || !item.CurrentDestination.StartsWith("租赁 ", StringComparison.Ordinal));
+            if (!isManualLoan)
+            {
+                return BadRequest("只有普通借出中的物品可以重新设置预计回库时间。");
+            }
+
+            var expectedReturnDate = RentalDateRules.ToBusinessDate(request.ExpectedReturnDate.Value);
+            var today = RentalDateRules.Today(DateTime.UtcNow);
+            if (expectedReturnDate < today)
+            {
+                return BadRequest("预计回库时间不能早于今天。");
+            }
+
+            var previousExpectedReturnDate = item.ExpectedReturnDate;
+            item.ExpectedReturnDate = expectedReturnDate;
+            item.LastUpdated = DateTime.UtcNow;
+
+            await DismissManualLoanRemindersAsync(item.Id);
+            await LogAudit(
+                item,
+                AuditAction.ExpectedReturnUpdated,
+                item.ItemDefinition?.Name ?? "Unknown Item",
+                item.Warehouse?.Name ?? "Unknown Warehouse",
+                $"预计回库时间：{FormatNullableBusinessDate(previousExpectedReturnDate)} → {expectedReturnDate:yyyy-MM-dd}");
+            await _context.SaveChangesAsync();
+
+            return Ok(ToItemDto(item));
         }
 
 
@@ -697,6 +765,32 @@ namespace AuditIt.Api.Controllers
 
             _context.AuditLogs.Add(auditLog);
         }
+
+        private async Task DismissManualLoanRemindersAsync(Guid itemId)
+        {
+            var reminders = await _context.Reminders
+                .Where(reminder => reminder.RelatedEntityType == ManualLoanReminderService.RelatedEntityType
+                    && reminder.RelatedEntityId == itemId.ToString()
+                    && reminder.DismissedAt == null)
+                .ToListAsync();
+            if (reminders.Count == 0)
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var currentUser = User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "system";
+            foreach (var reminder in reminders)
+            {
+                reminder.DismissedAt = now;
+                reminder.DismissedBy = currentUser;
+            }
+        }
+
+        private static string FormatNullableBusinessDate(DateTime? value) =>
+            value.HasValue
+                ? RentalDateRules.ToBusinessDate(value.Value).ToString("yyyy-MM-dd")
+                : "未设置";
 
         private string? ResolveOwnerUserNamesSnapshot(IEnumerable<string>? requestedOwnerNames, bool defaultToCurrentUser)
         {
@@ -934,11 +1028,6 @@ namespace AuditIt.Api.Controllers
                     : null,
                 OccupancyStatus = status
             };
-
-        private static DateTime ResolveManualLoanEndDate(DateTime? expectedReturnDate, DateTime rangeEnd) =>
-            expectedReturnDate.HasValue
-                ? RentalDateRules.ToBusinessDate(expectedReturnDate.Value)
-                : rangeEnd;
 
         private static bool HasRentalStarted(Rental rental) =>
             RentalDateRules.HasRentalStarted(rental);

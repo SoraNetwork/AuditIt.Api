@@ -29,6 +29,20 @@ namespace AuditIt.Api.Services
 
         public static DateTime Today(DateTime utcNow) => utcNow.Add(BusinessOffset).Date;
 
+        public static DateTime ManualLoanOccupancyEndDate(
+            DateTime? expectedReturnDate,
+            DateTime businessToday)
+        {
+            var today = ToBusinessDate(businessToday);
+            if (!expectedReturnDate.HasValue)
+            {
+                return today;
+            }
+
+            var expectedReturnDay = ToBusinessDate(expectedReturnDate.Value);
+            return expectedReturnDay < today ? today : expectedReturnDay;
+        }
+
         public static DateTime EndOfBusinessDay(DateTime value) =>
             ToBusinessDate(value).AddDays(1).AddTicks(-1);
 

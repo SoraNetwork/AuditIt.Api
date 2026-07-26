@@ -1,5 +1,10 @@
 namespace AuditIt.Api.Models
 {
+    public class UpdateExpectedReturnDateRequest
+    {
+        public DateTime? ExpectedReturnDate { get; set; }
+    }
+
     public class UpdateItemRequest
     {
         public string? Destination { get; set; }
