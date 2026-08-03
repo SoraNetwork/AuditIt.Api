@@ -1446,7 +1446,7 @@ namespace AuditIt.Api.Services
                 rental,
                 dto.Direction == ShipmentDirection.Outbound ? "已发货" : "已登记回货物流",
                 currentUser,
-                $"物流：{logisticsSummary}");
+                $"物流：{logisticsSummary}；运费：{FormatOptionalMoney(shipment.ShippingFee)}");
 
             return new RentalShipmentResult { Rental = await GetByIdAsync(rentalId) };
         }
@@ -1528,12 +1528,17 @@ namespace AuditIt.Api.Services
             }
 
             var rental = await _context.Rentals.FirstAsync(r => r.Id == rentalId);
+            var previousShippingFee = shipment.ShippingFee;
             shipment.ShippingFee = dto.ShippingFee;
             rental.UpdatedAt = DateTime.UtcNow;
             rental.UpdatedBy = currentUser;
 
             await _context.SaveChangesAsync();
-            await NotifyStatusChangeAsync(rental, "物流运费已更新", currentUser);
+            await NotifyStatusChangeAsync(
+                rental,
+                "物流运费已更新",
+                currentUser,
+                $"物流：{BuildShipmentSummary(shipment.Carrier, shipment.TrackingNumber)}；运费：{FormatOptionalMoney(previousShippingFee)} -> {FormatOptionalMoney(shipment.ShippingFee)}");
 
             return (await GetByIdAsync(rentalId), null);
         }
@@ -3135,6 +3140,9 @@ namespace AuditIt.Api.Services
 
         private static string FormatMoney(decimal value) =>
             $"￥{value.ToString("0.0", CultureInfo.InvariantCulture)}";
+
+        private static string FormatOptionalMoney(decimal? value) =>
+            value.HasValue ? FormatMoney(value.Value) : "未填写";
 
         private static string FormatRentalStatus(RentalStatus status) => status switch
         {

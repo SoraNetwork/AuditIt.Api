@@ -2844,6 +2844,7 @@ public class RentalOccupancyAndValueTests
             OriginWarehouseId = warehouse.Id,
             Carrier = "SF",
             TrackingNumber = "SF123",
+            ShippingFee = 18.5m,
             ShippedAt = today.AddHours(4)
         }, "Shipper");
 
@@ -2858,6 +2859,8 @@ public class RentalOccupancyAndValueTests
             .ToListAsync();
 
         Assert.Equal(new[] { "Creator", "Manager", "Shipper" }, targets);
+        var reminder = await context.Reminders.FirstAsync(reminder => reminder.TargetUser == "Creator");
+        Assert.Contains("物流：SF SF123；运费：￥18.5", reminder.Message);
     }
 
     [Fact]
@@ -3405,6 +3408,71 @@ public class RentalOccupancyAndValueTests
         Assert.Equal(10m, updated.TotalShippingFee);
     }
 
+    [Fact]
+    public async Task UpdateShipmentAsync_NotifiesWithLogisticsAndFreightChange()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990701-0003",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Active,
+            StartDate = BusinessToday(),
+            ExpectedShipDate = BusinessToday(),
+            ExpectedEndDate = BusinessToday().AddDays(3),
+            TotalPrice = 300m,
+            CreatedBy = "Creator"
+        };
+        var shipment = new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "顺丰速运",
+            TrackingNumber = "SF-FEE-001",
+            ShippingFee = 12.5m,
+            ShippedAt = DateTime.UtcNow
+        };
+        rental.Shipments.Add(shipment);
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var channel = new CapturingNotificationChannel();
+        var service = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            new[] { channel },
+            new StubSfExpressService(),
+            new StubSettlementService());
+
+        var (updated, error) = await service.UpdateShipmentAsync(
+            rental.Id,
+            shipment.Id,
+            new UpdateShipmentDto { ShippingFee = 24m },
+            "TestUser");
+
+        Assert.Null(error);
+        Assert.NotNull(updated);
+        Assert.Equal(24m, updated!.Shipments.Single().ShippingFee);
+
+        var reminder = await context.Reminders.SingleAsync();
+        Assert.Equal("Creator", reminder.TargetUser);
+        Assert.Contains("物流：顺丰速运 SF-FEE-001", reminder.Message);
+        Assert.Contains("运费：￥12.5 -> ￥24.0", reminder.Message);
+        Assert.Single(channel.Delivered);
+    }
+
     private sealed class StubRenterService : IRenterService
     {
         public Task<IEnumerable<RenterDto>> SearchAsync(string? keyword, int limit) => Task.FromResult(Enumerable.Empty<RenterDto>());
@@ -3435,6 +3503,18 @@ public class RentalOccupancyAndValueTests
 
         public Task<IReadOnlyList<string>> GetUsersInRoleAsync(string roleName) =>
             Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
+    }
+
+    private sealed class CapturingNotificationChannel : INotificationChannel
+    {
+        public string Name => "capturing";
+        public List<Reminder> Delivered { get; } = new();
+
+        public Task DeliverAsync(Reminder reminder, CancellationToken ct)
+        {
+            Delivered.Add(reminder);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class StubWebHostEnvironment : IWebHostEnvironment
