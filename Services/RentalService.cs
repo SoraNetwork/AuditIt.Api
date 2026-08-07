@@ -2019,12 +2019,46 @@ namespace AuditIt.Api.Services
                 return (null, "租赁单已结束。");
             }
 
+            Rental? renewedSource = null;
+            if (rental.RenewedFromRentalId.HasValue)
+            {
+                renewedSource = await _context.Rentals
+                    .Include(r => r.Items)
+                        .ThenInclude(ri => ri.Item)
+                            .ThenInclude(i => i!.ItemDefinition)
+                    .Include(r => r.Items)
+                        .ThenInclude(ri => ri.Item)
+                            .ThenInclude(i => i!.Warehouse)
+                    .Include(r => r.Shipments)
+                    .FirstOrDefaultAsync(r => r.Id == rental.RenewedFromRentalId.Value);
+
+                if (renewedSource == null || renewedSource.RenewedToRentalId != rental.Id)
+                {
+                    return (null, "续租单与原单的关联异常，无法取消。");
+                }
+            }
+
             var now = DateTime.UtcNow;
+            var reason = NormalizeNullableText(dto.Reason);
             var hasOutboundShipment = HasOutboundShipment(rental);
             foreach (var rentalItem in rental.Items.Where(ri => ri.ReturnedAt == null))
             {
                 rentalItem.ReturnedAt = now;
-                rentalItem.ReturnNotes = NormalizeNullableText(dto.Reason);
+                rentalItem.ReturnNotes = reason;
+
+                if (renewedSource != null && rentalItem.Item != null)
+                {
+                    rentalItem.Item.Status = ItemStatus.LoanedOut;
+                    rentalItem.Item.CurrentDestination = $"租赁 {renewedSource.RentalNumber}";
+                    rentalItem.Item.LastUpdated = now;
+                    LogAudit(
+                        rentalItem.Item,
+                        AuditAction.RentalCancelled,
+                        rental.RentalNumber,
+                        currentUser,
+                        $"续租取消，恢复至 {renewedSource.RentalNumber}");
+                    continue;
+                }
 
                 if (!hasOutboundShipment || rentalItem.Item == null)
                 {
@@ -2043,7 +2077,6 @@ namespace AuditIt.Api.Services
             rental.RenewalIntentEndDate = null;
             await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser);
 
-            var reason = NormalizeNullableText(dto.Reason);
             if (!string.IsNullOrWhiteSpace(reason))
             {
                 rental.Notes = string.IsNullOrWhiteSpace(rental.Notes)
@@ -2054,7 +2087,31 @@ namespace AuditIt.Api.Services
             rental.UpdatedAt = now;
             rental.UpdatedBy = currentUser;
 
+            if (renewedSource != null)
+            {
+                renewedSource.Status = !HasRentalStarted(renewedSource)
+                    ? RentalStatus.Pending
+                    : !HasInboundShipment(renewedSource) && RentalDateRules.IsOverdue(renewedSource.ExpectedEndDate, now)
+                        ? RentalStatus.Overdue
+                        : RentalStatus.Active;
+                renewedSource.ActualEndDate = null;
+                renewedSource.ExpectedReturnDate = RentalDateRules.DefaultExpectedReturnDate(renewedSource.ExpectedEndDate);
+                renewedSource.RenewedToRentalId = null;
+                renewedSource.RenewedToRentalNumber = null;
+                renewedSource.UpdatedAt = now;
+                renewedSource.UpdatedBy = currentUser;
+            }
+
             await _context.SaveChangesAsync();
+
+            if (renewedSource != null)
+            {
+                await NotifyStatusChangeAsync(
+                    renewedSource,
+                    "续租已取消，原单已恢复",
+                    currentUser,
+                    $"已取消续租单：{rental.RentalNumber}");
+            }
 
             await NotifyStatusChangeAsync(
                 rental,

@@ -3473,6 +3473,119 @@ public class RentalOccupancyAndValueTests
         Assert.Single(channel.Delivered);
     }
 
+    [Theory]
+    [InlineData(false, RentalStatus.Active)]
+    [InlineData(true, RentalStatus.Overdue)]
+    public async Task CancelAsync_RenewalRental_RestoresSourceRental(bool isOverdue, RentalStatus expectedStatus)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        var today = BusinessToday();
+        var expectedEndDate = isOverdue ? today.AddDays(-2) : today.AddDays(2);
+        Guid sourceRentalId;
+        Guid itemId;
+        Guid renewalRentalId;
+
+        await using (var arrangeContext = new ApplicationDbContext(options))
+        {
+            await arrangeContext.Database.EnsureCreatedAsync();
+
+            var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+            var category = new Category { Name = "Camera", Description = "Camera category" };
+            var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+            var item = new Item
+            {
+                Id = Guid.NewGuid(),
+                ShortId = "CAM-RENEW-CANCEL-001",
+                Warehouse = warehouse,
+                ItemDefinition = definition,
+                Status = ItemStatus.LoanedOut,
+                CurrentDestination = "租赁 R20990101-0001"
+            };
+            var sourceRental = new Rental
+            {
+                Id = Guid.NewGuid(),
+                RentalNumber = "R20990101-0001",
+                Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+                Status = isOverdue ? RentalStatus.Overdue : RentalStatus.Active,
+                StartDate = today.AddDays(-5),
+                ExpectedShipDate = today.AddDays(-6),
+                ExpectedEndDate = expectedEndDate,
+                ExpectedReturnDate = expectedEndDate.AddDays(2)
+            };
+            sourceRental.Items.Add(new RentalItem
+            {
+                Item = item,
+                ItemShortIdSnapshot = item.ShortId,
+                ItemNameSnapshot = definition.Name,
+                PerItemPrice = 100m
+            });
+            sourceRental.Shipments.Add(new RentalShipment
+            {
+                Direction = ShipmentDirection.Outbound,
+                OriginWarehouse = warehouse,
+                Carrier = "SF",
+                ShippedAt = today.AddDays(-6)
+            });
+            arrangeContext.Rentals.Add(sourceRental);
+            await arrangeContext.SaveChangesAsync();
+
+            sourceRentalId = sourceRental.Id;
+            itemId = item.Id;
+
+            var renewService = CreateRentalService(arrangeContext);
+            var renewResult = await renewService.RenewAsync(sourceRentalId, new RenewRentalDto
+            {
+                StartDate = expectedEndDate.AddDays(1),
+                ExpectedEndDate = expectedEndDate.AddDays(5),
+                TotalPrice = 100m
+            }, "TestUser");
+
+            Assert.Null(renewResult.Error);
+            Assert.NotNull(renewResult.RenewalRental);
+            renewalRentalId = renewResult.RenewalRental!.Id;
+        }
+
+        await using (var cancelContext = new ApplicationDbContext(options))
+        {
+            var cancelService = CreateRentalService(cancelContext);
+            var (cancelledRental, error) = await cancelService.CancelAsync(
+                renewalRentalId,
+                new CancelRentalDto { Reason = "Customer changed plans" },
+                "TestUser");
+
+            Assert.Null(error);
+            Assert.NotNull(cancelledRental);
+            Assert.Equal(RentalStatus.Cancelled, cancelledRental!.Status);
+            Assert.All(cancelledRental.Items, rentalItem => Assert.NotNull(rentalItem.ReturnedAt));
+        }
+
+        await using var assertContext = new ApplicationDbContext(options);
+        var restoredSource = await assertContext.Rentals.SingleAsync(rental => rental.Id == sourceRentalId);
+        Assert.Equal(expectedStatus, restoredSource.Status);
+        Assert.Null(restoredSource.ActualEndDate);
+        Assert.Equal(expectedEndDate.AddDays(2), restoredSource.ExpectedReturnDate);
+        Assert.Null(restoredSource.RenewedToRentalId);
+        Assert.Null(restoredSource.RenewedToRentalNumber);
+
+        var restoredItem = await assertContext.Items.SingleAsync(item => item.Id == itemId);
+        Assert.Equal(ItemStatus.LoanedOut, restoredItem.Status);
+        Assert.Equal($"租赁 {restoredSource.RentalNumber}", restoredItem.CurrentDestination);
+    }
+
+    private static RentalService CreateRentalService(ApplicationDbContext context) => new(
+        context,
+        new StubRenterService(),
+        new StubIdentityService(),
+        Array.Empty<INotificationChannel>(),
+        new StubSfExpressService(),
+        new StubSettlementService());
+
     private sealed class StubRenterService : IRenterService
     {
         public Task<IEnumerable<RenterDto>> SearchAsync(string? keyword, int limit) => Task.FromResult(Enumerable.Empty<RenterDto>());
