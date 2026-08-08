@@ -245,6 +245,41 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ---
 
+## Shipment reminder settings
+
+All endpoints require the `shipmentreminder.manage` permission. This permission is assigned to the built-in `Admin` role only.
+
+### `GET /shipment-reminder-settings`
+- Response: `ShipmentReminderSettingsDto`
+
+### `GET /shipment-reminder-settings/sms-templates`
+- Loads SMS templates from the configured Alibaba Cloud account using `QuerySmsTemplateList`.
+- Response: `AliyunSmsTemplateDto[]`; `matchesShipmentReminder` is true only for approved templates whose fixed text matches the shipment reminder text.
+
+### `PUT /shipment-reminder-settings`
+- Body: `UpdateShipmentReminderSettingsDto`
+- `templateVariables` is a list of `{ name, source, staticValue? }` mappings. Sources support order/renter details, expected shipping dates, creator, responsible user, and static text.
+- SMS templates are reloaded from Alibaba Cloud and the selected template's variable names must exactly match the submitted mappings.
+
+### `POST /shipment-reminder-settings/test`
+- Body: `{ userIds: guid[], sendSms: boolean, sendVoice: boolean }`
+- Sends the configured template to selected active employees with valid mobile numbers, returning the provider request ID or error per channel.
+
+### Server configuration
+
+Store Alibaba Cloud credentials only in server-side configuration or a secret manager; do not put them in the browser build:
+
+```json
+"AliyunNotification": {
+  "AccessKeyId": "<ram-access-key-id>",
+  "AccessKeySecret": "<ram-access-key-secret>"
+}
+```
+
+The RAM identity needs SMS template-list and SMS-send access plus DYVMS `SingleCallByTts` access. The scheduler uses China time and dispatches after the configured time (default 12:00) for rentals whose expected shipping date is today and which have no outbound shipment.
+
+---
+
 ## RBAC
 
 ### Roles / Permissions

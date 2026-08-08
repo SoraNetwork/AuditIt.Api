@@ -61,8 +61,18 @@ namespace AuditIt.Api.Services
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var identity = scope.ServiceProvider.GetRequiredService<IIdentityService>();
             var channels = scope.ServiceProvider.GetServices<INotificationChannel>().ToList();
+            var shipmentReminderService = scope.ServiceProvider.GetRequiredService<IShipmentReminderService>();
 
             var now = DateTime.UtcNow;
+            try
+            {
+                await shipmentReminderService.DispatchScheduledAsync(now, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Alibaba Cloud shipment reminder sweep failed.");
+            }
+
             var today = RentalDateRules.Today(now);
             var leadHours = Math.Max(1, _options.CurrentValue.DueSoonLeadHours);
             var leadUntil = RentalDateRules.LeadUntilDate(now, leadHours);

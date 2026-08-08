@@ -24,6 +24,8 @@ namespace AuditIt.Api.Data
         public DbSet<RentalShipmentItem> RentalShipmentItems { get; set; }
         public DbSet<ItemListing> ItemListings { get; set; }
         public DbSet<Reminder> Reminders { get; set; }
+        public DbSet<ShipmentReminderSettings> ShipmentReminderSettings { get; set; }
+        public DbSet<ShipmentReminderDispatch> ShipmentReminderDispatches { get; set; }
         public DbSet<SettlementSetting> SettlementSettings { get; set; }
 
         public DbSet<Role> Roles { get; set; }
@@ -92,6 +94,19 @@ namespace AuditIt.Api.Data
 
             modelBuilder.Entity<Reminder>()
                 .HasIndex(r => new { r.RelatedEntityType, r.RelatedEntityId, r.Type });
+
+            modelBuilder.Entity<ShipmentReminderDispatch>()
+                .HasIndex(dispatch => new
+                {
+                    dispatch.RentalId,
+                    dispatch.RecipientMobile,
+                    dispatch.Channel,
+                    dispatch.BusinessDate
+                })
+                .IsUnique();
+
+            modelBuilder.Entity<ShipmentReminderDispatch>()
+                .HasIndex(dispatch => new { dispatch.BusinessDate, dispatch.Status });
 
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.Name)

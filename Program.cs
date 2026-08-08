@@ -70,11 +70,14 @@ builder.Services.AddScoped<IQuickRemarkService, QuickRemarkService>();
 
 // 租赁平台相关服务
 builder.Services.Configure<ReminderOptions>(builder.Configuration.GetSection("Reminders"));
+builder.Services.Configure<AliyunNotificationOptions>(builder.Configuration.GetSection("AliyunNotification"));
 builder.Services.AddScoped<IRenterService, RenterService>();
 builder.Services.AddScoped<IRentalService, RentalService>();
 builder.Services.AddScoped<ISettlementService, SettlementService>();
 builder.Services.AddScoped<IItemListingService, ItemListingService>();
 builder.Services.AddScoped<IReminderService, ReminderService>();
+builder.Services.AddScoped<IAliyunShipmentReminderSender, AliyunShipmentReminderSender>();
+builder.Services.AddScoped<IShipmentReminderService, ShipmentReminderService>();
 builder.Services.AddScoped<INotificationChannel, InAppNotificationChannel>();
 builder.Services.AddScoped<INotificationChannel, DingTalkNotificationChannel>();
 builder.Services.AddHostedService<ReminderSweeper>();

@@ -34,6 +34,7 @@ namespace AuditIt.Api.Models
         public const string ReminderView = "reminder.view";
         public const string ReminderCreate = "reminder.create";
         public const string ReminderDismissAny = "reminder.dismiss.any";
+        public const string ShipmentReminderManage = "shipmentreminder.manage";
 
         public const string FinanceReportView = "finance.report.view";
 
@@ -64,6 +65,7 @@ namespace AuditIt.Api.Models
             (ReminderView,         "提醒",   "查看提醒"),
             (ReminderCreate,       "提醒",   "手动创建提醒"),
             (ReminderDismissAny,   "提醒",   "代他人忽略提醒"),
+            (ShipmentReminderManage, "提醒", "配置阿里云发货短信和语音提醒"),
             (FinanceReportView,    "财务",   "查看租赁财务报表"),
             (AuditLogView,         "审计",   "查看审计日志"),
         };
