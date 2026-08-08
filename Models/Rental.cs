@@ -32,7 +32,7 @@ namespace AuditIt.Api.Models
 
         public DateTime StartDate { get; set; } = DateTime.UtcNow;
 
-        public DateTime ExpectedShipDate { get; set; } = DateTime.UtcNow.Date.AddDays(-1);
+        public DateTime ExpectedShipDate { get; set; } = DateTime.UtcNow.Date.AddDays(-3);
 
         public DateTime ExpectedEndDate { get; set; }
 

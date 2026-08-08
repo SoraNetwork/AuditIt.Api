@@ -133,7 +133,10 @@ namespace AuditIt.Api.Controllers
                 rangeEnd = rangeStart.AddDays(180).AddTicks(-1);
             }
 
-            var totalStock = await _context.Items.CountAsync(i => i.ItemDefinitionId == id && i.Status != ItemStatus.Disposed);
+            var totalStock = await _context.Items.CountAsync(i =>
+                i.ItemDefinitionId == id
+                && i.Status != ItemStatus.Disposed
+                && i.Status != ItemStatus.SuspectedMissing);
 
             var candidateRentals = await _context.Rentals
                 .Include(r => r.Renter)
@@ -168,6 +171,7 @@ namespace AuditIt.Api.Controllers
                 .Where(entry => entry.RentalItem.ItemId.HasValue
                     && entry.RentalItem.Item != null
                     && entry.RentalItem.Item.ItemDefinitionId == id
+                    && entry.RentalItem.Item.Status != ItemStatus.SuspectedMissing
                     && RentalDateRules.Overlaps(
                         RentalDateRules.OccupancyStartDate(entry.Rental),
                         RentalDateRules.OccupancyEndDate(entry.Rental, entry.RentalItem, rangeEnd),
@@ -366,7 +370,8 @@ namespace AuditIt.Api.Controllers
                 foreach (var rentalItem in rental.Items.Where(ri =>
                     ri.ItemId != null
                     && ri.Item != null
-                    && ri.Item.ItemDefinitionId == id))
+                    && ri.Item.ItemDefinitionId == id
+                    && ri.Item.Status != ItemStatus.SuspectedMissing))
                 {
                     AddRentalItemSegment(rental, rentalItem, isUncertain: false);
                 }

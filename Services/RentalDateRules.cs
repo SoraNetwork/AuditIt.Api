@@ -285,7 +285,7 @@ namespace AuditIt.Api.Services
             value.Add(BusinessOffset).ToString("yyyy-MM-dd HH:mm");
 
         public static DateTime DefaultExpectedShipDate(DateTime startDate) =>
-            ToBusinessDate(startDate).AddDays(-1);
+            ToBusinessDate(startDate).AddDays(-3);
 
         public static bool IsOverdue(DateTime expectedEndDate, DateTime utcNow) =>
             ToBusinessDate(expectedEndDate).AddDays(1) < Today(utcNow);

@@ -68,6 +68,41 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task CreateAsync_WithoutExpectedShipDate_DefaultsToThreeDaysBeforeStartDate()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item { Id = Guid.NewGuid(), ShortId = "CAM-SHIP-DEFAULT-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        context.Items.Add(item);
+        await context.SaveChangesAsync();
+
+        var startDate = BusinessToday().AddDays(10);
+        var result = await CreateRentalService(context).CreateAsync(new CreateRentalDto
+        {
+            Renter = new RenterInlineDto { Name = "Tenant", Phone = "13800138000" },
+            ItemIds = new List<string> { item.Id.ToString() },
+            StartDate = startDate,
+            ExpectedEndDate = startDate.AddDays(3),
+            TotalPrice = 100m
+        }, "TestUser");
+
+        Assert.Null(result.Error);
+        Assert.NotNull(result.Rental);
+        Assert.Equal(startDate.AddDays(-3), result.Rental!.ExpectedShipDate);
+    }
+
+    [Fact]
     public async Task ReturnAsync_DamagedItemWithRepairOccupancy_BecomesNormalLoanUntilSelectedDate()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -667,6 +702,89 @@ public class RentalOccupancyAndValueTests
         var definitionOk = Assert.IsType<OkObjectResult>(definitionAction.Result);
         var definitionCalendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(definitionOk.Value);
         Assert.Equal(1, Assert.Single(definitionCalendar.DailyStocks).OccupiedCount);
+    }
+
+    [Fact]
+    public async Task Calendars_ExcludeSuspectedMissingItemFromRentalOccupancy()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var missingItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.SuspectedMissing
+        };
+        var availableItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-002",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
+        var today = BusinessToday();
+        var rentalId = Guid.NewGuid();
+
+        context.Items.AddRange(missingItem, availableItem);
+        context.Rentals.Add(new Rental
+        {
+            Id = rentalId,
+            RentalNumber = "R20260610-0003",
+            Renter = renter,
+            Status = RentalStatus.Active,
+            StartDate = today.AddDays(-2),
+            ExpectedShipDate = today.AddDays(-3),
+            ExpectedEndDate = today.AddDays(2)
+        });
+        context.RentalItems.Add(new RentalItem
+        {
+            RentalId = rentalId,
+            ItemId = missingItem.Id,
+            ItemShortIdSnapshot = missingItem.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        context.RentalShipments.Add(new RentalShipment
+        {
+            RentalId = rentalId,
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = today.AddDays(-3).AddHours(10)
+        });
+        await context.SaveChangesAsync();
+
+        var itemController = new ItemsController(context, new StubWebHostEnvironment());
+        var itemAction = await itemController.GetAvailability(missingItem.Id, today, today);
+        var itemOk = Assert.IsType<OkObjectResult>(itemAction.Result);
+        var itemCalendar = Assert.IsType<ItemAvailabilityCalendarDto>(itemOk.Value);
+        Assert.Empty(itemCalendar.BusyPeriods);
+        Assert.Empty(itemCalendar.FreePeriods);
+
+        var definitionController = new ItemDefinitionsController(context);
+        var definitionAction = await definitionController.GetOccupancyCalendar(definition.Id, today, today);
+        var definitionOk = Assert.IsType<OkObjectResult>(definitionAction.Result);
+        var definitionCalendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(definitionOk.Value);
+        var stock = Assert.Single(definitionCalendar.DailyStocks);
+        Assert.Equal(1, definitionCalendar.TotalStock);
+        Assert.Equal(1, stock.TotalStock);
+        Assert.Equal(0, stock.OccupiedCount);
+        Assert.Equal(1, stock.RemainingStock);
+        Assert.Empty(stock.Details);
     }
 
     [Fact]

@@ -150,6 +150,19 @@ namespace AuditIt.Api.Controllers
                 rangeEnd = rangeStart.AddDays(180).AddTicks(-1);
             }
 
+            // A suspected-missing item is unavailable, but it is no longer a rental
+            // occupancy. Do not keep showing its historical or open rental records
+            // in the item calendar after it has been marked missing.
+            if (item.Status == ItemStatus.SuspectedMissing)
+            {
+                return Ok(new ItemAvailabilityCalendarDto
+                {
+                    Item = ToItemDto(item),
+                    From = rangeStart,
+                    To = rangeEnd
+                });
+            }
+
             var itemDefinitionId = item.ItemDefinitionId;
             var rentals = await _context.Rentals
                 .Include(r => r.Renter)
