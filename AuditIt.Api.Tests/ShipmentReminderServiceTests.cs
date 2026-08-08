@@ -29,8 +29,8 @@ public class ShipmentReminderServiceTests
             RentalNumber = "R20260808-0001",
             Renter = new Renter { Id = Guid.NewGuid(), Name = "张三", Phone = "13900139000" },
             Status = RentalStatus.Pending,
-            ExpectedShipDate = new DateTime(2026, 8, 8),
-            StartDate = new DateTime(2026, 8, 8),
+            ExpectedShipDate = new DateTime(2026, 8, 7),
+            StartDate = new DateTime(2026, 8, 7),
             ExpectedEndDate = new DateTime(2026, 8, 10),
             CreatedBy = creator.Name,
             AssignedTo = creator.Name,
@@ -65,6 +65,10 @@ public class ShipmentReminderServiceTests
             sender,
             Options.Create(new AliyunNotificationOptions { AccessKeyId = "key", AccessKeySecret = "secret" }),
             NullLogger<ShipmentReminderService>.Instance);
+        var selectableRecipients = await service.ListActiveRecipientsAsync();
+        Assert.Equal(2, selectableRecipients.Count);
+        Assert.Contains(selectableRecipients, recipient => recipient.Id == administrator.Id);
+
         var smsDue = new DateTime(2026, 8, 8, 4, 15, 0, DateTimeKind.Utc); // 12:15 China time
         var voiceDue = new DateTime(2026, 8, 8, 4, 30, 0, DateTimeKind.Utc); // 12:30 China time
 
@@ -79,7 +83,7 @@ public class ShipmentReminderServiceTests
         Assert.Single(sender.VoiceSends);
         Assert.Equal("13800138000", send.Mobile);
         Assert.Equal("R20260808-0001", send.Parameters["rental"]);
-        Assert.Equal("今天", send.Parameters["when"]);
+        Assert.Equal("昨天", send.Parameters["when"]);
         Assert.Equal("请加急", send.Parameters["note"]);
         Assert.Equal(2, await db.ShipmentReminderDispatches.CountAsync());
         Assert.All(await db.ShipmentReminderDispatches.ToListAsync(), dispatch =>

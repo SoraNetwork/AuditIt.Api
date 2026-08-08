@@ -23,6 +23,11 @@ public class ShipmentReminderSettingsController : ControllerBase
     public async Task<ActionResult<ShipmentReminderSettingsDto>> Get(CancellationToken ct) =>
         Ok(await _shipmentReminders.GetSettingsAsync(ct));
 
+    [HttpGet("recipients")]
+    [RequirePermission(PermissionCodes.ShipmentReminderManage)]
+    public async Task<ActionResult<IReadOnlyList<ShipmentReminderRecipientDto>>> ListRecipients(CancellationToken ct) =>
+        Ok(await _shipmentReminders.ListActiveRecipientsAsync(ct));
+
     [HttpGet("sms-templates")]
     [RequirePermission(PermissionCodes.ShipmentReminderManage)]
     public async Task<ActionResult<IReadOnlyList<AliyunSmsTemplateDto>>> ListSmsTemplates(CancellationToken ct)

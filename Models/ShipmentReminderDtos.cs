@@ -79,6 +79,14 @@ public class ShipmentReminderTestResultDto
     public string? Error { get; set; }
 }
 
+/// <summary>Safe employee projection used only for reminder recipient selection.</summary>
+public class ShipmentReminderRecipientDto
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Mobile { get; set; }
+}
+
 public class AliyunSmsTemplateDto
 {
     public string TemplateCode { get; set; } = string.Empty;

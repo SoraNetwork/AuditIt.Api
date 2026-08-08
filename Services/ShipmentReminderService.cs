@@ -44,6 +44,19 @@ public class ShipmentReminderService : IShipmentReminderService
         return ToDto(settings);
     }
 
+    public async Task<IReadOnlyList<ShipmentReminderRecipientDto>> ListActiveRecipientsAsync(CancellationToken ct = default) =>
+        await _db.Users
+            .AsNoTracking()
+            .Where(user => user.Status == UserStatus.Active)
+            .OrderBy(user => user.Name)
+            .Select(user => new ShipmentReminderRecipientDto
+            {
+                Id = user.Id,
+                Name = user.Name,
+                Mobile = user.Mobile
+            })
+            .ToListAsync(ct);
+
     public async Task<ShipmentReminderSettingsDto> UpdateSettingsAsync(
         UpdateShipmentReminderSettingsDto dto,
         string? currentUser,
@@ -196,7 +209,7 @@ public class ShipmentReminderService : IShipmentReminderService
             .Where(rental => rental.Status == RentalStatus.Pending)
             .ToListAsync(ct);
         var candidates = rentals
-            .Where(rental => RentalDateRules.ToBusinessDate(rental.ExpectedShipDate) == businessDate
+            .Where(rental => RentalDateRules.ToBusinessDate(rental.ExpectedShipDate) <= businessDate
                 && !rental.RenewedFromRentalId.HasValue
                 && !rental.Shipments.Any(shipment => shipment.Direction == ShipmentDirection.Outbound))
             .ToList();
@@ -627,6 +640,7 @@ public class ShipmentReminderService : IShipmentReminderService
             -1 => "昨天",
             0 => "今天",
             1 => "明天",
+            < -1 => $"{-difference}天前",
             _ => $"{date:yyyy年M月d日}"
         };
     }

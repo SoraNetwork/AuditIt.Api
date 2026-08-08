@@ -252,6 +252,9 @@ All endpoints require the `shipmentreminder.manage` permission. This permission 
 ### `GET /shipment-reminder-settings`
 - Response: `ShipmentReminderSettingsDto`
 
+### `GET /shipment-reminder-settings/recipients`
+- Returns active employees as `{ id, name, mobile? }` for specified-administrator and test-recipient selectors. It is authorized by `shipmentreminder.manage`; it does not require the separate user-directory permission.
+
 ### `GET /shipment-reminder-settings/sms-templates`
 - Loads SMS templates from the configured Alibaba Cloud account using `QuerySmsTemplateList`.
 - Response: `AliyunSmsTemplateDto[]`; `matchesShipmentReminder` is true only for approved templates whose fixed text matches the shipment reminder text.
@@ -276,7 +279,7 @@ Store Alibaba Cloud credentials only in server-side configuration or a secret ma
 }
 ```
 
-The RAM identity needs SMS template-list and SMS-send access plus DYVMS `SingleCallByTts` access. The scheduler uses China time. SMS and voice calls have independent send times (defaults: SMS 12:00, voice 12:30). Both channels target rentals whose expected shipping date is today and which have no outbound shipment.
+The RAM identity needs SMS template-list and SMS-send access plus DYVMS `SingleCallByTts` access. The scheduler uses China time. SMS and voice calls have independent send times (defaults: SMS 12:00, voice 12:30). Both channels target rentals whose expected shipping date is today or earlier and which have no outbound shipment. The relative date variable produces `今天`, `昨天`, or `N天前` for overdue orders.
 
 ---
 
