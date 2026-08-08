@@ -13,7 +13,7 @@ namespace AuditIt.Api.Tests;
 public class ShipmentReminderServiceTests
 {
     [Fact]
-    public async Task DispatchScheduledAsync_mapsConfiguredVariables_and_deduplicatesRecipientsAndSweeps()
+    public async Task DispatchScheduledAsync_separatesSmsAndVoiceSchedules_and_deduplicatesRecipientsAndSweeps()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -42,9 +42,13 @@ public class ShipmentReminderServiceTests
         {
             Enabled = true,
             SmsEnabled = true,
+            VoiceEnabled = true,
             SendHour = 12,
+            VoiceSendHour = 12,
+            VoiceSendMinute = 30,
             SmsSignName = "AuditIt",
             SmsTemplateCode = "SMS_123",
+            VoiceTtsCode = "TTS_123",
             AdministratorUserIds = JsonSerializer.Serialize(new[] { administrator.Id }),
             TemplateVariablesJson = JsonSerializer.Serialize(new[]
             {
@@ -61,23 +65,31 @@ public class ShipmentReminderServiceTests
             sender,
             Options.Create(new AliyunNotificationOptions { AccessKeyId = "key", AccessKeySecret = "secret" }),
             NullLogger<ShipmentReminderService>.Instance);
-        var now = new DateTime(2026, 8, 8, 4, 30, 0, DateTimeKind.Utc); // 12:30 China time
+        var smsDue = new DateTime(2026, 8, 8, 4, 15, 0, DateTimeKind.Utc); // 12:15 China time
+        var voiceDue = new DateTime(2026, 8, 8, 4, 30, 0, DateTimeKind.Utc); // 12:30 China time
 
-        await service.DispatchScheduledAsync(now);
-        await service.DispatchScheduledAsync(now);
+        await service.DispatchScheduledAsync(smsDue);
+        Assert.Single(sender.SmsSends);
+        Assert.Empty(sender.VoiceSends);
+
+        await service.DispatchScheduledAsync(voiceDue);
+        await service.DispatchScheduledAsync(voiceDue);
 
         var send = Assert.Single(sender.SmsSends);
+        Assert.Single(sender.VoiceSends);
         Assert.Equal("13800138000", send.Mobile);
         Assert.Equal("R20260808-0001", send.Parameters["rental"]);
         Assert.Equal("今天", send.Parameters["when"]);
         Assert.Equal("请加急", send.Parameters["note"]);
-        Assert.Equal(1, await db.ShipmentReminderDispatches.CountAsync());
-        Assert.Equal(ShipmentReminderDispatchStatus.Succeeded, (await db.ShipmentReminderDispatches.SingleAsync()).Status);
+        Assert.Equal(2, await db.ShipmentReminderDispatches.CountAsync());
+        Assert.All(await db.ShipmentReminderDispatches.ToListAsync(), dispatch =>
+            Assert.Equal(ShipmentReminderDispatchStatus.Succeeded, dispatch.Status));
     }
 
     private sealed class RecordingSender : IAliyunShipmentReminderSender
     {
         public List<(string Mobile, IReadOnlyDictionary<string, string> Parameters)> SmsSends { get; } = new();
+        public List<(string Mobile, IReadOnlyDictionary<string, string> Parameters)> VoiceSends { get; } = new();
 
         public Task<string> SendSmsAsync(string mobile, string signName, string templateCode, IReadOnlyDictionary<string, string> templateParameters, CancellationToken ct)
         {
@@ -85,11 +97,13 @@ public class ShipmentReminderServiceTests
             return Task.FromResult("sms-request-id");
         }
 
-        public Task<string> SendVoiceAsync(string mobile, string? calledShowNumber, string ttsCode, IReadOnlyDictionary<string, string> templateParameters, CancellationToken ct) =>
-            Task.FromResult("voice-request-id");
+        public Task<string> SendVoiceAsync(string mobile, string? calledShowNumber, string ttsCode, IReadOnlyDictionary<string, string> templateParameters, CancellationToken ct)
+        {
+            VoiceSends.Add((mobile, new Dictionary<string, string>(templateParameters)));
+            return Task.FromResult("voice-request-id");
+        }
 
         public Task<IReadOnlyList<AliyunSmsTemplateDto>> ListSmsTemplatesAsync(CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<AliyunSmsTemplateDto>>(Array.Empty<AliyunSmsTemplateDto>());
     }
 }
-

@@ -276,7 +276,7 @@ Store Alibaba Cloud credentials only in server-side configuration or a secret ma
 }
 ```
 
-The RAM identity needs SMS template-list and SMS-send access plus DYVMS `SingleCallByTts` access. The scheduler uses China time and dispatches after the configured time (default 12:00) for rentals whose expected shipping date is today and which have no outbound shipment.
+The RAM identity needs SMS template-list and SMS-send access plus DYVMS `SingleCallByTts` access. The scheduler uses China time. SMS and voice calls have independent send times (defaults: SMS 12:00, voice 12:30). Both channels target rentals whose expected shipping date is today and which have no outbound shipment.
 
 ---
 

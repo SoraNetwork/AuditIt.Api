@@ -95,6 +95,14 @@ namespace AuditIt.Api.Data
             modelBuilder.Entity<Reminder>()
                 .HasIndex(r => new { r.RelatedEntityType, r.RelatedEntityId, r.Type });
 
+            modelBuilder.Entity<ShipmentReminderSettings>()
+                .Property(settings => settings.VoiceSendHour)
+                .HasDefaultValue(12);
+
+            modelBuilder.Entity<ShipmentReminderSettings>()
+                .Property(settings => settings.VoiceSendMinute)
+                .HasDefaultValue(30);
+
             modelBuilder.Entity<ShipmentReminderDispatch>()
                 .HasIndex(dispatch => new
                 {

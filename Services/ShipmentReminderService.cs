@@ -88,6 +88,8 @@ public class ShipmentReminderService : IShipmentReminderService
         settings.VoiceEnabled = dto.VoiceEnabled;
         settings.SendHour = dto.SendHour;
         settings.SendMinute = dto.SendMinute;
+        settings.VoiceSendHour = dto.VoiceSendHour;
+        settings.VoiceSendMinute = dto.VoiceSendMinute;
         settings.TemplateVariablesJson = JsonSerializer.Serialize(NormalizeTemplateVariables(dto.TemplateVariables), TemplateVariablesJsonOptions);
         settings.SmsSignName = smsTemplate?.SignatureName;
         settings.SmsTemplateCode = Normalize(dto.SmsTemplateCode);
@@ -175,7 +177,8 @@ public class ShipmentReminderService : IShipmentReminderService
     public async Task DispatchScheduledAsync(DateTime utcNow, CancellationToken ct = default)
     {
         var settings = await GetOrCreateSettingsAsync(ct);
-        if (!settings.Enabled || (!settings.SmsEnabled && !settings.VoiceEnabled) || !IsDue(settings, utcNow))
+        var channels = GetDueChannels(settings, utcNow).ToList();
+        if (!settings.Enabled || channels.Count == 0)
         {
             return;
         }
@@ -187,7 +190,6 @@ public class ShipmentReminderService : IShipmentReminderService
         }
 
         var businessDate = RentalDateRules.Today(utcNow);
-        var channels = GetEnabledChannels(settings);
         var rentals = await _db.Rentals
             .Include(rental => rental.Renter)
             .Include(rental => rental.Shipments)
@@ -400,6 +402,8 @@ public class ShipmentReminderService : IShipmentReminderService
         VoiceEnabled = settings.VoiceEnabled,
         SendHour = settings.SendHour,
         SendMinute = settings.SendMinute,
+        VoiceSendHour = settings.VoiceSendHour,
+        VoiceSendMinute = settings.VoiceSendMinute,
         TemplateVariables = ParseTemplateVariables(settings.TemplateVariablesJson),
         SmsSignName = settings.SmsSignName,
         SmsTemplateCode = settings.SmsTemplateCode,
@@ -412,20 +416,24 @@ public class ShipmentReminderService : IShipmentReminderService
         UpdatedBy = settings.UpdatedBy
     };
 
-    private static bool IsDue(ShipmentReminderSettings settings, DateTime utcNow)
+    private static bool IsDue(ShipmentReminderSettings settings, ShipmentReminderChannel channel, DateTime utcNow)
     {
         var chinaNow = utcNow.AddHours(8);
-        return chinaNow.TimeOfDay >= new TimeSpan(settings.SendHour, settings.SendMinute, 0);
+        var scheduledTime = channel == ShipmentReminderChannel.Voice
+            ? new TimeSpan(settings.VoiceSendHour, settings.VoiceSendMinute, 0)
+            : new TimeSpan(settings.SendHour, settings.SendMinute, 0);
+
+        return chinaNow.TimeOfDay >= scheduledTime;
     }
 
-    private static IEnumerable<ShipmentReminderChannel> GetEnabledChannels(ShipmentReminderSettings settings)
+    private static IEnumerable<ShipmentReminderChannel> GetDueChannels(ShipmentReminderSettings settings, DateTime utcNow)
     {
-        if (settings.SmsEnabled)
+        if (settings.SmsEnabled && IsDue(settings, ShipmentReminderChannel.Sms, utcNow))
         {
             yield return ShipmentReminderChannel.Sms;
         }
 
-        if (settings.VoiceEnabled)
+        if (settings.VoiceEnabled && IsDue(settings, ShipmentReminderChannel.Voice, utcNow))
         {
             yield return ShipmentReminderChannel.Voice;
         }
@@ -449,6 +457,7 @@ public class ShipmentReminderService : IShipmentReminderService
         {
             throw new InvalidOperationException("启用语音时必须填写语音 TTS Code。");
         }
+
     }
 
     private static void ValidateTestChannelConfiguration(ShipmentReminderSettings settings, TestShipmentReminderDto dto)

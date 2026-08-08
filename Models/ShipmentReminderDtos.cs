@@ -9,6 +9,8 @@ public class ShipmentReminderSettingsDto
     public bool VoiceEnabled { get; set; }
     public int SendHour { get; set; }
     public int SendMinute { get; set; }
+    public int VoiceSendHour { get; set; }
+    public int VoiceSendMinute { get; set; }
     public List<ShipmentReminderTemplateVariableDto> TemplateVariables { get; set; } = new();
     public string? SmsSignName { get; set; }
     public string? SmsTemplateCode { get; set; }
@@ -32,6 +34,12 @@ public class UpdateShipmentReminderSettingsDto
 
     [Range(0, 59)]
     public int SendMinute { get; set; }
+
+    [Range(0, 23)]
+    public int VoiceSendHour { get; set; } = 12;
+
+    [Range(0, 59)]
+    public int VoiceSendMinute { get; set; } = 30;
 
     [MinLength(1)]
     public List<ShipmentReminderTemplateVariableDto> TemplateVariables { get; set; } = new();

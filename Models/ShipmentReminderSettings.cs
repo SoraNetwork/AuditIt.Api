@@ -23,6 +23,12 @@ public class ShipmentReminderSettings
     [Range(0, 59)]
     public int SendMinute { get; set; }
 
+    [Range(0, 23)]
+    public int VoiceSendHour { get; set; } = 12;
+
+    [Range(0, 59)]
+    public int VoiceSendMinute { get; set; } = 30;
+
     /// <summary>JSON array of variable name-to-value-source mappings used by SMS and TTS.</summary>
     [Required]
     [StringLength(4000)]
