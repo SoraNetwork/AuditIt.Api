@@ -62,19 +62,22 @@ namespace AuditIt.Api.Services
 
             if (!string.IsNullOrWhiteSpace(query.Search))
             {
-                var search = query.Search.Trim();
+                var search = query.Search.Trim().ToLowerInvariant();
                 q = q.Where(r =>
-                    r.RentalNumber.Contains(search)
-                    || (r.PlatformOrderNo != null && r.PlatformOrderNo.Contains(search))
+                    r.RentalNumber.ToLower().Contains(search)
+                    || (r.PlatformOrderNo != null && r.PlatformOrderNo.ToLower().Contains(search))
                     || (r.Renter != null && (
-                        r.Renter.Name.Contains(search)
-                        || (r.Renter.Phone != null && r.Renter.Phone.Contains(search))
-                        || (r.Renter.XianyuId != null && r.Renter.XianyuId.Contains(search))
-                        || (r.Renter.TaobaoId != null && r.Renter.TaobaoId.Contains(search))
-                        || (r.Renter.XiaohongshuId != null && r.Renter.XiaohongshuId.Contains(search))))
+                        r.Renter.Name.ToLower().Contains(search)
+                        || (r.Renter.Phone != null && r.Renter.Phone.ToLower().Contains(search))
+                        || (r.Renter.IdCardNo != null && r.Renter.IdCardNo.ToLower().Contains(search))
+                        || (r.Renter.XianyuId != null && r.Renter.XianyuId.ToLower().Contains(search))
+                        || (r.Renter.TaobaoId != null && r.Renter.TaobaoId.ToLower().Contains(search))
+                        || (r.Renter.XiaohongshuId != null && r.Renter.XiaohongshuId.ToLower().Contains(search))
+                        || (r.Renter.DefaultAddress != null && r.Renter.DefaultAddress.ToLower().Contains(search))
+                        || (r.Renter.Notes != null && r.Renter.Notes.ToLower().Contains(search))))
                     || r.Items.Any(item =>
-                        item.ItemShortIdSnapshot.Contains(search)
-                        || item.ItemNameSnapshot.Contains(search)));
+                        item.ItemShortIdSnapshot.ToLower().Contains(search)
+                        || item.ItemNameSnapshot.ToLower().Contains(search)));
             }
 
             if (query.PendingSettlement)

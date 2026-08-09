@@ -11,6 +11,13 @@ public class RentalSfRouteSyncTests
 {
     [Theory]
     [InlineData("Alice", "R20260601-0001")]
+    [InlineData("001380", "R20260601-0001")]
+    [InlineData("ALPHA-42", "R20260601-0001")]
+    [InlineData("xy-alice", "R20260601-0001")]
+    [InlineData("tb-alice", "R20260601-0001")]
+    [InlineData("xhs-alice", "R20260601-0001")]
+    [InlineData("Huangpu", "R20260601-0001")]
+    [InlineData("photography", "R20260601-0001")]
     [InlineData("R20260601", "R20260601-0001")]
     [InlineData("Camera", "R20260601-0001")]
     public async Task ListAsync_searchesRentalNumberRenterAndItems(string search, string expectedRentalNumber)
@@ -30,7 +37,18 @@ public class RentalSfRouteSyncTests
         {
             Id = Guid.NewGuid(),
             RentalNumber = "R20260601-0001",
-            Renter = new Renter { Id = Guid.NewGuid(), Name = "Alice Chen", Phone = "13800138000" },
+            Renter = new Renter
+            {
+                Id = Guid.NewGuid(),
+                Name = "Alice Chen",
+                Phone = "13800138000",
+                IdCardNo = "ID-ALPHA-42",
+                XianyuId = "xy-alice-store",
+                TaobaoId = "tb-alice-shop",
+                XiaohongshuId = "xhs-alice-red",
+                DefaultAddress = "Shanghai Huangpu Road 1",
+                Notes = "VIP photography client"
+            },
             Status = RentalStatus.Active,
             StartDate = new DateTime(2026, 6, 1),
             ExpectedShipDate = new DateTime(2026, 5, 31),

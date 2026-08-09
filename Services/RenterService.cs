@@ -25,14 +25,16 @@ namespace AuditIt.Api.Services
             var q = _context.Renters.AsQueryable();
             if (!string.IsNullOrWhiteSpace(keyword))
             {
-                var k = keyword.Trim();
+                var k = keyword.Trim().ToLowerInvariant();
                 q = q.Where(r =>
-                    r.Name.Contains(k) ||
-                    (r.Phone != null && r.Phone.Contains(k)) ||
-                    (r.IdCardNo != null && r.IdCardNo.Contains(k)) ||
-                    (r.TaobaoId !=null && r.TaobaoId.Contains(k)) ||
-                    (r.XianyuId != null && r.XianyuId.Contains(k)) ||
-                    (r.XiaohongshuId != null && r.XiaohongshuId.Contains(k))
+                    r.Name.ToLower().Contains(k) ||
+                    (r.Phone != null && r.Phone.ToLower().Contains(k)) ||
+                    (r.IdCardNo != null && r.IdCardNo.ToLower().Contains(k)) ||
+                    (r.TaobaoId !=null && r.TaobaoId.ToLower().Contains(k)) ||
+                    (r.XianyuId != null && r.XianyuId.ToLower().Contains(k)) ||
+                    (r.XiaohongshuId != null && r.XiaohongshuId.ToLower().Contains(k)) ||
+                    (r.DefaultAddress != null && r.DefaultAddress.ToLower().Contains(k)) ||
+                    (r.Notes != null && r.Notes.ToLower().Contains(k))
                     );
             }
 
