@@ -12,7 +12,8 @@ namespace AuditIt.Api.Models
         Overdue,
         Returned,
         Cancelled,
-        Renewed
+        Renewed,
+        PartiallyShipped
     }
 
     public class Rental

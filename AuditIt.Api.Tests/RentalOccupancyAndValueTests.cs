@@ -3383,6 +3383,119 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task AddShipmentAsync_PartiallyShippedRentalStaysPendingUntilAllItemsShip()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera", Category = category, Unit = "pcs", Description = "Camera" };
+        var firstItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-PARTIAL-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var secondItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-PARTIAL-002",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990701-PARTIAL",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = BusinessToday(),
+            ExpectedShipDate = BusinessToday(),
+            ExpectedEndDate = BusinessToday().AddDays(3),
+            TotalPrice = 300m
+        };
+        var firstRentalItem = new RentalItem
+        {
+            Item = firstItem,
+            ItemShortIdSnapshot = firstItem.ShortId,
+            ItemNameSnapshot = definition.Name
+        };
+        var secondRentalItem = new RentalItem
+        {
+            Item = secondItem,
+            ItemShortIdSnapshot = secondItem.ShortId,
+            ItemNameSnapshot = definition.Name
+        };
+        rental.Items.Add(firstRentalItem);
+        rental.Items.Add(secondRentalItem);
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var service = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            Array.Empty<INotificationChannel>(),
+            new StubSfExpressService(),
+            new StubSettlementService());
+
+        var firstShipment = await service.AddShipmentAsync(rental.Id, new CreateShipmentDto
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouseId = warehouse.Id,
+            Carrier = "SF",
+            ItemSelections = new List<RentalItemShipSelectionDto>
+            {
+                new() { RentalItemId = firstRentalItem.Id, ItemId = firstItem.Id }
+            }
+        }, "TestUser");
+
+        Assert.Null(firstShipment.Error);
+        Assert.NotNull(firstShipment.Rental);
+        Assert.Equal(RentalStatus.PartiallyShipped, firstShipment.Rental!.Status);
+        Assert.Single(firstShipment.Rental.Shipments);
+        Assert.Single(firstShipment.Rental.Shipments.Single().Items);
+        Assert.Equal(firstRentalItem.Id, firstShipment.Rental.Shipments.Single().Items.Single().RentalItemId);
+        Assert.Equal(ItemStatus.LoanedOut, firstItem.Status);
+        Assert.Equal(ItemStatus.InStock, secondItem.Status);
+
+        var inboundWhilePartial = await service.AddShipmentAsync(rental.Id, new CreateShipmentDto
+        {
+            Direction = ShipmentDirection.Inbound,
+            OriginWarehouseId = warehouse.Id,
+            Carrier = "SF"
+        }, "TestUser");
+        Assert.NotNull(inboundWhilePartial.Error);
+
+        var secondShipment = await service.AddShipmentAsync(rental.Id, new CreateShipmentDto
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouseId = warehouse.Id,
+            Carrier = "SF",
+            ItemSelections = new List<RentalItemShipSelectionDto>
+            {
+                new() { RentalItemId = secondRentalItem.Id, ItemId = secondItem.Id }
+            }
+        }, "TestUser");
+
+        Assert.Null(secondShipment.Error);
+        Assert.NotNull(secondShipment.Rental);
+        Assert.Equal(RentalStatus.Active, secondShipment.Rental!.Status);
+        Assert.Equal(2, secondShipment.Rental.Shipments.Count);
+        Assert.Equal(ItemStatus.LoanedOut, secondItem.Status);
+    }
+
+    [Fact]
     public async Task DeleteShipmentAsync_LastOutboundRestoresPendingInventoryAndRecalculatesShippingFee()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

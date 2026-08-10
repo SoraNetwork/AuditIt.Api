@@ -189,7 +189,7 @@ namespace AuditIt.Api.Controllers
                 .Include(r => r.Renter)
                 .Include(r => r.Items)
                 .Include(r => r.Shipments)
-                .Where(r => r.Status == RentalStatus.Pending)
+                .Where(r => r.Status == RentalStatus.Pending || r.Status == RentalStatus.PartiallyShipped)
                 .Where(r => r.Items.Any(ri => ri.ItemId == null && ri.ItemDefinitionId == itemDefinitionId && ri.ReturnedAt == null))
                 .Where(r => r.ExpectedShipDate <= rangeEnd.AddDays(1)
                     && (r.ExpectedEndDate >= rangeStart.AddDays(-3)

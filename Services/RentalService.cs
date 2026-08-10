@@ -221,9 +221,8 @@ namespace AuditIt.Api.Services
                                 && r.RenewalIntentEndDate.HasValue
                                 && r.RenewalIntentEndDate.Value >= queryFrom)))
                     || (r.ExpectedShipDate <= queryTo
-                        && r.Status == RentalStatus.Pending
-                        && r.RenewedFromRentalId == null
-                        && !r.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound))
+                        && (r.Status == RentalStatus.Pending || r.Status == RentalStatus.PartiallyShipped)
+                        && r.RenewedFromRentalId == null)
                     || (r.ExpectedEndDate <= queryTo
                         && r.Status != RentalStatus.Returned
                         && r.Status != RentalStatus.Renewed
@@ -274,9 +273,9 @@ namespace AuditIt.Api.Services
                     });
                 }
 
-                if (!hasOutboundShipment
+                if (!hasRentalStarted
                     && !IsRenewal(rental)
-                    && rental.Status == RentalStatus.Pending)
+                    && (rental.Status == RentalStatus.Pending || rental.Status == RentalStatus.PartiallyShipped))
                 {
                     var shipmentRequiredEnd = expectedShipDate < today
                         ? (today > to.Date ? to.Date : today)
@@ -777,7 +776,8 @@ namespace AuditIt.Api.Services
                 return new RenewRentalResult { Error = $"该租赁单已续租到 {source.RenewedToRentalNumber}。" };
             }
 
-            if (source.Status == RentalStatus.Pending && !HasRentalStarted(source))
+            if ((source.Status == RentalStatus.Pending || source.Status == RentalStatus.PartiallyShipped)
+                && !HasRentalStarted(source))
             {
                 return new RenewRentalResult { Error = "租赁尚未开始，不能续租。" };
             }
@@ -1256,6 +1256,7 @@ namespace AuditIt.Api.Services
                     .ThenInclude(ri => ri.Item)
                         .ThenInclude(i => i!.Warehouse)
                 .Include(r => r.Shipments)
+                    .ThenInclude(shipment => shipment.RentalItems)
                 .FirstOrDefaultAsync(r => r.Id == rentalId);
 
             if (rental == null)
@@ -1279,16 +1280,40 @@ namespace AuditIt.Api.Services
                 return new RentalShipmentResult { Error = "发货仓库不存在。" };
             }
 
+            var selectedOutboundRentalItems = new List<RentalItem>();
             if (dto.Direction == ShipmentDirection.Outbound)
             {
-                if (dto.ItemSelections != null && dto.ItemSelections.Count > 0)
+                var shippedRentalItemIds = GetOutboundShippedRentalItemIds(rental);
+                var selections = dto.ItemSelections ?? new List<RentalItemShipSelectionDto>();
+                var selectedRentalItemIds = new HashSet<int>();
+
+                if (selections.Count == 0)
                 {
-                    foreach (var selection in dto.ItemSelections)
+                    // Keep the legacy API behavior: no selections means ship every
+                    // remaining item. New clients submit the selected items so a
+                    // rental can be shipped in more than one parcel.
+                    selectedOutboundRentalItems = rental.Items
+                        .Where(item => !item.ReturnedAt.HasValue && !shippedRentalItemIds.Contains(item.Id))
+                        .ToList();
+                }
+                else
+                {
+                    foreach (var selection in selections)
                     {
+                        if (!selectedRentalItemIds.Add(selection.RentalItemId))
+                        {
+                            return new RentalShipmentResult { Error = "同一租赁物品不能在一条发货物流中重复选择。" };
+                        }
+
                         var rentalItem = rental.Items.FirstOrDefault(ri => ri.Id == selection.RentalItemId);
                         if (rentalItem == null)
                         {
                             return new RentalShipmentResult { Error = $"未找到租赁项 ID {selection.RentalItemId}。" };
+                        }
+
+                        if (rentalItem.ReturnedAt.HasValue || shippedRentalItemIds.Contains(rentalItem.Id))
+                        {
+                            return new RentalShipmentResult { Error = $"租赁项 ID {selection.RentalItemId} 已发货或已归还，不能重复发货。" };
                         }
 
                         if (rentalItem.ItemId == null)
@@ -1323,18 +1348,28 @@ namespace AuditIt.Api.Services
                             rentalItem.ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks;
                             rentalItem.Item = item;
                         }
+                        else if (rentalItem.ItemId.Value != selection.ItemId)
+                        {
+                            return new RentalShipmentResult { Error = "已确定库存的租赁物品必须使用原商品发货。" };
+                        }
+
+                        selectedOutboundRentalItems.Add(rentalItem);
                     }
                 }
 
-                var remainingUncertain = rental.Items.Any(ri => ri.ItemId == null && ri.ReturnedAt == null);
-                if (remainingUncertain)
+                if (selectedOutboundRentalItems.Count == 0)
                 {
-                    return new RentalShipmentResult { Error = "发货时必须为所有物品选择具体的库存。" };
+                    return new RentalShipmentResult { Error = "没有可发货的租赁物品。" };
+                }
+
+                if (selectedOutboundRentalItems.Any(item => !item.ItemId.HasValue))
+                {
+                    return new RentalShipmentResult { Error = "请为本次发货的每件物品选择具体库存。" };
                 }
 
                 var conflict = await ValidateOutboundShipmentConflictsAsync(
                     rental.Id,
-                    rental.Items.Where(ri => ri.ReturnedAt == null).Select(ri => ri.ItemId!.Value).ToList());
+                    selectedOutboundRentalItems.Select(item => item.ItemId!.Value).ToList());
 
                 if (conflict != null && !dto.AllowOpenItemConflict)
                 {
@@ -1384,7 +1419,7 @@ namespace AuditIt.Api.Services
                 CreatedBy = currentUser
             };
             var linkedRentalItems = dto.Direction == ShipmentDirection.Outbound
-                ? rental.Items.Where(ri => ri.ReturnedAt == null).ToList()
+                ? selectedOutboundRentalItems
                 : rental.Items.Where(ri => selectedInboundItemIds.Contains(ri.Id)).ToList();
             foreach (var rentalItem in linkedRentalItems)
             {
@@ -1396,9 +1431,12 @@ namespace AuditIt.Api.Services
             var logisticsSummary = BuildShipmentSummary(dto.Carrier, shipment.TrackingNumber);
             if (dto.Direction == ShipmentDirection.Outbound)
             {
-                rental.Status = RentalDateRules.IsOverdue(rental.ExpectedEndDate, shippedAt)
-                    ? RentalStatus.Overdue
-                    : RentalStatus.Active;
+                var fullyShipped = IsFullyOutboundShipped(rental);
+                rental.Status = fullyShipped
+                    ? RentalDateRules.IsOverdue(rental.ExpectedEndDate, shippedAt)
+                        ? RentalStatus.Overdue
+                        : RentalStatus.Active
+                    : RentalStatus.PartiallyShipped;
 
                 foreach (var rentalItem in linkedRentalItems)
                 {
@@ -1413,7 +1451,10 @@ namespace AuditIt.Api.Services
                     LogAudit(rentalItem.Item, AuditAction.RentalShipped, rental.RentalNumber, currentUser, logisticsSummary);
                 }
 
-                await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalShipmentSoon);
+                if (fullyShipped)
+                {
+                    await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser, ReminderType.RentalShipmentSoon);
+                }
             }
             else
             {
@@ -1447,7 +1488,9 @@ namespace AuditIt.Api.Services
 
             await NotifyStatusChangeAsync(
                 rental,
-                dto.Direction == ShipmentDirection.Outbound ? "已发货" : "已登记回货物流",
+                dto.Direction == ShipmentDirection.Outbound
+                    ? rental.Status == RentalStatus.PartiallyShipped ? "未完全发货" : "已发货"
+                    : "已登记回货物流",
                 currentUser,
                 $"物流：{logisticsSummary}；运费：{FormatOptionalMoney(shipment.ShippingFee)}");
 
@@ -1598,11 +1641,21 @@ namespace AuditIt.Api.Services
 
             if (!IsClosedStatus(rental.Status))
             {
-                if (!IsRenewal(rental) && !hasRemainingOutbound)
+                var isFullyOutboundShipped = IsFullyOutboundShipped(rental);
+                if (!IsRenewal(rental) && !isFullyOutboundShipped)
                 {
-                    rental.Status = RentalStatus.Pending;
+                    rental.Status = hasRemainingOutbound
+                        ? RentalStatus.PartiallyShipped
+                        : RentalStatus.Pending;
 
-                    foreach (var rentalItem in rental.Items.Where(item => !item.ReturnedAt.HasValue))
+                    var stillShippedItemIds = GetOutboundShippedRentalItemIds(rental);
+                    var deletedShipmentItemIds = shipment.RentalItems.Count == 0
+                        ? rental.Items.Select(item => item.Id).ToHashSet()
+                        : shipment.RentalItems.Select(link => link.RentalItemId).ToHashSet();
+                    foreach (var rentalItem in rental.Items.Where(item =>
+                        !item.ReturnedAt.HasValue
+                        && deletedShipmentItemIds.Contains(item.Id)
+                        && !stillShippedItemIds.Contains(item.Id)))
                     {
                         var item = rentalItem.Item;
                         if (item == null
@@ -1813,6 +1866,7 @@ namespace AuditIt.Api.Services
             var rentals = await _context.Rentals
                 .Include(r => r.Shipments)
                 .Where(r => r.Status == RentalStatus.Pending
+                    || r.Status == RentalStatus.PartiallyShipped
                     || r.Status == RentalStatus.Active
                     || r.Status == RentalStatus.Overdue
                     || r.Status == RentalStatus.Returned)
@@ -3207,6 +3261,7 @@ namespace AuditIt.Api.Services
         private static string FormatRentalStatus(RentalStatus status) => status switch
         {
             RentalStatus.Pending => "待发货",
+            RentalStatus.PartiallyShipped => "未完全发货",
             RentalStatus.Active => "进行中",
             RentalStatus.Overdue => "逾期",
             RentalStatus.Returned => "已归还",
@@ -3413,11 +3468,40 @@ namespace AuditIt.Api.Services
         private static bool HasOutboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
 
+        private static HashSet<int> GetOutboundShippedRentalItemIds(Rental rental)
+        {
+            var outboundShipments = rental.Shipments
+                .Where(shipment => shipment.Direction == ShipmentDirection.Outbound)
+                .ToList();
+
+            // Shipments created before item links were introduced represented the
+            // whole rental. Preserve that meaning for existing data.
+            if (outboundShipments.Any(shipment => shipment.RentalItems.Count == 0))
+            {
+                return rental.Items.Select(item => item.Id).ToHashSet();
+            }
+
+            return outboundShipments
+                .SelectMany(shipment => shipment.RentalItems.Select(link => link.RentalItemId))
+                .ToHashSet();
+        }
+
+        private static bool IsFullyOutboundShipped(Rental rental)
+        {
+            var openItems = rental.Items
+                .Where(item => !item.ReturnedAt.HasValue)
+                .ToList();
+            var shippedRentalItemIds = GetOutboundShippedRentalItemIds(rental);
+            return openItems.Count == 0
+                ? HasOutboundShipment(rental)
+                : openItems.All(item => shippedRentalItemIds.Contains(item.Id));
+        }
+
         private static bool IsRenewal(Rental rental) =>
             rental.RenewedFromRentalId.HasValue;
 
         private static bool HasRentalStarted(Rental rental) =>
-            IsRenewal(rental) || HasOutboundShipment(rental);
+            RentalDateRules.HasRentalStarted(rental);
 
         private static bool ShouldUseReturnBuffer(Rental rental) =>
             rental.Status != RentalStatus.Renewed

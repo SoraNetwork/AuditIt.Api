@@ -593,8 +593,7 @@ namespace AuditIt.Api.Controllers
         }
 
         private static bool HasRentalStarted(Rental rental) =>
-            rental.RenewedFromRentalId.HasValue
-            || rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
+            RentalDateRules.HasRentalStarted(rental);
 
         private static DateTime OccupancyStartDate(Rental rental) =>
             RentalDateRules.OccupancyStartDate(rental);

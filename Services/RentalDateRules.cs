@@ -103,7 +103,8 @@ namespace AuditIt.Api.Services
             rental.RenewedFromRentalId.HasValue;
 
         public static bool HasRentalStarted(Rental rental) =>
-            IsRenewal(rental) || HasOutboundShipment(rental);
+            IsRenewal(rental)
+            || (rental.Status != RentalStatus.PartiallyShipped && HasOutboundShipment(rental));
 
         public static bool ShouldUseReturnBuffer(Rental rental) =>
             rental.Status != RentalStatus.Renewed

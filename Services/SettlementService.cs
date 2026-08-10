@@ -453,6 +453,7 @@ namespace AuditIt.Api.Services
         private static string FormatStatus(RentalStatus status) => status switch
         {
             RentalStatus.Pending => "待发货",
+            RentalStatus.PartiallyShipped => "未完全发货",
             RentalStatus.Active => "进行中",
             RentalStatus.Overdue => "逾期",
             RentalStatus.Returned => "已归还",

@@ -36,8 +36,20 @@ public class ShipmentReminderServiceTests
             AssignedTo = creator.Name,
             TotalPrice = 100m
         };
+        var secondRental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20260808-0002",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "李四", Phone = "13900139001" },
+            Status = RentalStatus.Pending,
+            ExpectedShipDate = new DateTime(2026, 8, 8),
+            StartDate = new DateTime(2026, 8, 8),
+            ExpectedEndDate = new DateTime(2026, 8, 11),
+            CreatedBy = creator.Name,
+            TotalPrice = 200m
+        };
         db.Users.AddRange(creator, administrator);
-        db.Rentals.Add(rental);
+        db.Rentals.AddRange(rental, secondRental);
         db.ShipmentReminderSettings.Add(new ShipmentReminderSettings
         {
             Enabled = true,
@@ -52,7 +64,7 @@ public class ShipmentReminderServiceTests
             AdministratorUserIds = JsonSerializer.Serialize(new[] { administrator.Id }),
             TemplateVariablesJson = JsonSerializer.Serialize(new[]
             {
-                new ShipmentReminderTemplateVariableDto { Name = "rental", Source = ShipmentReminderVariableSource.RentalNumber },
+                new ShipmentReminderTemplateVariableDto { Name = "order_Name", Source = ShipmentReminderVariableSource.RentalNumber },
                 new ShipmentReminderTemplateVariableDto { Name = "when", Source = ShipmentReminderVariableSource.RelativeExpectedShipDate },
                 new ShipmentReminderTemplateVariableDto { Name = "note", Source = ShipmentReminderVariableSource.StaticText, StaticValue = "请加急" }
             })
@@ -82,10 +94,10 @@ public class ShipmentReminderServiceTests
         var send = Assert.Single(sender.SmsSends);
         Assert.Single(sender.VoiceSends);
         Assert.Equal("13800138000", send.Mobile);
-        Assert.Equal("R20260808-0001", send.Parameters["rental"]);
+        Assert.Equal("R20260808-0001 张三等2条", send.Parameters["order_Name"]);
         Assert.Equal("昨天", send.Parameters["when"]);
         Assert.Equal("请加急", send.Parameters["note"]);
-        Assert.Equal(2, await db.ShipmentReminderDispatches.CountAsync());
+        Assert.Equal(4, await db.ShipmentReminderDispatches.CountAsync());
         Assert.All(await db.ShipmentReminderDispatches.ToListAsync(), dispatch =>
             Assert.Equal(ShipmentReminderDispatchStatus.Succeeded, dispatch.Status));
     }

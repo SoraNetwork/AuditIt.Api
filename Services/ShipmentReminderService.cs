@@ -206,12 +206,12 @@ public class ShipmentReminderService : IShipmentReminderService
         var rentals = await _db.Rentals
             .Include(rental => rental.Renter)
             .Include(rental => rental.Shipments)
-            .Where(rental => rental.Status == RentalStatus.Pending)
+            .Where(rental => rental.Status == RentalStatus.Pending
+                || rental.Status == RentalStatus.PartiallyShipped)
             .ToListAsync(ct);
         var candidates = rentals
             .Where(rental => RentalDateRules.ToBusinessDate(rental.ExpectedShipDate) <= businessDate
-                && !rental.RenewedFromRentalId.HasValue
-                && !rental.Shipments.Any(shipment => shipment.Direction == ShipmentDirection.Outbound))
+                && !rental.RenewedFromRentalId.HasValue)
             .ToList();
         if (candidates.Count == 0)
         {
@@ -219,41 +219,87 @@ public class ShipmentReminderService : IShipmentReminderService
         }
 
         var administrators = ParseAdministratorIds(settings.AdministratorUserIds);
+        var recipientTargets = new List<RecipientTarget>();
         foreach (var rental in candidates)
         {
             var recipients = await ResolveRecipientsAsync(rental, administrators, ct);
-            var templateParameters = BuildTemplateParameters(rental, settings, businessDate);
-
             foreach (var recipient in recipients)
             {
-                foreach (var channel in channels)
+                recipientTargets.Add(new RecipientTarget(rental, recipient));
+            }
+        }
+
+        foreach (var channel in channels)
+        {
+            foreach (var targetGroup in recipientTargets
+                .GroupBy(target => target.Recipient.Mobile!, StringComparer.Ordinal)
+                .OrderBy(group => group.Key, StringComparer.Ordinal))
+            {
+                var targets = targetGroup
+                    .GroupBy(target => target.Rental.Id)
+                    .Select(group => group.First())
+                    .OrderBy(target => RentalDateRules.ToBusinessDate(target.Rental.ExpectedShipDate))
+                    .ThenBy(target => target.Rental.RentalNumber, StringComparer.Ordinal)
+                    .ToList();
+                var reserved = new List<(Rental Rental, ShipmentReminderDispatch Dispatch)>();
+
+                foreach (var target in targets)
                 {
-                    var dispatch = await ReserveDispatchAsync(rental.Id, recipient, channel, businessDate, utcNow, ct);
+                    var dispatch = await ReserveDispatchAsync(
+                        target.Rental.Id,
+                        target.Recipient,
+                        channel,
+                        businessDate,
+                        utcNow,
+                        ct);
                     if (dispatch == null)
                     {
                         continue;
                     }
 
-                    try
+                    reserved.Add((target.Rental, dispatch));
+                }
+
+                if (reserved.Count == 0)
+                {
+                    continue;
+                }
+
+                var recipient = targets[0].Recipient;
+                var templateParameters = BuildGroupedTemplateParameters(
+                    reserved.Select(item => item.Rental),
+                    settings,
+                    businessDate);
+                try
+                {
+                    var providerRequestId = await SendChannelAsync(
+                        channel,
+                        recipient.Mobile!,
+                        settings,
+                        templateParameters,
+                        ct);
+                    foreach (var (_, dispatch) in reserved)
                     {
-                        dispatch.ProviderRequestId = await SendChannelAsync(
-                            channel, recipient.Mobile!, settings, templateParameters, ct);
+                        dispatch.ProviderRequestId = providerRequestId;
                         dispatch.Status = ShipmentReminderDispatchStatus.Succeeded;
                         dispatch.SentAt = DateTime.UtcNow;
                         dispatch.ErrorMessage = null;
-                        await _db.SaveChangesAsync(ct);
                     }
-                    catch (Exception ex)
+                    await _db.SaveChangesAsync(ct);
+                }
+                catch (Exception ex)
+                {
+                    foreach (var (_, dispatch) in reserved)
                     {
                         dispatch.Status = ShipmentReminderDispatchStatus.Failed;
                         dispatch.ErrorMessage = Truncate(ex.Message, 1000);
-                        await _db.SaveChangesAsync(ct);
-                        _logger.LogWarning(ex,
-                            "Shipment {Channel} reminder failed for rental {RentalNumber}, recipient {RecipientName}.",
-                            channel,
-                            rental.RentalNumber,
-                            recipient.Name);
                     }
+                    await _db.SaveChangesAsync(ct);
+                    _logger.LogWarning(ex,
+                        "Shipment {Channel} reminder failed for {RentalCount} rentals, recipient {RecipientName}.",
+                        channel,
+                        reserved.Count,
+                        recipient.Name);
                 }
             }
         }
@@ -574,6 +620,41 @@ public class ShipmentReminderService : IShipmentReminderService
                 StringComparer.Ordinal);
     }
 
+    private static IReadOnlyDictionary<string, string> BuildGroupedTemplateParameters(
+        IEnumerable<Rental> rentals,
+        ShipmentReminderSettings settings,
+        DateTime businessDate)
+    {
+        var groupedRentals = rentals
+            .GroupBy(rental => rental.Id)
+            .Select(group => group.First())
+            .OrderBy(rental => RentalDateRules.ToBusinessDate(rental.ExpectedShipDate))
+            .ThenBy(rental => rental.RentalNumber, StringComparer.Ordinal)
+            .ToList();
+        var firstRental = groupedRentals[0];
+        var parameters = new Dictionary<string, string>(
+            BuildTemplateParameters(firstRental, settings, businessDate),
+            StringComparer.Ordinal);
+
+        if (groupedRentals.Count <= 1)
+        {
+            return parameters;
+        }
+
+        var variables = ParseTemplateVariables(settings.TemplateVariablesJson);
+        var orderVariable = variables.FirstOrDefault(variable =>
+                string.Equals(variable.Name, "order_Name", StringComparison.OrdinalIgnoreCase))
+            ?? variables.FirstOrDefault(variable =>
+                variable.Source is ShipmentReminderVariableSource.OrderIdWithRenterName
+                    or ShipmentReminderVariableSource.RentalNumber);
+        if (orderVariable != null)
+        {
+            parameters[orderVariable.Name] = $"{BuildOrderId(firstRental)}等{groupedRentals.Count}条";
+        }
+
+        return parameters;
+    }
+
     private static IReadOnlyDictionary<string, string> BuildTestTemplateParameters(ShipmentReminderSettings settings) =>
         ParseTemplateVariables(settings.TemplateVariablesJson)
             .ToDictionary(
@@ -676,4 +757,5 @@ public class ShipmentReminderService : IShipmentReminderService
         value.Length <= maxLength ? value : value[..maxLength];
 
     private sealed record Recipient(string Name, string? Mobile);
+    private sealed record RecipientTarget(Rental Rental, Recipient Recipient);
 }

@@ -160,7 +160,7 @@ namespace AuditIt.Api.Controllers
             {
                 ("已完成", details.Where(d => IsCompleted(d.Status))),
                 ("在租", details.Where(d => IsInRent(d.Status))),
-                ("未开始", details.Where(d => d.Status == RentalStatus.Pending))
+                ("未开始", details.Where(d => d.Status is RentalStatus.Pending or RentalStatus.PartiallyShipped))
             };
 
             return categories
