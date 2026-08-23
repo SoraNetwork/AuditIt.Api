@@ -8,6 +8,7 @@ namespace AuditIt.Api.Models
         public decimal CreatorPercent { get; set; }
         public decimal ShipperPercent { get; set; }
         public decimal ItemOwnerPercent { get; set; }
+        public string? DefaultPaymentAccount { get; set; }
         public DateTime UpdatedAt { get; set; }
         public string? UpdatedBy { get; set; }
     }
@@ -25,6 +26,9 @@ namespace AuditIt.Api.Models
 
         [Range(0, 100)]
         public decimal ItemOwnerPercent { get; set; }
+
+        [StringLength(100)]
+        public string? DefaultPaymentAccount { get; set; }
     }
 
     public class SettlementPreviewDto
@@ -32,6 +36,7 @@ namespace AuditIt.Api.Models
         public Guid RentalId { get; set; }
         public string RentalNumber { get; set; } = string.Empty;
         public RentalStatus Status { get; set; }
+        public string? PaymentAccount { get; set; }
         public decimal TotalPrice { get; set; }
         public decimal AccountedAmount { get; set; }
         public decimal TechnicianPercent { get; set; }

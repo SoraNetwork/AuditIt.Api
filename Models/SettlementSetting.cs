@@ -24,6 +24,9 @@ namespace AuditIt.Api.Models
         [Column(TypeName = "decimal(5,2)")]
         public decimal ItemOwnerPercent { get; set; } = 50m;
 
+        [StringLength(100)]
+        public string? DefaultPaymentAccount { get; set; }
+
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
         [StringLength(100)]

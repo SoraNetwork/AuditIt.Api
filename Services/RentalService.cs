@@ -30,7 +30,7 @@ namespace AuditIt.Api.Services
             _settlementService = settlementService;
         }
 
-        public async Task<(IEnumerable<RentalDto> items, int total)> ListAsync(RentalQueryParameters query)
+        public async Task<(IEnumerable<RentalDto> items, int total)> ListAsync(RentalQueryParameters query, string? currentUser = null)
         {
             var q = _context.Rentals
                 .Include(r => r.Renter)
@@ -52,6 +52,23 @@ namespace AuditIt.Api.Services
             if (query.RenterId.HasValue)
             {
                 q = q.Where(r => r.RenterId == query.RenterId.Value);
+            }
+
+            if (string.Equals(query.OwnerScope?.Trim(), "mine", StringComparison.OrdinalIgnoreCase))
+            {
+                var owner = currentUser?.Trim();
+                if (string.IsNullOrWhiteSpace(owner))
+                {
+                    q = q.Where(_ => false);
+                }
+                else
+                {
+                    q = q.Where(r => r.CreatedBy == owner
+                        || r.AssignedTo == owner
+                        || (r.AssignedTo != null && r.AssignedTo.StartsWith(owner + ","))
+                        || (r.AssignedTo != null && r.AssignedTo.EndsWith("," + owner))
+                        || (r.AssignedTo != null && r.AssignedTo.Contains("," + owner + ",")));
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(query.RentalNumber))
@@ -686,6 +703,7 @@ namespace AuditIt.Api.Services
                 OtherFee = dto.OtherFee,
                 ShippingAddress = NormalizeNullableText(dto.ShippingAddress) ?? renter.DefaultAddress,
                 PlatformOrderNo = NormalizeNullableText(dto.PlatformOrderNo),
+                PaymentAccount = NormalizeNullableText(dto.PaymentAccount),
                 Notes = NormalizeNullableText(dto.Notes),
                 CreatedAt = now,
                 CreatedBy = currentUser,
@@ -873,6 +891,7 @@ namespace AuditIt.Api.Services
                 OtherFee = dto.OtherFee,
                 ShippingAddress = source.ShippingAddress,
                 PlatformOrderNo = source.PlatformOrderNo,
+                PaymentAccount = NormalizeNullableText(dto.PaymentAccount) ?? source.PaymentAccount,
                 Notes = string.IsNullOrWhiteSpace(notes)
                     ? $"续租自 {source.RentalNumber}"
                     : $"续租自 {source.RentalNumber}\n{notes}",
@@ -1169,6 +1188,16 @@ namespace AuditIt.Api.Services
                 }
             }
 
+            if (dto.PaymentAccount != null)
+            {
+                var paymentAccount = NormalizeNullableText(dto.PaymentAccount);
+                if (paymentAccount != rental.PaymentAccount)
+                {
+                    changes.Add($"到账账户：{rental.PaymentAccount ?? "-"} -> {paymentAccount ?? "-"}");
+                    rental.PaymentAccount = paymentAccount;
+                }
+            }
+
             if (dto.Notes != null)
             {
                 var notes = NormalizeNullableText(dto.Notes);
@@ -1257,6 +1286,7 @@ namespace AuditIt.Api.Services
                         .ThenInclude(i => i!.Warehouse)
                 .Include(r => r.Shipments)
                     .ThenInclude(shipment => shipment.RentalItems)
+                        .ThenInclude(link => link.RentalItem)
                 .FirstOrDefaultAsync(r => r.Id == rentalId);
 
             if (rental == null)
@@ -1283,6 +1313,17 @@ namespace AuditIt.Api.Services
             var selectedOutboundRentalItems = new List<RentalItem>();
             if (dto.Direction == ShipmentDirection.Outbound)
             {
+                if (rental.Shipments.Any(shipment =>
+                    shipment.Direction == ShipmentDirection.Outbound
+                    && (shipment.RentalItems.Count == 0
+                        || shipment.RentalItems.Any(link => link.RentalItem?.ItemId == null))))
+                {
+                    return new RentalShipmentResult
+                    {
+                        Error = "当前租赁单存在未关联物品的历史发货物流，请先补录该物流对应的物品。"
+                    };
+                }
+
                 var shippedRentalItemIds = GetOutboundShippedRentalItemIds(rental);
                 var selections = dto.ItemSelections ?? new List<RentalItemShipSelectionDto>();
                 var selectedRentalItemIds = new HashSet<int>();
@@ -1431,7 +1472,9 @@ namespace AuditIt.Api.Services
             var logisticsSummary = BuildShipmentSummary(dto.Carrier, shipment.TrackingNumber);
             if (dto.Direction == ShipmentDirection.Outbound)
             {
-                var fullyShipped = IsFullyOutboundShipped(rental);
+                var fullyShipped = IsFullyOutboundShipped(
+                    rental,
+                    linkedRentalItems.Select(item => item.Id));
                 rental.Status = fullyShipped
                     ? RentalDateRules.IsOverdue(rental.ExpectedEndDate, shippedAt)
                         ? RentalStatus.Overdue
@@ -1567,24 +1610,179 @@ namespace AuditIt.Api.Services
         public async Task<(RentalDto? rental, string? error)> UpdateShipmentAsync(Guid rentalId, int shipmentId, UpdateShipmentDto dto, string? currentUser)
         {
             var shipment = await _context.RentalShipments
+                .Include(s => s.RentalItems)
+                    .ThenInclude(link => link.RentalItem)
                 .FirstOrDefaultAsync(s => s.Id == shipmentId && s.RentalId == rentalId);
             if (shipment == null)
             {
                 return (null, "物流记录不存在。");
             }
 
-            var rental = await _context.Rentals.FirstAsync(r => r.Id == rentalId);
+            var rental = await _context.Rentals
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.ItemDefinition)
+                .Include(r => r.Items)
+                    .ThenInclude(ri => ri.Item)
+                        .ThenInclude(i => i!.Listings)
+                .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
+                        .ThenInclude(link => link.RentalItem)
+                .FirstAsync(r => r.Id == rentalId);
+
             var previousShippingFee = shipment.ShippingFee;
             shipment.ShippingFee = dto.ShippingFee;
+
+            if (dto.ItemSelections != null)
+            {
+                if (shipment.Direction != ShipmentDirection.Outbound)
+                {
+                    return (null, "只有发货物流支持补录或重新关联物品。");
+                }
+
+                if (dto.ItemSelections.Count == 0)
+                {
+                    return (null, "补录物流时至少选择一件物品。");
+                }
+
+                var selectedRentalItemIds = new HashSet<int>();
+                var selectedItemIds = new HashSet<Guid>();
+                var selectedRentalItems = new List<(RentalItem RentalItem, Item Item)>();
+                var otherOutboundRentalItemIds = rental.Shipments
+                    .Where(s => s.Direction == ShipmentDirection.Outbound && s.Id != shipmentId)
+                    .SelectMany(s => s.RentalItems.Select(link => link.RentalItemId))
+                    .ToHashSet();
+
+                foreach (var selection in dto.ItemSelections)
+                {
+                    if (!selectedRentalItemIds.Add(selection.RentalItemId))
+                    {
+                        return (null, "同一租赁物品不能在一条物流中重复选择。");
+                    }
+
+                    if (!selectedItemIds.Add(selection.ItemId))
+                    {
+                        return (null, "同一库存物品不能在一条物流中重复选择。");
+                    }
+
+                    if (otherOutboundRentalItemIds.Contains(selection.RentalItemId))
+                    {
+                        return (null, "所选租赁物品已经关联到其他发货物流。");
+                    }
+
+                    var rentalItem = rental.Items.FirstOrDefault(item => item.Id == selection.RentalItemId);
+                    if (rentalItem == null)
+                    {
+                        return (null, $"未找到租赁项 ID {selection.RentalItemId}。");
+                    }
+
+                    if (rentalItem.ReturnedAt.HasValue)
+                    {
+                        return (null, $"租赁项 {rentalItem.ItemShortIdSnapshot} 已归还，不能关联发货物流。");
+                    }
+
+                    var item = rentalItem.ItemId == selection.ItemId && rentalItem.Item != null
+                        ? rentalItem.Item
+                        : await _context.Items
+                            .Include(candidate => candidate.ItemDefinition)
+                            .Include(candidate => candidate.Listings)
+                            .FirstOrDefaultAsync(candidate => candidate.Id == selection.ItemId);
+                    if (item == null)
+                    {
+                        return (null, "所选库存商品不存在。");
+                    }
+
+                    if (item.ItemDefinitionId != rentalItem.ItemDefinitionId
+                        && item.ItemDefinitionId != rentalItem.Item?.ItemDefinitionId)
+                    {
+                        return (null, $"所选商品 {item.ShortId} 的物品定义不匹配。");
+                    }
+
+                    if (item.Status == ItemStatus.Disposed)
+                    {
+                        return (null, $"所选商品 {item.ShortId} 已被处置。");
+                    }
+
+                    selectedRentalItems.Add((rentalItem, item));
+                }
+
+                var conflict = await ValidateOutboundShipmentConflictsAsync(
+                    rental.Id,
+                    selectedRentalItems.Select(entry => entry.Item.Id).ToList());
+                if (conflict != null)
+                {
+                    return (null, conflict.Message);
+                }
+
+                var previousItemIds = shipment.RentalItems
+                    .Select(link => link.RentalItem?.ItemId)
+                    .Where(id => id.HasValue)
+                    .Select(id => id!.Value)
+                    .ToHashSet();
+                _context.RentalShipmentItems.RemoveRange(shipment.RentalItems);
+                shipment.RentalItems.Clear();
+
+                foreach (var (rentalItem, item) in selectedRentalItems)
+                {
+                    if (rentalItem.ItemId != item.Id)
+                    {
+                        rentalItem.ItemId = item.Id;
+                        rentalItem.ItemShortIdSnapshot = item.ShortId;
+                        rentalItem.ItemNameSnapshot = item.ItemDefinition?.Name ?? rentalItem.ItemNameSnapshot;
+                        var listingRemarks = BuildListingRemarks(item);
+                        rentalItem.ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks)
+                            ? null
+                            : listingRemarks;
+                        rentalItem.Item = item;
+                    }
+
+                    shipment.RentalItems.Add(new RentalShipmentItem { RentalItemId = rentalItem.Id });
+                    item.Status = ItemStatus.LoanedOut;
+                    item.CurrentDestination = $"租赁 {rental.RentalNumber}";
+                    item.LastUpdated = DateTime.UtcNow;
+                }
+
+                var stillLinkedItemIds = rental.Shipments
+                    .Where(s => s.Direction == ShipmentDirection.Outbound)
+                    .SelectMany(s => s.RentalItems)
+                    .Select(link => link.RentalItem?.ItemId)
+                    .Where(id => id.HasValue)
+                    .Select(id => id!.Value)
+                    .ToHashSet();
+                foreach (var previousItemId in previousItemIds.Where(id => !stillLinkedItemIds.Contains(id)))
+                {
+                    var previousItem = await _context.Items.FirstOrDefaultAsync(item => item.Id == previousItemId);
+                    if (previousItem?.Status == ItemStatus.LoanedOut
+                        && string.Equals(previousItem.CurrentDestination, $"租赁 {rental.RentalNumber}", StringComparison.Ordinal))
+                    {
+                        previousItem.Status = ItemStatus.InStock;
+                        previousItem.CurrentDestination = null;
+                        previousItem.LastUpdated = DateTime.UtcNow;
+                    }
+                }
+
+                if (!IsClosedStatus(rental.Status) && !IsRenewal(rental))
+                {
+                    var fullyShipped = IsFullyOutboundShipped(rental);
+                    rental.Status = fullyShipped
+                        ? RentalDateRules.IsOverdue(rental.ExpectedEndDate, DateTime.UtcNow)
+                            ? RentalStatus.Overdue
+                            : RentalStatus.Active
+                        : RentalStatus.PartiallyShipped;
+                }
+            }
+
             rental.UpdatedAt = DateTime.UtcNow;
             rental.UpdatedBy = currentUser;
 
             await _context.SaveChangesAsync();
             await NotifyStatusChangeAsync(
                 rental,
-                "物流运费已更新",
+                dto.ItemSelections == null ? "物流运费已更新" : "物流物品关联已更新",
                 currentUser,
-                $"物流：{BuildShipmentSummary(shipment.Carrier, shipment.TrackingNumber)}；运费：{FormatOptionalMoney(previousShippingFee)} -> {FormatOptionalMoney(shipment.ShippingFee)}");
+                dto.ItemSelections == null
+                    ? $"物流：{BuildShipmentSummary(shipment.Carrier, shipment.TrackingNumber)}；运费：{FormatOptionalMoney(previousShippingFee)} -> {FormatOptionalMoney(shipment.ShippingFee)}"
+                    : $"物流：{BuildShipmentSummary(shipment.Carrier, shipment.TrackingNumber)}；已补录/重新关联 {dto.ItemSelections.Count} 件物品");
 
             return (await GetByIdAsync(rentalId), null);
         }
@@ -1912,6 +2110,7 @@ namespace AuditIt.Api.Services
                     .ThenInclude(ri => ri.Item)
                         .ThenInclude(i => i!.Warehouse)
                 .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
                 .FirstOrDefaultAsync(r => r.Id == rentalId);
 
             if (rental == null)
@@ -2274,6 +2473,7 @@ namespace AuditIt.Api.Services
                     .ThenInclude(ri => ri.Item)
                         .ThenInclude(i => i!.Listings)
                 .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
                 .FirstOrDefaultAsync(r => r.Id == rentalId);
 
             if (rental == null)
@@ -2286,7 +2486,7 @@ namespace AuditIt.Api.Services
                 return new RentalItemsUpdateResult { Error = "已结束的租赁单不能修改租赁物品。" };
             }
 
-            var hasRentalStarted = HasRentalStarted(rental);
+            var hasRentalStarted = HasRentalStarted(rental) || HasOutboundShipment(rental);
             if (hasRentalStarted && desiredDefinitionIds.Count > 0)
             {
                 return new RentalItemsUpdateResult { Error = "租赁已发货或已续租开始，修改物品时只能选择具体物品。" };
@@ -2494,12 +2694,6 @@ namespace AuditIt.Api.Services
                     PerItemPrice = hasItemPrices ? itemPricesByItemId[item.Id] : 0m
                 });
 
-                if (hasRentalStarted)
-                {
-                    item.Status = ItemStatus.LoanedOut;
-                    item.CurrentDestination = $"租赁 {rental.RentalNumber}";
-                }
-
                 item.LastUpdated = now;
                 LogAudit(item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, "Added to rental");
             }
@@ -2522,6 +2716,19 @@ namespace AuditIt.Api.Services
             if (hasItemPrices)
             {
                 rental.TotalPrice = requestedPrices.Sum(price => price.PerItemPrice);
+            }
+
+            if (!IsClosedStatus(rental.Status) && !IsRenewal(rental))
+            {
+                var hasOutbound = HasOutboundShipment(rental);
+                var fullyShipped = hasOutbound && IsFullyOutboundShipped(rental);
+                rental.Status = fullyShipped
+                    ? RentalDateRules.IsOverdue(rental.ExpectedEndDate, now)
+                        ? RentalStatus.Overdue
+                        : RentalStatus.Active
+                    : hasOutbound
+                        ? RentalStatus.PartiallyShipped
+                        : RentalStatus.Pending;
             }
 
             rental.UpdatedAt = now;
@@ -3487,13 +3694,17 @@ namespace AuditIt.Api.Services
         }
 
         private static bool IsFullyOutboundShipped(Rental rental)
+            => IsFullyOutboundShipped(rental, Array.Empty<int>());
+
+        private static bool IsFullyOutboundShipped(Rental rental, IEnumerable<int> additionalRentalItemIds)
         {
             var openItems = rental.Items
                 .Where(item => !item.ReturnedAt.HasValue)
                 .ToList();
             var shippedRentalItemIds = GetOutboundShippedRentalItemIds(rental);
+            shippedRentalItemIds.UnionWith(additionalRentalItemIds);
             return openItems.Count == 0
-                ? HasOutboundShipment(rental)
+                ? HasOutboundShipment(rental) || shippedRentalItemIds.Count > 0
                 : openItems.All(item => shippedRentalItemIds.Contains(item.Id));
         }
 
@@ -3967,6 +4178,7 @@ namespace AuditIt.Api.Services
             AccountedAmount = rental.TotalPrice - rental.OtherFee - rental.Shipments.Sum(s => s.ShippingFee ?? 0),
             ShippingAddress = rental.ShippingAddress,
             PlatformOrderNo = rental.PlatformOrderNo,
+            PaymentAccount = rental.PaymentAccount,
             RenewedFromRentalId = rental.RenewedFromRentalId,
             RenewedFromRentalNumber = rental.RenewedFromRentalNumber,
             RenewedToRentalId = rental.RenewedToRentalId,

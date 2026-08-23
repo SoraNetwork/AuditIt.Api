@@ -103,6 +103,49 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task ListAsync_MineScopeIncludesCreatedOrAssignedRentalsOnly()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var today = BusinessToday();
+        var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
+        Rental BuildRental(string number, string createdBy, string? assignedTo) => new()
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = number,
+            Renter = renter,
+            Status = RentalStatus.Pending,
+            StartDate = today.AddDays(1),
+            ExpectedShipDate = today,
+            ExpectedEndDate = today.AddDays(3),
+            CreatedBy = createdBy,
+            AssignedTo = assignedTo
+        };
+
+        context.Rentals.AddRange(
+            BuildRental("R20990701-MINE-1", "Alice", null),
+            BuildRental("R20990701-MINE-2", "Bob", "Bob,Alice"),
+            BuildRental("R20990701-MINE-3", "Bob", "Alice2"));
+        await context.SaveChangesAsync();
+
+        var (items, total) = await CreateRentalService(context).ListAsync(
+            new RentalQueryParameters { OwnerScope = "mine", Page = 1, PageSize = 50 },
+            "Alice");
+
+        Assert.Equal(2, total);
+        Assert.Equal(
+            new[] { "R20990701-MINE-1", "R20990701-MINE-2" },
+            items.Select(item => item.RentalNumber).OrderBy(number => number));
+    }
+
+    [Fact]
     public async Task ReturnAsync_DamagedItemWithRepairOccupancy_BecomesNormalLoanUntilSelectedDate()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -3492,6 +3535,118 @@ public class RentalOccupancyAndValueTests
         Assert.NotNull(secondShipment.Rental);
         Assert.Equal(RentalStatus.Active, secondShipment.Rental!.Status);
         Assert.Equal(2, secondShipment.Rental.Shipments.Count);
+        Assert.Equal(ItemStatus.LoanedOut, secondItem.Status);
+    }
+
+    [Fact]
+    public async Task AddShipmentAsync_WithoutSelections_LinksEveryOpenItemAndActivatesRental()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera", Category = category, Unit = "pcs", Description = "Camera" };
+        var firstItem = new Item { Id = Guid.NewGuid(), ShortId = "CAM-ALL-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var secondItem = new Item { Id = Guid.NewGuid(), ShortId = "CAM-ALL-002", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990701-ALL",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = BusinessToday(),
+            ExpectedShipDate = BusinessToday(),
+            ExpectedEndDate = BusinessToday().AddDays(3)
+        };
+        rental.Items.Add(new RentalItem { Item = firstItem, ItemShortIdSnapshot = firstItem.ShortId, ItemNameSnapshot = definition.Name });
+        rental.Items.Add(new RentalItem { Item = secondItem, ItemShortIdSnapshot = secondItem.ShortId, ItemNameSnapshot = definition.Name });
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var result = await CreateRentalService(context).AddShipmentAsync(rental.Id, new CreateShipmentDto
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouseId = warehouse.Id,
+            Carrier = "SF"
+        }, "TestUser");
+
+        Assert.Null(result.Error);
+        Assert.NotNull(result.Rental);
+        Assert.Equal(RentalStatus.Active, result.Rental!.Status);
+        var shipment = Assert.Single(result.Rental.Shipments);
+        Assert.Equal(2, shipment.Items.Count);
+        Assert.Equal(
+            result.Rental.Items.Select(item => item.Id).OrderBy(id => id),
+            shipment.Items.Select(item => item.RentalItemId).OrderBy(id => id));
+        Assert.Equal(ItemStatus.LoanedOut, firstItem.Status);
+        Assert.Equal(ItemStatus.LoanedOut, secondItem.Status);
+    }
+
+    [Fact]
+    public async Task UpdateShipmentAsync_CanRepairLegacyUnassignedOutboundAndRestoreRentalState()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera", Category = category, Unit = "pcs", Description = "Camera" };
+        var firstItem = new Item { Id = Guid.NewGuid(), ShortId = "CAM-REPAIR-001", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var secondItem = new Item { Id = Guid.NewGuid(), ShortId = "CAM-REPAIR-002", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990701-REPAIR",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.PartiallyShipped,
+            StartDate = BusinessToday(),
+            ExpectedShipDate = BusinessToday(),
+            ExpectedEndDate = BusinessToday().AddDays(3)
+        };
+        var firstRentalItem = new RentalItem { Item = firstItem, ItemShortIdSnapshot = firstItem.ShortId, ItemNameSnapshot = definition.Name };
+        var secondRentalItem = new RentalItem { Item = secondItem, ItemShortIdSnapshot = secondItem.ShortId, ItemNameSnapshot = definition.Name };
+        rental.Items.Add(firstRentalItem);
+        rental.Items.Add(secondRentalItem);
+        var legacyShipment = new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = DateTime.UtcNow
+        };
+        rental.Shipments.Add(legacyShipment);
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var result = await CreateRentalService(context).UpdateShipmentAsync(rental.Id, legacyShipment.Id, new UpdateShipmentDto
+        {
+            ItemSelections = new List<RentalItemShipSelectionDto>
+            {
+                new() { RentalItemId = firstRentalItem.Id, ItemId = firstItem.Id },
+                new() { RentalItemId = secondRentalItem.Id, ItemId = secondItem.Id }
+            }
+        }, "TestUser");
+
+        Assert.Null(result.error);
+        Assert.NotNull(result.rental);
+        Assert.Equal(RentalStatus.Active, result.rental!.Status);
+        var repairedShipment = Assert.Single(result.rental.Shipments);
+        Assert.Equal(2, repairedShipment.Items.Count);
+        Assert.All(repairedShipment.Items, item => Assert.NotNull(item.ItemId));
+        Assert.Equal(ItemStatus.LoanedOut, firstItem.Status);
         Assert.Equal(ItemStatus.LoanedOut, secondItem.Status);
     }
 

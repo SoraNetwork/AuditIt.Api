@@ -53,6 +53,17 @@ namespace AuditIt.Api.Controllers
                         TotalOrderAmount = g.Sum(d => d.TotalPrice),
                         AccountedAmount = g.Sum(d => d.AccountedAmount)
                     })
+                    .ToList(),
+                PaymentAccounts = details
+                    .GroupBy(d => string.IsNullOrWhiteSpace(d.PaymentAccount) ? "未填写" : d.PaymentAccount!.Trim())
+                    .OrderBy(g => g.Key)
+                    .Select(g => new FinanceReportPaymentAccountSummaryDto
+                    {
+                        PaymentAccount = g.Key,
+                        Count = g.Count(),
+                        TotalOrderAmount = g.Sum(d => d.TotalPrice),
+                        AccountedAmount = g.Sum(d => d.AccountedAmount)
+                    })
                     .ToList()
             });
         }
@@ -150,7 +161,8 @@ namespace AuditIt.Api.Controllers
                 OtherFee = rental.OtherFee,
                 AccountedAmount = rental.TotalPrice - rental.OtherFee - totalShippingFee,
                 ItemCount = rental.Items.Count,
-                PlatformOrderNo = rental.PlatformOrderNo
+                PlatformOrderNo = rental.PlatformOrderNo,
+                PaymentAccount = rental.PaymentAccount
             };
         }
 

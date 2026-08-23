@@ -60,6 +60,9 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? PlatformOrderNo { get; set; }
 
+        [StringLength(100)]
+        public string? PaymentAccount { get; set; }
+
         public Guid? RenewedFromRentalId { get; set; }
 
         [StringLength(30)]

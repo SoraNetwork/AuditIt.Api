@@ -20,6 +20,7 @@ namespace AuditIt.Api.Models
         public decimal AccountedAmount { get; set; }
         public List<FinanceReportCategorySummaryDto> Categories { get; set; } = new();
         public List<FinanceReportStatusSummaryDto> Statuses { get; set; } = new();
+        public List<FinanceReportPaymentAccountSummaryDto> PaymentAccounts { get; set; } = new();
     }
 
     public class FinanceReportCategorySummaryDto
@@ -33,6 +34,14 @@ namespace AuditIt.Api.Models
     public class FinanceReportStatusSummaryDto
     {
         public RentalStatus Status { get; set; }
+        public int Count { get; set; }
+        public decimal TotalOrderAmount { get; set; }
+        public decimal AccountedAmount { get; set; }
+    }
+
+    public class FinanceReportPaymentAccountSummaryDto
+    {
+        public string PaymentAccount { get; set; } = "未填写";
         public int Count { get; set; }
         public decimal TotalOrderAmount { get; set; }
         public decimal AccountedAmount { get; set; }
@@ -56,5 +65,6 @@ namespace AuditIt.Api.Models
         public decimal AccountedAmount { get; set; }
         public int ItemCount { get; set; }
         public string? PlatformOrderNo { get; set; }
+        public string? PaymentAccount { get; set; }
     }
 }

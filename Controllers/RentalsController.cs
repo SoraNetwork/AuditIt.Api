@@ -24,8 +24,16 @@ namespace AuditIt.Api.Controllers
         [RequirePermission(PermissionCodes.RentalView)]
         public async Task<ActionResult<object>> List([FromQuery] RentalQueryParameters query)
         {
-            var (items, total) = await _rentals.ListAsync(query);
+            var (items, total) = await _rentals.ListAsync(query, CurrentUser());
             return Ok(new { items, total });
+        }
+
+        [HttpGet("payment-account-default")]
+        [RequirePermission(PermissionCodes.RentalCreate)]
+        public async Task<ActionResult<object>> PaymentAccountDefault(CancellationToken ct = default)
+        {
+            var settings = await _settlements.GetSettingsAsync(ct);
+            return Ok(new { defaultPaymentAccount = settings.DefaultPaymentAccount });
         }
 
         [HttpGet("calendar")]

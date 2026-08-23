@@ -54,6 +54,7 @@ namespace AuditIt.Api.Services
             settings.CreatorPercent = dto.CreatorPercent;
             settings.ShipperPercent = dto.ShipperPercent;
             settings.ItemOwnerPercent = dto.ItemOwnerPercent;
+            settings.DefaultPaymentAccount = NormalizeNullableText(dto.DefaultPaymentAccount);
             settings.UpdatedAt = DateTime.UtcNow;
             settings.UpdatedBy = currentUser;
 
@@ -226,6 +227,7 @@ namespace AuditIt.Api.Services
                 RentalId = rental.Id,
                 RentalNumber = rental.RentalNumber,
                 Status = rental.Status,
+                PaymentAccount = rental.PaymentAccount,
                 TotalPrice = rental.TotalPrice,
                 AccountedAmount = accountedAmount,
                 TechnicianPercent = settings.TechnicianPercent,
@@ -322,6 +324,10 @@ namespace AuditIt.Api.Services
             lines.Add(BuildItemSummary(rental));
             lines.Add($"总价：{FormatMoney(rental.TotalPrice)}");
             lines.Add($"核算：{FormatMoney(accountedAmount)}");
+            if (!string.IsNullOrWhiteSpace(rental.PaymentAccount))
+            {
+                lines.Add($"到账账户：{rental.PaymentAccount.Trim()}");
+            }
 
             if (technicianAmount > 0)
             {
@@ -462,12 +468,16 @@ namespace AuditIt.Api.Services
             _ => status.ToString()
         };
 
+        private static string? NormalizeNullableText(string? value) =>
+            string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
         private static SettlementSettingDto ToDto(SettlementSetting settings) => new()
         {
             TechnicianPercent = settings.TechnicianPercent,
             CreatorPercent = settings.CreatorPercent,
             ShipperPercent = settings.ShipperPercent,
             ItemOwnerPercent = settings.ItemOwnerPercent,
+            DefaultPaymentAccount = settings.DefaultPaymentAccount,
             UpdatedAt = settings.UpdatedAt,
             UpdatedBy = settings.UpdatedBy
         };

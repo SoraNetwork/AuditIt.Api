@@ -25,6 +25,7 @@ namespace AuditIt.Api.Models
         public decimal AccountedAmount { get; set; }
         public string? ShippingAddress { get; set; }
         public string? PlatformOrderNo { get; set; }
+        public string? PaymentAccount { get; set; }
         public Guid? RenewedFromRentalId { get; set; }
         public string? RenewedFromRentalNumber { get; set; }
         public Guid? RenewedToRentalId { get; set; }
@@ -126,6 +127,9 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? PlatformOrderNo { get; set; }
 
+        [StringLength(100)]
+        public string? PaymentAccount { get; set; }
+
         [StringLength(500)]
         public string? Notes { get; set; }
 
@@ -169,6 +173,9 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? AssignedTo { get; set; }
 
+        [StringLength(100)]
+        public string? PaymentAccount { get; set; }
+
         public string? CreatedBy { get; set; }
 
         public string? SenderName { get; set; }
@@ -208,6 +215,9 @@ namespace AuditIt.Api.Models
 
         [StringLength(500)]
         public string? Notes { get; set; }
+
+        [StringLength(100)]
+        public string? PaymentAccount { get; set; }
 
         public bool AllowScheduleConflict { get; set; }
     }
@@ -353,6 +363,9 @@ namespace AuditIt.Api.Models
     {
         [Range(0, double.MaxValue)]
         public decimal? ShippingFee { get; set; }
+
+        // Null keeps the existing shipment-to-item links unchanged.
+        public List<RentalItemShipSelectionDto>? ItemSelections { get; set; }
     }
 
     public class ReturnRentalItemDto
@@ -414,6 +427,7 @@ namespace AuditIt.Api.Models
         public bool PendingSettlement { get; set; }
         public string? SortField { get; set; }
         public string? SortOrder { get; set; }
+        public string? OwnerScope { get; set; }
         public int Page { get; set; } = 1;
         public int PageSize { get; set; } = 50;
     }
