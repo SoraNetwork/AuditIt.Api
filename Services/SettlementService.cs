@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using AuditIt.Api.Data;
 using AuditIt.Api.Models;
 using Microsoft.EntityFrameworkCore;
@@ -55,6 +56,10 @@ namespace AuditIt.Api.Services
             settings.ShipperPercent = dto.ShipperPercent;
             settings.ItemOwnerPercent = dto.ItemOwnerPercent;
             settings.DefaultPaymentAccount = NormalizeNullableText(dto.DefaultPaymentAccount);
+            if (dto.PaymentAccountPresets != null)
+            {
+                settings.PaymentAccountPresetsJson = SerializePaymentAccountPresets(dto.PaymentAccountPresets);
+            }
             settings.UpdatedAt = DateTime.UtcNow;
             settings.UpdatedBy = currentUser;
 
@@ -471,6 +476,38 @@ namespace AuditIt.Api.Services
         private static string? NormalizeNullableText(string? value) =>
             string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+        private static List<string> NormalizePaymentAccountPresets(IEnumerable<string>? values) =>
+            (values ?? Enumerable.Empty<string>())
+                .Select(NormalizeNullableText)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(30)
+                .ToList();
+
+        private static string? SerializePaymentAccountPresets(IEnumerable<string>? values)
+        {
+            var presets = NormalizePaymentAccountPresets(values);
+            return presets.Count == 0 ? null : JsonSerializer.Serialize(presets);
+        }
+
+        private static List<string> DeserializePaymentAccountPresets(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new List<string>();
+            }
+
+            try
+            {
+                return NormalizePaymentAccountPresets(JsonSerializer.Deserialize<List<string>>(json));
+            }
+            catch (JsonException)
+            {
+                return new List<string>();
+            }
+        }
+
         private static SettlementSettingDto ToDto(SettlementSetting settings) => new()
         {
             TechnicianPercent = settings.TechnicianPercent,
@@ -478,6 +515,7 @@ namespace AuditIt.Api.Services
             ShipperPercent = settings.ShipperPercent,
             ItemOwnerPercent = settings.ItemOwnerPercent,
             DefaultPaymentAccount = settings.DefaultPaymentAccount,
+            PaymentAccountPresets = DeserializePaymentAccountPresets(settings.PaymentAccountPresetsJson),
             UpdatedAt = settings.UpdatedAt,
             UpdatedBy = settings.UpdatedBy
         };

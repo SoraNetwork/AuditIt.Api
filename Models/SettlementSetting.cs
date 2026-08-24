@@ -27,6 +27,9 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? DefaultPaymentAccount { get; set; }
 
+        [StringLength(4000)]
+        public string? PaymentAccountPresetsJson { get; set; }
+
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
         [StringLength(100)]

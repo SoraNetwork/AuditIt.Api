@@ -106,6 +106,7 @@ namespace AuditIt.Api.Models
     public static class SfExpressConstants
     {
         public const string RouteServiceCode = "EXP_RECE_SEARCH_ROUTES";
+        public const string DeliveryEstimateServiceCode = "EXP_RECE_QUERY_DELIVERTM";
     }
 
     internal class SfOAuthTokenResponse

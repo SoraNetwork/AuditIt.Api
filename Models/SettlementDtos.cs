@@ -9,6 +9,7 @@ namespace AuditIt.Api.Models
         public decimal ShipperPercent { get; set; }
         public decimal ItemOwnerPercent { get; set; }
         public string? DefaultPaymentAccount { get; set; }
+        public List<string> PaymentAccountPresets { get; set; } = new();
         public DateTime UpdatedAt { get; set; }
         public string? UpdatedBy { get; set; }
     }
@@ -29,6 +30,8 @@ namespace AuditIt.Api.Models
 
         [StringLength(100)]
         public string? DefaultPaymentAccount { get; set; }
+
+        public List<string>? PaymentAccountPresets { get; set; }
     }
 
     public class SettlementPreviewDto
