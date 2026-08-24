@@ -10,6 +10,7 @@ namespace AuditIt.Api.Services
     {
         private const string TokenCacheKey = "SfExpress:OAuthToken";
         private const string ServiceCode = SfExpressConstants.DeliveryEstimateServiceCode;
+        private const int DeliverySearchBackDays = 7;
         private readonly HttpClient _httpClient;
         private readonly IMemoryCache _cache;
         private readonly IOptionsMonitor<SfExpressOptions> _options;
@@ -103,6 +104,112 @@ namespace AuditIt.Api.Services
 
             try
             {
+                var selections = new Dictionary<string, SfDeliveryProductSelection>(StringComparer.OrdinalIgnoreCase);
+                string? firstError = null;
+                var candidateTimes = new[] { consignedTime }
+                    .Concat(BuildCandidateConsignedTimes(targetDeliveryTime))
+                    .Distinct()
+                    .ToList();
+
+                foreach (var candidateConsignedTime in candidateTimes)
+                {
+                    var queryResult = await QuerySourceAtTimeAsync(
+                        source,
+                        destination,
+                        destinationAddress,
+                        parsedSource,
+                        weight,
+                        candidateConsignedTime,
+                        token,
+                        ct);
+                    if (queryResult.Error != null)
+                    {
+                        firstError ??= queryResult.Error;
+                        continue;
+                    }
+
+                    foreach (var product in queryResult.Products)
+                    {
+                        if (!selections.TryGetValue(product.BusinessType!, out var selection))
+                        {
+                            selection = new SfDeliveryProductSelection
+                            {
+                                FallbackProduct = product,
+                                FallbackConsignedTime = candidateConsignedTime,
+                            };
+                            selections[product.BusinessType!] = selection;
+                        }
+
+                        var deliveryTime = ParseLatestDate(product.DeliverTime);
+                        if (!deliveryTime.HasValue || deliveryTime.Value.Date != targetDeliveryTime.Date)
+                        {
+                            continue;
+                        }
+
+                        if (selection.BestProduct == null
+                            || candidateConsignedTime > selection.BestConsignedTime
+                            || (candidateConsignedTime == selection.BestConsignedTime
+                                && (selection.BestDeliveryTime == null
+                                    || deliveryTime.Value > selection.BestDeliveryTime.Value)))
+                        {
+                            selection.BestProduct = product;
+                            selection.BestConsignedTime = candidateConsignedTime;
+                            selection.BestDeliveryTime = deliveryTime.Value;
+                        }
+                    }
+
+                    if (selections.Count > 0 && selections.Values.All(selection => selection.BestProduct != null))
+                    {
+                        break;
+                    }
+                }
+
+                if (selections.Count == 0 && firstError != null)
+                {
+                    return BuildWarehouseError(source, firstError, parsedSource);
+                }
+
+                var products = selections.Values
+                    .OrderBy(selection => int.TryParse(
+                        selection.FallbackProduct?.BusinessType,
+                        out var businessType)
+                        ? businessType
+                        : int.MaxValue)
+                    .Select(selection => ToProduct(
+                        selection.BestProduct ?? selection.FallbackProduct!,
+                        selection.FallbackConsignedTime,
+                        targetDeliveryTime,
+                        selection.BestProduct == null ? null : selection.BestConsignedTime))
+                    .ToList();
+
+                return new SfDeliveryEstimateWarehouseDto
+                {
+                    WarehouseId = source.WarehouseId,
+                    WarehouseName = source.WarehouseName,
+                    Address = source.Address,
+                    Source = parsedSource,
+                    Products = products,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "SF Express delivery estimate failed for warehouse {WarehouseId}.", source.WarehouseId);
+                return BuildWarehouseError(source, $"顺丰时效查询异常：{ex.Message}", parsedSource);
+            }
+        }
+
+        private async Task<SfDeliveryApiQueryResult> QuerySourceAtTimeAsync(
+            SfDeliveryEstimateSource source,
+            SfParsedAddressDto destination,
+            string destinationAddress,
+            SfParsedAddressDto parsedSource,
+            decimal weight,
+            DateTime consignedTime,
+            string token,
+            CancellationToken ct)
+        {
+            try
+            {
                 var options = _options.CurrentValue;
                 var msgData = JsonSerializer.Serialize(new
                 {
@@ -142,41 +249,38 @@ namespace AuditIt.Api.Services
                 var raw = await response.Content.ReadAsStringAsync(ct);
                 if (!response.IsSuccessStatusCode)
                 {
-                    return BuildWarehouseError(source, $"顺丰时效查询失败：HTTP {(int)response.StatusCode}", parsedSource);
+                    return new SfDeliveryApiQueryResult
+                    {
+                        Error = $"顺丰时效查询失败：HTTP {(int)response.StatusCode}",
+                    };
                 }
 
                 var apiResult = DeserializeDeliveryResult(raw, out var platformError);
                 if (platformError != null)
                 {
-                    return BuildWarehouseError(source, platformError, parsedSource);
+                    return new SfDeliveryApiQueryResult { Error = platformError };
                 }
 
                 if (apiResult == null || !apiResult.Success)
                 {
-                    return BuildWarehouseError(
-                        source,
-                        $"顺丰业务返回 {apiResult?.ErrorCode ?? "未知错误"}：{apiResult?.ErrorMsg ?? "未返回时效产品"}",
-                        parsedSource);
+                    return new SfDeliveryApiQueryResult
+                    {
+                        Error = $"顺丰业务返回 {apiResult?.ErrorCode ?? "未知错误"}：{apiResult?.ErrorMsg ?? "未返回时效产品"}",
+                    };
                 }
 
-                var products = (apiResult.MsgData?.DeliverTmDto ?? new List<SfDeliveryProductResponse>())
-                    .Where(product => IsDisplayableProduct(product.BusinessType))
-                    .Select(product => ToProduct(product, consignedTime, targetDeliveryTime))
-                    .ToList();
-
-                return new SfDeliveryEstimateWarehouseDto
+                return new SfDeliveryApiQueryResult
                 {
-                    WarehouseId = source.WarehouseId,
-                    WarehouseName = source.WarehouseName,
-                    Address = source.Address,
-                    Source = parsedSource,
-                    Products = products,
+                    Products = (apiResult.MsgData?.DeliverTmDto ?? new List<SfDeliveryProductResponse>())
+                        .Where(product => IsDisplayableProduct(product.BusinessType))
+                        .Where(product => !string.IsNullOrWhiteSpace(product.BusinessType))
+                        .ToList(),
                 };
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "SF Express delivery estimate failed for warehouse {WarehouseId}.", source.WarehouseId);
-                return BuildWarehouseError(source, $"顺丰时效查询异常：{ex.Message}", parsedSource);
+                return new SfDeliveryApiQueryResult { Error = $"顺丰时效查询异常：{ex.Message}" };
             }
         }
 
@@ -214,16 +318,16 @@ namespace AuditIt.Api.Services
         private static SfDeliveryProductDto ToProduct(
             SfDeliveryProductResponse product,
             DateTime consignedTime,
-            DateTime targetDeliveryTime)
+            DateTime targetDeliveryTime,
+            DateTime? selectedConsignedTime)
         {
             var deliveryTime = ParseLatestDate(product.DeliverTime);
-            DateTime? latestShipTime = deliveryTime.HasValue
-                ? AdjustToPickupWindow(DateTime.SpecifyKind(
-                    consignedTime.Add(targetDeliveryTime - deliveryTime.Value),
-                    DateTimeKind.Unspecified))
+            var effectiveConsignedTime = selectedConsignedTime ?? consignedTime;
+            DateTime? latestShipTime = selectedConsignedTime.HasValue
+                ? AdjustToPickupWindow(DateTime.SpecifyKind(effectiveConsignedTime, DateTimeKind.Unspecified))
                 : null;
             int? deliveryDays = deliveryTime.HasValue
-                ? Math.Max(1, (int)Math.Ceiling((deliveryTime.Value - consignedTime).TotalDays))
+                ? Math.Max(1, (int)Math.Ceiling((deliveryTime.Value - effectiveConsignedTime).TotalDays))
                 : null;
 
             return new SfDeliveryProductDto
@@ -236,10 +340,22 @@ namespace AuditIt.Api.Services
                 CloseTime = product.CloseTime,
                 DeliveryTime = deliveryTime,
                 DeliveryDays = deliveryDays,
-                PlannedDeliveryTime = deliveryTime.HasValue ? targetDeliveryTime : null,
+                PlannedDeliveryTime = selectedConsignedTime.HasValue && deliveryTime.HasValue
+                    ? targetDeliveryTime
+                    : null,
                 LatestShipTime = latestShipTime,
-                ConsignedTime = consignedTime,
+                ConsignedTime = effectiveConsignedTime,
             };
+        }
+
+        private static IEnumerable<DateTime> BuildCandidateConsignedTimes(DateTime targetDeliveryTime)
+        {
+            for (var daysBack = 0; daysBack <= DeliverySearchBackDays; daysBack++)
+            {
+                yield return DateTime.SpecifyKind(
+                    targetDeliveryTime.Date.AddDays(-daysBack).AddHours(18).AddMinutes(59).AddSeconds(59),
+                    DateTimeKind.Unspecified);
+            }
         }
 
         private static SfDeliveryEstimateWarehouseDto BuildWarehouseError(
@@ -395,6 +511,21 @@ namespace AuditIt.Api.Services
 
         private static string FormatLocalDateTime(DateTime value) =>
             value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+        private sealed class SfDeliveryApiQueryResult
+        {
+            public List<SfDeliveryProductResponse> Products { get; init; } = new();
+            public string? Error { get; init; }
+        }
+
+        private sealed class SfDeliveryProductSelection
+        {
+            public SfDeliveryProductResponse? FallbackProduct { get; init; }
+            public DateTime FallbackConsignedTime { get; init; }
+            public SfDeliveryProductResponse? BestProduct { get; set; }
+            public DateTime BestConsignedTime { get; set; }
+            public DateTime? BestDeliveryTime { get; set; }
+        }
 
         private sealed class SfDeliveryApiResult
         {
