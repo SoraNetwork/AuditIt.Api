@@ -70,6 +70,7 @@ namespace AuditIt.Api.Models
         public string? SearchPrice { get; init; }
         public string? CloseTime { get; init; }
         public DateTime? DeliveryTime { get; init; }
+        public int? DeliveryDays { get; init; }
         public DateTime? PlannedDeliveryTime { get; init; }
         public DateTime? LatestShipTime { get; init; }
         public DateTime ConsignedTime { get; init; }

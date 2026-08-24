@@ -54,8 +54,9 @@ public class SfDeliveryEstimateServiceTests
         Assert.Equal("广州仓", result.Warehouses[0].WarehouseName);
         Assert.Equal("顺丰特惠", product.BusinessTypeDesc);
         Assert.Equal(12.5m, product.Fee);
+        Assert.Equal(2, product.DeliveryDays);
         Assert.Equal(new DateTime(2026, 8, 19, 23, 59, 59), product.PlannedDeliveryTime);
-        Assert.Equal(new DateTime(2026, 8, 18, 4, 59, 59), product.LatestShipTime);
+        Assert.Equal(new DateTime(2026, 8, 17, 18, 59, 59), product.LatestShipTime);
         Assert.Contains("EXP_RECE_QUERY_DELIVERTM", handler.ServiceRequestBody);
         Assert.Contains("weight%22%3A2.5", handler.ServiceRequestBody, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("%5Cu4E0A%5Cu6D77%5Cu5E02", handler.ServiceRequestBody, StringComparison.OrdinalIgnoreCase);
@@ -74,7 +75,7 @@ public class SfDeliveryEstimateServiceTests
             }
 
             ServiceRequestBody = await request.Content!.ReadAsStringAsync(cancellationToken);
-            var business = "{\"success\":true,\"errorCode\":\"S0000\",\"errorMsg\":null,\"msgData\":{\"deliverTmDto\":[{\"businessType\":\"2\",\"businessTypeDesc\":\"顺丰特惠\",\"deliverTime\":\"2026-08-19 12:00:00,2026-08-08 12:00:00\",\"fee\":12.5,\"searchPrice\":\"1\",\"closeTime\":\"17:00:00\"}]}}";
+            var business = "{\"success\":true,\"errorCode\":\"S0000\",\"errorMsg\":null,\"msgData\":{\"deliverTmDto\":[{\"businessType\":\"2\",\"businessTypeDesc\":\"顺丰特惠\",\"deliverTime\":\"2026-08-19 12:00:00,2026-08-08 12:00:00\",\"fee\":12.5,\"searchPrice\":\"1\",\"closeTime\":\"17:00:00\"},{\"businessType\":\"113\",\"businessTypeDesc\":\"便利时效\",\"deliverTime\":\"2026-08-19 12:00:00,2026-08-08 12:00:00\",\"fee\":20,\"searchPrice\":\"1\",\"closeTime\":\"17:00:00\"}]}}";
             return JsonResponse($"{{\"apiResultCode\":\"A1000\",\"apiResultData\":{JsonSerializerForString(business)}}}");
         }
 

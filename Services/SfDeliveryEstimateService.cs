@@ -160,6 +160,7 @@ namespace AuditIt.Api.Services
                 }
 
                 var products = (apiResult.MsgData?.DeliverTmDto ?? new List<SfDeliveryProductResponse>())
+                    .Where(product => IsDisplayableProduct(product.BusinessType))
                     .Select(product => ToProduct(product, consignedTime, targetDeliveryTime))
                     .ToList();
 
@@ -217,7 +218,12 @@ namespace AuditIt.Api.Services
         {
             var deliveryTime = ParseLatestDate(product.DeliverTime);
             DateTime? latestShipTime = deliveryTime.HasValue
-                ? DateTime.SpecifyKind(consignedTime.Add(targetDeliveryTime - deliveryTime.Value), DateTimeKind.Unspecified)
+                ? AdjustToPickupWindow(DateTime.SpecifyKind(
+                    consignedTime.Add(targetDeliveryTime - deliveryTime.Value),
+                    DateTimeKind.Unspecified))
+                : null;
+            int? deliveryDays = deliveryTime.HasValue
+                ? Math.Max(1, (int)Math.Ceiling((deliveryTime.Value - consignedTime).TotalDays))
                 : null;
 
             return new SfDeliveryProductDto
@@ -229,6 +235,7 @@ namespace AuditIt.Api.Services
                 SearchPrice = product.SearchPrice,
                 CloseTime = product.CloseTime,
                 DeliveryTime = deliveryTime,
+                DeliveryDays = deliveryDays,
                 PlannedDeliveryTime = deliveryTime.HasValue ? targetDeliveryTime : null,
                 LatestShipTime = latestShipTime,
                 ConsignedTime = consignedTime,
@@ -365,6 +372,26 @@ namespace AuditIt.Api.Services
                 .ToList();
             return dates.Count == 0 ? null : dates.Max();
         }
+
+        private static DateTime AdjustToPickupWindow(DateTime value)
+        {
+            var pickupStart = TimeSpan.FromHours(5);
+            var pickupEnd = TimeSpan.FromHours(19);
+            if (value.TimeOfDay < pickupStart)
+            {
+                return value.Date.AddDays(-1).AddHours(18).AddMinutes(59).AddSeconds(59);
+            }
+
+            if (value.TimeOfDay >= pickupEnd)
+            {
+                return value.Date.AddHours(18).AddMinutes(59).AddSeconds(59);
+            }
+
+            return value;
+        }
+
+        private static bool IsDisplayableProduct(string? businessType) =>
+            int.TryParse(businessType, out var type) && type < 10;
 
         private static string FormatLocalDateTime(DateTime value) =>
             value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
