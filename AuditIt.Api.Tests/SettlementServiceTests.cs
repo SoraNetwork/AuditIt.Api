@@ -357,6 +357,40 @@ public class SettlementServiceTests
         Assert.Equal(120m, share.Amount);
     }
 
+    [Fact]
+    public async Task UpdateSettings_NormalizesAndPersistsPaymentAccountPresets()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var service = new SettlementService(context, new StubDingTalkService(), NullLogger<SettlementService>.Instance);
+
+        var (updated, error) = await service.UpdateSettingsAsync(new UpdateSettlementSettingDto
+        {
+            TechnicianPercent = 10m,
+            CreatorPercent = 30m,
+            ShipperPercent = 10m,
+            ItemOwnerPercent = 50m,
+            DefaultPaymentAccount = null,
+            PaymentAccountPresets = new List<string> { " 对公账户 ", "", "对公账户", "个人账户" }
+        }, "TestUser");
+
+        Assert.Null(error);
+        Assert.NotNull(updated);
+        Assert.Equal(new[] { "对公账户", "个人账户" }, updated!.PaymentAccountPresets);
+        Assert.Null(updated.DefaultPaymentAccount);
+
+        var persisted = await service.GetSettingsAsync();
+        Assert.Equal(new[] { "对公账户", "个人账户" }, persisted.PaymentAccountPresets);
+    }
+
     private sealed class StubDingTalkService : IDingTalkService
     {
         public Task<string> GetAccessTokenAsync() => Task.FromResult(string.Empty);

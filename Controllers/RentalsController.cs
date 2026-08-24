@@ -1,7 +1,9 @@
 using System.Security.Claims;
+using AuditIt.Api.Data;
 using AuditIt.Api.Models;
 using AuditIt.Api.Services;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AuditIt.Api.Controllers
@@ -13,11 +15,19 @@ namespace AuditIt.Api.Controllers
     {
         private readonly IRentalService _rentals;
         private readonly ISettlementService _settlements;
+        private readonly ISfDeliveryEstimateService _sfDeliveryEstimates;
+        private readonly ApplicationDbContext _context;
 
-        public RentalsController(IRentalService rentals, ISettlementService settlements)
+        public RentalsController(
+            IRentalService rentals,
+            ISettlementService settlements,
+            ISfDeliveryEstimateService sfDeliveryEstimates,
+            ApplicationDbContext context)
         {
             _rentals = rentals;
             _settlements = settlements;
+            _sfDeliveryEstimates = sfDeliveryEstimates;
+            _context = context;
         }
 
         [HttpGet]
@@ -29,11 +39,68 @@ namespace AuditIt.Api.Controllers
         }
 
         [HttpGet("payment-account-default")]
-        [RequirePermission(PermissionCodes.RentalCreate)]
+        [RequirePermission(PermissionCodes.RentalView)]
         public async Task<ActionResult<object>> PaymentAccountDefault(CancellationToken ct = default)
         {
             var settings = await _settlements.GetSettingsAsync(ct);
-            return Ok(new { defaultPaymentAccount = settings.DefaultPaymentAccount });
+            return Ok(new
+            {
+                defaultPaymentAccount = settings.DefaultPaymentAccount,
+                paymentAccountPresets = settings.PaymentAccountPresets
+            });
+        }
+
+        [HttpPost("delivery-estimates")]
+        [RequirePermission(PermissionCodes.RentalCreate)]
+        public async Task<ActionResult<SfDeliveryEstimateResultDto>> DeliveryEstimates(
+            [FromBody] SfDeliveryEstimateRequestDto dto,
+            CancellationToken ct = default)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+            if (string.IsNullOrWhiteSpace(dto.DestinationAddress)) return BadRequest("请填写收货地址。");
+
+            var itemIds = (dto.ItemIds ?? new List<string>())
+                .Select(value => Guid.TryParse(value, out var id) ? id : (Guid?)null)
+                .Where(id => id.HasValue)
+                .Select(id => id!.Value)
+                .ToList();
+            var itemWarehouseIds = itemIds.Count == 0
+                ? new List<int>()
+                : await _context.Items
+                    .Where(item => itemIds.Contains(item.Id))
+                    .Select(item => item.WarehouseId)
+                    .ToListAsync(ct);
+
+            var warehouseIds = (dto.SourceWarehouseIds ?? new List<int>())
+                .Concat(itemWarehouseIds)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToList();
+            if (warehouseIds.Count == 0) return BadRequest("请选择物品或查询来源仓库。");
+
+            var warehouses = await _context.Warehouses
+                .Where(warehouse => warehouseIds.Contains(warehouse.Id))
+                .Select(warehouse => new SfDeliveryEstimateSource
+                {
+                    WarehouseId = warehouse.Id,
+                    WarehouseName = warehouse.Name,
+                    Address = warehouse.Location ?? string.Empty,
+                })
+                .ToListAsync(ct);
+            var missingWarehouseIds = warehouseIds.Except(warehouses.Select(warehouse => warehouse.WarehouseId)).ToList();
+            if (missingWarehouseIds.Count > 0)
+            {
+                return BadRequest($"查询来源仓库不存在：{string.Join(", ", missingWarehouseIds)}");
+            }
+
+            var query = new SfDeliveryEstimateQuery
+            {
+                DestinationAddress = dto.DestinationAddress.Trim(),
+                StartDate = dto.StartDate?.Date ?? DateTime.UtcNow.Date,
+                Weight = dto.Weight,
+                Sources = warehouses,
+            };
+            return Ok(await _sfDeliveryEstimates.QueryAsync(query, ct));
         }
 
         [HttpGet("calendar")]

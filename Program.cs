@@ -61,6 +61,7 @@ builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient<IDingTalkService, DingTalkService>();
 builder.Services.Configure<SfExpressOptions>(builder.Configuration.GetSection("SfExpress"));
 builder.Services.AddHttpClient<ISfExpressService, SfExpressService>();
+builder.Services.AddHttpClient<ISfDeliveryEstimateService, SfDeliveryEstimateService>();
 
 
 
