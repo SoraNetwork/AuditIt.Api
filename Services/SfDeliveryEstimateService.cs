@@ -323,11 +323,11 @@ namespace AuditIt.Api.Services
         {
             var deliveryTime = ParseLatestDate(product.DeliverTime);
             var effectiveConsignedTime = selectedConsignedTime ?? consignedTime;
-            DateTime? latestShipTime = selectedConsignedTime.HasValue
-                ? AdjustToPickupWindow(DateTime.SpecifyKind(effectiveConsignedTime, DateTimeKind.Unspecified))
-                : null;
             int? deliveryDays = deliveryTime.HasValue
                 ? Math.Max(1, (int)Math.Ceiling((deliveryTime.Value - effectiveConsignedTime).TotalDays))
+                : null;
+            DateTime? latestShipTime = selectedConsignedTime.HasValue && deliveryDays.HasValue
+                ? BuildLatestShipTime(targetDeliveryTime, deliveryDays.Value)
                 : null;
 
             return new SfDeliveryProductDto
@@ -356,6 +356,14 @@ namespace AuditIt.Api.Services
                     targetDeliveryTime.Date.AddDays(-daysBack).AddHours(18).AddMinutes(59).AddSeconds(59),
                     DateTimeKind.Unspecified);
             }
+        }
+
+        private static DateTime BuildLatestShipTime(DateTime targetDeliveryTime, int deliveryDays)
+        {
+            var latestShipDate = targetDeliveryTime.Date.AddDays(-Math.Max(1, deliveryDays));
+            return AdjustToPickupWindow(DateTime.SpecifyKind(
+                latestShipDate.AddHours(18).AddMinutes(59).AddSeconds(59),
+                DateTimeKind.Unspecified));
         }
 
         private static SfDeliveryEstimateWarehouseDto BuildWarehouseError(

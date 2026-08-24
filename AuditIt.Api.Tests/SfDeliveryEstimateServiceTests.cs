@@ -59,7 +59,7 @@ public class SfDeliveryEstimateServiceTests
         Assert.Equal(2, product.DeliveryDays);
         Assert.Equal(new DateTime(2026, 8, 19, 23, 59, 59), product.PlannedDeliveryTime);
         Assert.Equal(new DateTime(2026, 8, 19, 19, 59, 59), product.DeliveryTime);
-        Assert.Equal(new DateTime(2026, 8, 18, 18, 59, 59), product.LatestShipTime);
+        Assert.Equal(new DateTime(2026, 8, 17, 18, 59, 59), product.LatestShipTime);
         Assert.True(handler.RequestedConsignedTimes.Count >= 3);
         Assert.Contains("EXP_RECE_QUERY_DELIVERTM", handler.ServiceRequestBody);
         Assert.Contains("weight%22%3A2.5", handler.ServiceRequestBody, StringComparison.OrdinalIgnoreCase);
