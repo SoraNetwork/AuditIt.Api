@@ -134,6 +134,11 @@ public class RentalOccupancyAndValueTests
             BuildRental("R20990701-MINE-1", "Alice", null, "张三 13800138000 广东省深圳市南山区科技园1号"),
             BuildRental("R20990701-MINE-2", "Bob", "Bob,Alice"),
             BuildRental("R20990701-MINE-3", "Bob", "Alice2"));
+        context.Users.AddRange(
+            new User { Name = "Alice", Status = UserStatus.Active },
+            new User { Name = "Bob", Status = UserStatus.Active },
+            new User { Name = "Charlie", Status = UserStatus.Active },
+            new User { Name = "Alice2", Status = UserStatus.Left });
         await context.SaveChangesAsync();
 
         var (items, total) = await CreateRentalService(context).ListAsync(
@@ -145,25 +150,20 @@ public class RentalOccupancyAndValueTests
             new[] { "R20990701-MINE-1", "R20990701-MINE-2" },
             items.Select(item => item.RentalNumber).OrderBy(number => number));
 
-        var aliceCreated = await CreateRentalService(context).ListAsync(
-            new RentalQueryParameters { CreatedBy = "Alice", Page = 1, PageSize = 50 });
-        Assert.Equal("R20990701-MINE-1", Assert.Single(aliceCreated.items).RentalNumber);
-        Assert.Equal("广东省", aliceCreated.items.Single().ParsedShippingAddress.Province);
-        Assert.Equal("深圳市", aliceCreated.items.Single().ParsedShippingAddress.City);
-
-        var aliceAssigned = await CreateRentalService(context).ListAsync(
-            new RentalQueryParameters { AssignedTo = "Alice", Page = 1, PageSize = 50 });
-        Assert.Equal("R20990701-MINE-2", Assert.Single(aliceAssigned.items).RentalNumber);
-
         var aliceOwned = await CreateRentalService(context).ListAsync(
             new RentalQueryParameters { OwnerName = "Alice", Page = 1, PageSize = 50 });
         Assert.Equal(
             new[] { "R20990701-MINE-1", "R20990701-MINE-2" },
             aliceOwned.items.Select(item => item.RentalNumber).OrderBy(number => number));
+        Assert.Equal("广东省", aliceOwned.items.Single(item => item.RentalNumber == "R20990701-MINE-1").ParsedShippingAddress.Province);
+        Assert.Equal("深圳市", aliceOwned.items.Single(item => item.RentalNumber == "R20990701-MINE-1").ParsedShippingAddress.City);
+
+        var formerEmployeeOwned = await CreateRentalService(context).ListAsync(
+            new RentalQueryParameters { OwnerName = "Alice2", Page = 1, PageSize = 50 });
+        Assert.Equal(0, formerEmployeeOwned.total);
 
         var ownerOptions = await CreateRentalService(context).GetOwnerOptionsAsync();
-        Assert.Equal(new[] { "Alice", "Bob" }, ownerOptions.Creators);
-        Assert.Equal(new[] { "Alice", "Alice2", "Bob" }, ownerOptions.Assignees);
+        Assert.Equal(new[] { "Alice", "Bob", "Charlie" }, ownerOptions.Employees);
     }
 
     [Fact]

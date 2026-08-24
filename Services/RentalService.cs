@@ -74,26 +74,21 @@ namespace AuditIt.Api.Services
             if (!string.IsNullOrWhiteSpace(query.OwnerName))
             {
                 var owner = query.OwnerName.Trim();
-                q = q.Where(r => r.CreatedBy == owner
-                    || r.AssignedTo == owner
-                    || (r.AssignedTo != null && r.AssignedTo.StartsWith(owner + ","))
-                    || (r.AssignedTo != null && r.AssignedTo.EndsWith("," + owner))
-                    || (r.AssignedTo != null && r.AssignedTo.Contains("," + owner + ",")));
-            }
-
-            if (!string.IsNullOrWhiteSpace(query.CreatedBy))
-            {
-                var creator = query.CreatedBy.Trim();
-                q = q.Where(r => r.CreatedBy == creator);
-            }
-
-            if (!string.IsNullOrWhiteSpace(query.AssignedTo))
-            {
-                var assignee = query.AssignedTo.Trim();
-                q = q.Where(r => r.AssignedTo == assignee
-                    || (r.AssignedTo != null && r.AssignedTo.StartsWith(assignee + ","))
-                    || (r.AssignedTo != null && r.AssignedTo.EndsWith("," + assignee))
-                    || (r.AssignedTo != null && r.AssignedTo.Contains("," + assignee + ",")));
+                var isActiveEmployee = await _context.Users
+                    .AsNoTracking()
+                    .AnyAsync(user => user.Status == UserStatus.Active && user.Name == owner);
+                if (!isActiveEmployee)
+                {
+                    q = q.Where(_ => false);
+                }
+                else
+                {
+                    q = q.Where(r => r.CreatedBy == owner
+                        || r.AssignedTo == owner
+                        || (r.AssignedTo != null && r.AssignedTo.StartsWith(owner + ","))
+                        || (r.AssignedTo != null && r.AssignedTo.EndsWith("," + owner))
+                        || (r.AssignedTo != null && r.AssignedTo.Contains("," + owner + ",")));
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(query.RentalNumber))
@@ -179,24 +174,19 @@ namespace AuditIt.Api.Services
 
         public async Task<RentalOwnerOptionsDto> GetOwnerOptionsAsync()
         {
-            var owners = await _context.Rentals
+            var employees = await _context.Users
                 .AsNoTracking()
-                .Select(rental => new { rental.CreatedBy, rental.AssignedTo })
+                .Where(user => user.Status == UserStatus.Active)
+                .Select(user => user.Name)
                 .ToListAsync();
 
             return new RentalOwnerOptionsDto
             {
-                Creators = owners
-                    .Select(owner => owner.CreatedBy?.Trim())
-                    .Where(owner => !string.IsNullOrWhiteSpace(owner))
-                    .Select(owner => owner!)
+                Employees = employees
+                    .Select(employee => employee.Trim())
+                    .Where(employee => !string.IsNullOrWhiteSpace(employee))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(owner => owner, StringComparer.OrdinalIgnoreCase)
-                    .ToList(),
-                Assignees = owners
-                    .SelectMany(owner => SplitUsers(owner.AssignedTo))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(owner => owner, StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(employee => employee, StringComparer.OrdinalIgnoreCase)
                     .ToList(),
             };
         }

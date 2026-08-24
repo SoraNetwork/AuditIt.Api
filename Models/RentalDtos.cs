@@ -430,15 +430,12 @@ namespace AuditIt.Api.Models
         public string? SortOrder { get; set; }
         public string? OwnerScope { get; set; }
         public string? OwnerName { get; set; }
-        public string? CreatedBy { get; set; }
-        public string? AssignedTo { get; set; }
         public int Page { get; set; } = 1;
         public int PageSize { get; set; } = 50;
     }
 
     public class RentalOwnerOptionsDto
     {
-        public List<string> Creators { get; set; } = new();
-        public List<string> Assignees { get; set; } = new();
+        public List<string> Employees { get; set; } = new();
     }
 }
