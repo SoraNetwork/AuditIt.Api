@@ -33,8 +33,8 @@ namespace AuditIt.Api.Services
             SfDeliveryEstimateQuery query,
             CancellationToken ct = default)
         {
-            var destination = ParseAddress(query.DestinationAddress);
-            var normalizedDestinationAddress = NormalizeAddressForSf(query.DestinationAddress);
+            var destination = ChineseAddressParser.Parse(query.DestinationAddress);
+            var normalizedDestinationAddress = ChineseAddressParser.NormalizeForSf(query.DestinationAddress);
             var consignedTime = DateTime.SpecifyKind(query.StartDate.Date.AddDays(-3).AddHours(17), DateTimeKind.Unspecified);
             var targetDeliveryTime = DateTime.SpecifyKind(query.StartDate.Date.AddDays(-1).AddHours(23).AddMinutes(59).AddSeconds(59), DateTimeKind.Unspecified);
             var result = new SfDeliveryEstimateResultDto
@@ -96,7 +96,7 @@ namespace AuditIt.Api.Services
             string token,
             CancellationToken ct)
         {
-            var parsedSource = ParseAddress(source.Address);
+            var parsedSource = ChineseAddressParser.Parse(source.Address);
             if (string.IsNullOrWhiteSpace(source.Address))
             {
                 return BuildWarehouseError(source, "该仓库未填写地址，无法查询顺丰时效。", parsedSource);
@@ -374,7 +374,7 @@ namespace AuditIt.Api.Services
                 WarehouseId = source.WarehouseId,
                 WarehouseName = source.WarehouseName,
                 Address = source.Address,
-                Source = parsedSource ?? ParseAddress(source.Address),
+                Source = parsedSource ?? ChineseAddressParser.Parse(source.Address),
                 Error = error,
             };
 
@@ -409,78 +409,6 @@ namespace AuditIt.Api.Services
             }
 
             return businessRoot.Deserialize<SfDeliveryApiResult>(JsonOptions);
-        }
-
-        private static SfParsedAddressDto ParseAddress(string? address)
-        {
-            var value = (address ?? string.Empty).Replace(" ", string.Empty).Replace("　", string.Empty);
-            var provinceNames = new[]
-            {
-                "新疆维吾尔自治区", "广西壮族自治区", "宁夏回族自治区", "内蒙古自治区", "西藏自治区",
-                "黑龙江省", "吉林省", "辽宁省", "河北省", "山西省", "江苏省", "浙江省", "安徽省",
-                "福建省", "江西省", "山东省", "河南省", "湖北省", "湖南省", "广东省", "海南省",
-                "四川省", "贵州省", "云南省", "陕西省", "甘肃省", "青海省", "台湾省",
-                "北京市", "天津市", "上海市", "重庆市", "香港特别行政区", "澳门特别行政区",
-            };
-            var provinceMatch = provinceNames
-                .Select(name => new { Name = name, Index = value.IndexOf(name, StringComparison.Ordinal) })
-                .Where(candidate => candidate.Index >= 0)
-                .OrderBy(candidate => candidate.Index)
-                .ThenByDescending(candidate => candidate.Name.Length)
-                .FirstOrDefault();
-            var province = provinceMatch?.Name;
-
-            string? normalizedProvince = province;
-            if (province is "北京市" or "天津市" or "上海市" or "重庆市")
-            {
-                normalizedProvince = province[..2];
-            }
-
-            var remaining = provinceMatch == null
-                ? value
-                : value[(provinceMatch.Index + provinceMatch.Name.Length)..];
-            string? city = normalizedProvince;
-            if (normalizedProvince is not ("北京" or "天津" or "上海" or "重庆")
-                && remaining.Length > 0)
-            {
-                var cityMatch = System.Text.RegularExpressions.Regex.Match(
-                    remaining,
-                    "^(?<city>[\\u4e00-\\u9fff]{2,12}(?:市|自治州|地区|盟))");
-                city = cityMatch.Success ? cityMatch.Groups["city"].Value : null;
-                if (city != null) remaining = remaining[city.Length..];
-            }
-
-            var districtMatch = System.Text.RegularExpressions.Regex.Match(
-                remaining,
-                "^(?<district>[\\u4e00-\\u9fff]{2,12}(?:区|县|旗|市))");
-
-            return new SfParsedAddressDto
-            {
-                Province = normalizedProvince,
-                City = city,
-                District = districtMatch.Success ? districtMatch.Groups["district"].Value : null,
-            };
-        }
-
-        private static string NormalizeAddressForSf(string? address)
-        {
-            var value = (address ?? string.Empty).Replace(" ", string.Empty).Replace("　", string.Empty).Trim();
-            if (value.Length == 0) return value;
-
-            var provinceNames = new[]
-            {
-                "新疆维吾尔自治区", "广西壮族自治区", "宁夏回族自治区", "内蒙古自治区", "西藏自治区",
-                "黑龙江省", "吉林省", "辽宁省", "河北省", "山西省", "江苏省", "浙江省", "安徽省",
-                "福建省", "江西省", "山东省", "河南省", "湖北省", "湖南省", "广东省", "海南省",
-                "四川省", "贵州省", "云南省", "陕西省", "甘肃省", "青海省", "台湾省",
-                "北京市", "天津市", "上海市", "重庆市", "香港特别行政区", "澳门特别行政区",
-            };
-            var provinceIndex = provinceNames
-                .Select(name => value.IndexOf(name, StringComparison.Ordinal))
-                .Where(index => index >= 0)
-                .OrderBy(index => index)
-                .FirstOrDefault(-1);
-            return provinceIndex >= 0 ? value[provinceIndex..] : value;
         }
 
         private static DateTime? ParseLatestDate(string? value)

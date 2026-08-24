@@ -38,6 +38,13 @@ namespace AuditIt.Api.Controllers
             return Ok(new { items, total });
         }
 
+        [HttpGet("owner-options")]
+        [RequirePermission(PermissionCodes.RentalView)]
+        public async Task<ActionResult<RentalOwnerOptionsDto>> OwnerOptions()
+        {
+            return Ok(await _rentals.GetOwnerOptionsAsync());
+        }
+
         [HttpGet("payment-account-default")]
         [RequirePermission(PermissionCodes.RentalView)]
         public async Task<ActionResult<object>> PaymentAccountDefault(CancellationToken ct = default)

@@ -116,7 +116,7 @@ public class RentalOccupancyAndValueTests
 
         var today = BusinessToday();
         var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
-        Rental BuildRental(string number, string createdBy, string? assignedTo) => new()
+        Rental BuildRental(string number, string createdBy, string? assignedTo, string? shippingAddress = null) => new()
         {
             Id = Guid.NewGuid(),
             RentalNumber = number,
@@ -126,11 +126,12 @@ public class RentalOccupancyAndValueTests
             ExpectedShipDate = today,
             ExpectedEndDate = today.AddDays(3),
             CreatedBy = createdBy,
-            AssignedTo = assignedTo
+            AssignedTo = assignedTo,
+            ShippingAddress = shippingAddress
         };
 
         context.Rentals.AddRange(
-            BuildRental("R20990701-MINE-1", "Alice", null),
+            BuildRental("R20990701-MINE-1", "Alice", null, "张三 13800138000 广东省深圳市南山区科技园1号"),
             BuildRental("R20990701-MINE-2", "Bob", "Bob,Alice"),
             BuildRental("R20990701-MINE-3", "Bob", "Alice2"));
         await context.SaveChangesAsync();
@@ -143,6 +144,26 @@ public class RentalOccupancyAndValueTests
         Assert.Equal(
             new[] { "R20990701-MINE-1", "R20990701-MINE-2" },
             items.Select(item => item.RentalNumber).OrderBy(number => number));
+
+        var aliceCreated = await CreateRentalService(context).ListAsync(
+            new RentalQueryParameters { CreatedBy = "Alice", Page = 1, PageSize = 50 });
+        Assert.Equal("R20990701-MINE-1", Assert.Single(aliceCreated.items).RentalNumber);
+        Assert.Equal("广东省", aliceCreated.items.Single().ParsedShippingAddress.Province);
+        Assert.Equal("深圳市", aliceCreated.items.Single().ParsedShippingAddress.City);
+
+        var aliceAssigned = await CreateRentalService(context).ListAsync(
+            new RentalQueryParameters { AssignedTo = "Alice", Page = 1, PageSize = 50 });
+        Assert.Equal("R20990701-MINE-2", Assert.Single(aliceAssigned.items).RentalNumber);
+
+        var aliceOwned = await CreateRentalService(context).ListAsync(
+            new RentalQueryParameters { OwnerName = "Alice", Page = 1, PageSize = 50 });
+        Assert.Equal(
+            new[] { "R20990701-MINE-1", "R20990701-MINE-2" },
+            aliceOwned.items.Select(item => item.RentalNumber).OrderBy(number => number));
+
+        var ownerOptions = await CreateRentalService(context).GetOwnerOptionsAsync();
+        Assert.Equal(new[] { "Alice", "Bob" }, ownerOptions.Creators);
+        Assert.Equal(new[] { "Alice", "Alice2", "Bob" }, ownerOptions.Assignees);
     }
 
     [Fact]

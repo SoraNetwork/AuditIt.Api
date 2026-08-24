@@ -71,6 +71,31 @@ namespace AuditIt.Api.Services
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(query.OwnerName))
+            {
+                var owner = query.OwnerName.Trim();
+                q = q.Where(r => r.CreatedBy == owner
+                    || r.AssignedTo == owner
+                    || (r.AssignedTo != null && r.AssignedTo.StartsWith(owner + ","))
+                    || (r.AssignedTo != null && r.AssignedTo.EndsWith("," + owner))
+                    || (r.AssignedTo != null && r.AssignedTo.Contains("," + owner + ",")));
+            }
+
+            if (!string.IsNullOrWhiteSpace(query.CreatedBy))
+            {
+                var creator = query.CreatedBy.Trim();
+                q = q.Where(r => r.CreatedBy == creator);
+            }
+
+            if (!string.IsNullOrWhiteSpace(query.AssignedTo))
+            {
+                var assignee = query.AssignedTo.Trim();
+                q = q.Where(r => r.AssignedTo == assignee
+                    || (r.AssignedTo != null && r.AssignedTo.StartsWith(assignee + ","))
+                    || (r.AssignedTo != null && r.AssignedTo.EndsWith("," + assignee))
+                    || (r.AssignedTo != null && r.AssignedTo.Contains("," + assignee + ",")));
+            }
+
             if (!string.IsNullOrWhiteSpace(query.RentalNumber))
             {
                 var rentalNumber = query.RentalNumber.Trim();
@@ -150,6 +175,30 @@ namespace AuditIt.Api.Services
             }
 
             return (rows.Select(ToDto), total);
+        }
+
+        public async Task<RentalOwnerOptionsDto> GetOwnerOptionsAsync()
+        {
+            var owners = await _context.Rentals
+                .AsNoTracking()
+                .Select(rental => new { rental.CreatedBy, rental.AssignedTo })
+                .ToListAsync();
+
+            return new RentalOwnerOptionsDto
+            {
+                Creators = owners
+                    .Select(owner => owner.CreatedBy?.Trim())
+                    .Where(owner => !string.IsNullOrWhiteSpace(owner))
+                    .Select(owner => owner!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(owner => owner, StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+                Assignees = owners
+                    .SelectMany(owner => SplitUsers(owner.AssignedTo))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(owner => owner, StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+            };
         }
 
         private static IOrderedQueryable<Rental> ApplyListSorting(IQueryable<Rental> query, RentalQueryParameters parameters)
@@ -4177,6 +4226,7 @@ namespace AuditIt.Api.Services
             TotalShippingFee = rental.Shipments.Sum(s => s.ShippingFee ?? 0),
             AccountedAmount = rental.TotalPrice - rental.OtherFee - rental.Shipments.Sum(s => s.ShippingFee ?? 0),
             ShippingAddress = rental.ShippingAddress,
+            ParsedShippingAddress = ChineseAddressParser.Parse(rental.ShippingAddress),
             PlatformOrderNo = rental.PlatformOrderNo,
             PaymentAccount = rental.PaymentAccount,
             RenewedFromRentalId = rental.RenewedFromRentalId,
