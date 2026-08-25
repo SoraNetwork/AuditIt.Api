@@ -295,12 +295,22 @@ namespace AuditIt.Api.Services
                 var expectedEndDate = RentalDateRules.ToBusinessDate(rental.ExpectedEndDate);
                 var effectiveExpectedEndDate = RentalDateRules.EffectiveExpectedEndDate(rental);
                 var effectiveExpectedReturnDate = RentalDateRules.EffectiveExpectedReturnDate(rental);
+                var actualReturnDate = rental.ActualEndDate
+                    ?? (rental.Status == RentalStatus.Returned
+                        ? rental.Items
+                            .Where(item => item.ReturnedAt.HasValue)
+                            .Select(item => item.ReturnedAt)
+                            .Max()
+                        : null);
+                var rentalPeriodEndDate = actualReturnDate.HasValue
+                    ? RentalDateRules.ToBusinessDate(actualReturnDate.Value)
+                    : effectiveExpectedEndDate;
                 var hasOutboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Outbound);
                 var hasInboundShipment = rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);
                 var hasRentalStarted = HasRentalStarted(rental);
                 var hasOpenItems = !IsClosedStatus(rental.Status)
                     && rental.Items.Any(i => i.ReturnedAt == null);
-                var rentalPeriodOverlaps = RentalDateRules.Overlaps(rental.StartDate, effectiveExpectedEndDate, from, to);
+                var rentalPeriodOverlaps = RentalDateRules.Overlaps(rental.StartDate, rentalPeriodEndDate, from, to);
 
                 if (rentalPeriodOverlaps
                     && rental.Status != RentalStatus.Renewed
@@ -323,7 +333,7 @@ namespace AuditIt.Api.Services
                             ? $"{rental.Renter?.Name ?? "-"} | {rental.Items.Count} 件物品 | 续租意愿至 {RentalDateRules.Format(rental.RenewalIntentEndDate.Value)}"
                             : $"{rental.Renter?.Name ?? "-"} | {rental.Items.Count} 件物品",
                         StartAt = startDate,
-                        EndAt = effectiveExpectedEndDate,
+                        EndAt = rentalPeriodEndDate,
                         AllDay = true,
                         IsOpen = !IsClosedStatus(rental.Status)
                     });
@@ -1365,76 +1375,112 @@ namespace AuditIt.Api.Services
 
                 var shippedRentalItemIds = GetOutboundShippedRentalItemIds(rental);
                 var selections = dto.ItemSelections ?? new List<RentalItemShipSelectionDto>();
-                var selectedRentalItemIds = new HashSet<int>();
-
-                if (selections.Count == 0)
+                var selectionByRentalItemId = new Dictionary<int, RentalItemShipSelectionDto>();
+                foreach (var selection in selections)
                 {
-                    // Keep the legacy API behavior: no selections means ship every
-                    // remaining item. New clients submit the selected items so a
-                    // rental can be shipped in more than one parcel.
-                    selectedOutboundRentalItems = rental.Items
-                        .Where(item => !item.ReturnedAt.HasValue && !shippedRentalItemIds.Contains(item.Id))
-                        .ToList();
+                    if (!selectionByRentalItemId.TryAdd(selection.RentalItemId, selection))
+                    {
+                        return new RentalShipmentResult { Error = "同一租赁物品不能在一条发货物流中重复选择。" };
+                    }
+                }
+
+                List<int> requestedRentalItemIds;
+                if (dto.RentalItemIds != null)
+                {
+                    if (dto.RentalItemIds.Count == 0)
+                    {
+                        return new RentalShipmentResult { Error = "请至少选择一件本次发货的物品。" };
+                    }
+
+                    var uniqueRentalItemIds = dto.RentalItemIds.Distinct().ToList();
+                    if (uniqueRentalItemIds.Count != dto.RentalItemIds.Count)
+                    {
+                        return new RentalShipmentResult { Error = "同一租赁物品不能在一条发货物流中重复选择。" };
+                    }
+
+                    requestedRentalItemIds = uniqueRentalItemIds;
+                    if (selectionByRentalItemId.Keys.Any(id => !requestedRentalItemIds.Contains(id)))
+                    {
+                        return new RentalShipmentResult { Error = "具体库存选择与本次勾选的发货物品不一致。" };
+                    }
+                }
+                else if (selectionByRentalItemId.Count > 0)
+                {
+                    // Backward compatibility for clients that only send item mappings.
+                    requestedRentalItemIds = selectionByRentalItemId.Keys.ToList();
                 }
                 else
                 {
-                    foreach (var selection in selections)
+                    // Legacy clients omitted both fields to mean every remaining item.
+                    requestedRentalItemIds = rental.Items
+                        .Where(item => !item.ReturnedAt.HasValue && !shippedRentalItemIds.Contains(item.Id))
+                        .Select(item => item.Id)
+                        .ToList();
+                }
+
+                var selectedItemIds = new HashSet<Guid>();
+                foreach (var rentalItemId in requestedRentalItemIds)
+                {
+                    var rentalItem = rental.Items.FirstOrDefault(ri => ri.Id == rentalItemId);
+                    if (rentalItem == null)
                     {
-                        if (!selectedRentalItemIds.Add(selection.RentalItemId))
-                        {
-                            return new RentalShipmentResult { Error = "同一租赁物品不能在一条发货物流中重复选择。" };
-                        }
-
-                        var rentalItem = rental.Items.FirstOrDefault(ri => ri.Id == selection.RentalItemId);
-                        if (rentalItem == null)
-                        {
-                            return new RentalShipmentResult { Error = $"未找到租赁项 ID {selection.RentalItemId}。" };
-                        }
-
-                        if (rentalItem.ReturnedAt.HasValue || shippedRentalItemIds.Contains(rentalItem.Id))
-                        {
-                            return new RentalShipmentResult { Error = $"租赁项 ID {selection.RentalItemId} 已发货或已归还，不能重复发货。" };
-                        }
-
-                        if (rentalItem.ItemId == null)
-                        {
-                            var item = await _context.Items
-                                .Include(i => i.ItemDefinition)
-                                .Include(i => i.Listings)
-                                .FirstOrDefaultAsync(i => i.Id == selection.ItemId);
-
-                            if (item == null)
-                            {
-                                return new RentalShipmentResult { Error = $"所选库存商品不存在。" };
-                            }
-
-                            if (item.ItemDefinitionId != rentalItem.ItemDefinitionId)
-                            {
-                                return new RentalShipmentResult { Error = $"所选商品 {item.ShortId} 的分类不匹配。" };
-                            }
-
-                            if (item.Status == ItemStatus.Disposed)
-                            {
-                                return new RentalShipmentResult { Error = $"所选商品 {item.ShortId} 已被处置。" };
-                            }
-
-                            var listingRemarks = string.Join("; ", item.Listings
-                                .Where(l => l.Status == ListingStatus.Listed)
-                                .Select(l => $"{l.Platform}: {l.Remarks ?? "无备注"}"));
-
-                            rentalItem.ItemId = item.Id;
-                            rentalItem.ItemShortIdSnapshot = item.ShortId;
-                            rentalItem.ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty;
-                            rentalItem.ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks;
-                            rentalItem.Item = item;
-                        }
-                        else if (rentalItem.ItemId.Value != selection.ItemId)
-                        {
-                            return new RentalShipmentResult { Error = "已确定库存的租赁物品必须使用原商品发货。" };
-                        }
-
-                        selectedOutboundRentalItems.Add(rentalItem);
+                        return new RentalShipmentResult { Error = $"未找到租赁项 ID {rentalItemId}。" };
                     }
+
+                    if (rentalItem.ReturnedAt.HasValue || shippedRentalItemIds.Contains(rentalItem.Id))
+                    {
+                        return new RentalShipmentResult { Error = $"租赁项 ID {rentalItemId} 已发货或已归还，不能重复发货。" };
+                    }
+
+                    selectionByRentalItemId.TryGetValue(rentalItemId, out var selection);
+                    if (rentalItem.ItemId == null)
+                    {
+                        if (selection == null)
+                        {
+                            return new RentalShipmentResult { Error = $"请为租赁项 ID {rentalItemId} 选择具体库存。" };
+                        }
+
+                        var item = await _context.Items
+                            .Include(i => i.ItemDefinition)
+                            .Include(i => i.Listings)
+                            .FirstOrDefaultAsync(i => i.Id == selection.ItemId);
+
+                        if (item == null)
+                        {
+                            return new RentalShipmentResult { Error = "所选库存商品不存在。" };
+                        }
+
+                        if (item.ItemDefinitionId != rentalItem.ItemDefinitionId)
+                        {
+                            return new RentalShipmentResult { Error = $"所选商品 {item.ShortId} 的分类不匹配。" };
+                        }
+
+                        if (item.Status == ItemStatus.Disposed)
+                        {
+                            return new RentalShipmentResult { Error = $"所选商品 {item.ShortId} 已被处置。" };
+                        }
+
+                        var listingRemarks = string.Join("; ", item.Listings
+                            .Where(l => l.Status == ListingStatus.Listed)
+                            .Select(l => $"{l.Platform}: {l.Remarks ?? "无备注"}"));
+
+                        rentalItem.ItemId = item.Id;
+                        rentalItem.ItemShortIdSnapshot = item.ShortId;
+                        rentalItem.ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty;
+                        rentalItem.ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks;
+                        rentalItem.Item = item;
+                    }
+                    else if (selection != null && rentalItem.ItemId.Value != selection.ItemId)
+                    {
+                        return new RentalShipmentResult { Error = "已确定库存的租赁物品必须使用原商品发货。" };
+                    }
+
+                    if (!selectedItemIds.Add(rentalItem.ItemId!.Value))
+                    {
+                        return new RentalShipmentResult { Error = "同一库存物品不能在一条发货物流中重复选择。" };
+                    }
+
+                    selectedOutboundRentalItems.Add(rentalItem);
                 }
 
                 if (selectedOutboundRentalItems.Count == 0)
@@ -1489,6 +1535,7 @@ namespace AuditIt.Api.Services
             var shipment = new RentalShipment
             {
                 RentalId = rentalId,
+                Rental = rental,
                 Direction = dto.Direction,
                 OriginWarehouseId = dto.OriginWarehouseId,
                 Carrier = dto.Carrier.Trim(),
@@ -1503,7 +1550,11 @@ namespace AuditIt.Api.Services
                 : rental.Items.Where(ri => selectedInboundItemIds.Contains(ri.Id)).ToList();
             foreach (var rentalItem in linkedRentalItems)
             {
-                shipment.RentalItems.Add(new RentalShipmentItem { RentalItemId = rentalItem.Id });
+                shipment.RentalItems.Add(new RentalShipmentItem
+                {
+                    RentalItemId = rentalItem.Id,
+                    RentalItem = rentalItem
+                });
             }
 
             _context.RentalShipments.Add(shipment);
@@ -2237,6 +2288,7 @@ namespace AuditIt.Api.Services
                     && condition is ReturnCondition.MinorDamage or ReturnCondition.MajorDamage;
 
                 rentalItem.ReturnedAt = now;
+                rentalItem.ReleasedFromRentalAt = now;
                 rentalItem.ReturnCondition = condition;
                 rentalItem.ReturnNotes = NormalizeNullableText(dto.Notes);
 

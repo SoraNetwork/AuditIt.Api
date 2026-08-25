@@ -204,8 +204,21 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ### `POST /rentals/{id}/ship`
 - Body: `CreateShipmentDto`
-- `CreateShipmentDto.ItemSelections` may contain one or more `{ rentalItemId, itemId }` entries when registering an inbound shipment. An empty list keeps legacy whole-rental semantics.
+- New clients explicitly send `rentalItemIds` for the outbound rental items selected for this parcel. An empty explicit list is rejected; omitting the property preserves legacy whole-rental behavior.
+- `itemSelections` contains `{ rentalItemId, itemId }` mappings. Outbound mappings identify concrete inventory for uncertain rental items; inbound mappings associate return logistics with selected items.
 - Response: `RentalDto`
+
+### `GET /rentals/{id}/settlement`
+- Response: `SettlementPreviewDto`
+
+### `POST /rentals/{id}/settlement/send`
+- Sends or re-sends one settlement message.
+- Response: `SettlementPreviewDto`
+
+### `POST /rentals/settlements/send`
+- Body: `{ rentalIds: guid[] }` (1-100 IDs)
+- Sends or re-sends each selected settlement and returns per-rental success/error details.
+- Response: `BatchSendSettlementsResultDto`
 
 ### `POST /rentals/{id}/shipments/{shipmentId}/deliver`
 - Body: `DeliverShipmentDto`

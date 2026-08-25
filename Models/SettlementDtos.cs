@@ -73,4 +73,28 @@ namespace AuditIt.Api.Models
         public string? ShipperName { get; set; }
         public decimal Amount { get; set; }
     }
+
+    public class BatchSendSettlementsRequestDto
+    {
+        [Required]
+        [MinLength(1)]
+        [MaxLength(100)]
+        public List<Guid> RentalIds { get; set; } = new();
+    }
+
+    public class BatchSendSettlementItemResultDto
+    {
+        public Guid RentalId { get; set; }
+        public string? RentalNumber { get; set; }
+        public bool Success { get; set; }
+        public string? Error { get; set; }
+    }
+
+    public class BatchSendSettlementsResultDto
+    {
+        public int Requested { get; set; }
+        public int Succeeded { get; set; }
+        public int Failed { get; set; }
+        public List<BatchSendSettlementItemResultDto> Results { get; set; } = new();
+    }
 }

@@ -156,6 +156,54 @@ namespace AuditIt.Api.Controllers
             return Ok(preview);
         }
 
+        [HttpPost("settlements/send")]
+        [RequirePermission(PermissionCodes.RentalReturn)]
+        public async Task<ActionResult<BatchSendSettlementsResultDto>> SendSettlements(
+            [FromBody] BatchSendSettlementsRequestDto dto,
+            CancellationToken ct = default)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            var rentalIds = dto.RentalIds.Distinct().ToList();
+            var result = new BatchSendSettlementsResultDto { Requested = rentalIds.Count };
+            foreach (var rentalId in rentalIds)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var (preview, error) = await _settlements.SendForRentalAsync(
+                        rentalId,
+                        CurrentUser(),
+                        force: true,
+                        ct);
+                    result.Results.Add(new BatchSendSettlementItemResultDto
+                    {
+                        RentalId = rentalId,
+                        RentalNumber = preview?.RentalNumber,
+                        Success = error == null,
+                        Error = error
+                    });
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    result.Results.Add(new BatchSendSettlementItemResultDto
+                    {
+                        RentalId = rentalId,
+                        Success = false,
+                        Error = $"发送失败：{ex.Message}"
+                    });
+                }
+            }
+
+            result.Succeeded = result.Results.Count(item => item.Success);
+            result.Failed = result.Results.Count - result.Succeeded;
+            return Ok(result);
+        }
+
         [HttpPost("sf-routes/refresh-pending")]
         [RequirePermission(PermissionCodes.RentalShip)]
         public async Task<ActionResult<SfPendingRouteRefreshResultDto>> RefreshPendingSfRoutes(CancellationToken ct = default)

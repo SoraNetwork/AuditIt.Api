@@ -346,6 +346,11 @@ namespace AuditIt.Api.Models
 
         public bool AllowOpenItemConflict { get; set; }
 
+        // Null preserves the legacy "ship every remaining item" behavior. New
+        // clients send this list explicitly so an empty or partial selection can
+        // never be mistaken for an unassigned shipment.
+        public List<int>? RentalItemIds { get; set; }
+
         public List<RentalItemShipSelectionDto> ItemSelections { get; set; } = new();
     }
 
