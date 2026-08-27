@@ -117,10 +117,9 @@ namespace AuditIt.Api.Services
             _context.Reminders.AddRange(created);
             await _context.SaveChangesAsync();
 
-            foreach (var r in created)
             foreach (var ch in _channels)
             {
-                try { await ch.DeliverAsync(r, default); } catch { /* ignore */ }
+                try { await ch.DeliverBatchAsync(created, default); } catch { /* ignore */ }
             }
 
             return created.Select(ToDto).ToList();

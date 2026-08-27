@@ -10,6 +10,10 @@ using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// DingTalk access tokens are query-string credentials. Suppress the default
+// HttpClient information logs so production logs never persist those URLs.
+builder.Logging.AddFilter("System.Net.Http.HttpClient", LogLevel.Warning);
+
 builder.WebHost.UseUrls("http://0.0.0.0:5990");
 
 // Add services to the container.

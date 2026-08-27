@@ -3448,18 +3448,15 @@ namespace AuditIt.Api.Services
                 _context.Reminders.AddRange(reminders);
                 await _context.SaveChangesAsync();
 
-                foreach (var reminder in reminders)
+                foreach (var channel in _notificationChannels)
                 {
-                    foreach (var channel in _notificationChannels)
+                    try
                     {
-                        try
-                        {
-                            await channel.DeliverAsync(reminder, default);
-                        }
-                        catch
-                        {
-                            // Reminder side-channel failures should not block the main workflow.
-                        }
+                        await channel.DeliverBatchAsync(reminders, default);
+                    }
+                    catch
+                    {
+                        // Reminder side-channel failures should not block the main workflow.
                     }
                 }
             }
@@ -3575,17 +3572,6 @@ namespace AuditIt.Api.Services
             string? currentUser,
             CancellationToken ct)
         {
-            var existingOpen = await _context.Reminders.AnyAsync(r =>
-                r.RelatedEntityType == "RentalShipment"
-                && r.RelatedEntityId == shipment.Id.ToString()
-                && r.Type == ReminderType.Manual
-                && r.DismissedAt == null
-                && r.Title.Contains("物流异常"), ct);
-            if (existingOpen)
-            {
-                return;
-            }
-
             var targets = await BuildRentalNotificationTargetsAsync(rental, includeAdmins: true);
 
             if (targets.Count == 0)
@@ -3594,14 +3580,33 @@ namespace AuditIt.Api.Services
             }
 
             var now = DateTime.UtcNow;
+            var title = $"租赁 {rental.RentalNumber} 顺丰物流异常";
             var message = $"租赁单 {rental.RentalNumber} 的顺丰运单 {route.TrackingNumber} 出现异常：{route.ExceptionMessage ?? "请查看顺丰路由"}";
+            var targetList = targets.ToList();
+            var notifiedTargets = await _context.Reminders
+                .AsNoTracking()
+                .Where(r => r.RelatedEntityType == "RentalShipment"
+                    && r.RelatedEntityId == shipment.Id.ToString()
+                    && r.Type == ReminderType.Manual
+                    && r.Title == title
+                    && r.Message == message
+                    && r.TargetUser != null
+                    && targetList.Contains(r.TargetUser))
+                .Select(r => r.TargetUser!)
+                .ToListAsync(ct);
+            targets.ExceptWith(notifiedTargets);
+            if (targets.Count == 0)
+            {
+                return;
+            }
+
             var reminders = targets.Select(target => new Reminder
             {
                 Type = ReminderType.Manual,
                 Level = ReminderLevel.Warning,
                 RelatedEntityType = "RentalShipment",
                 RelatedEntityId = shipment.Id.ToString(),
-                Title = $"租赁 {rental.RentalNumber} 顺丰物流异常",
+                Title = title,
                 Message = message,
                 TargetUser = target,
                 DueAt = now,
@@ -3611,18 +3616,15 @@ namespace AuditIt.Api.Services
             _context.Reminders.AddRange(reminders);
             await _context.SaveChangesAsync(ct);
 
-            foreach (var reminder in reminders)
+            foreach (var channel in _notificationChannels)
             {
-                foreach (var channel in _notificationChannels)
+                try
                 {
-                    try
-                    {
-                        await channel.DeliverAsync(reminder, ct);
-                    }
-                    catch
-                    {
-                        // Reminder side-channel failures should not block route sync.
-                    }
+                    await channel.DeliverBatchAsync(reminders, ct);
+                }
+                catch
+                {
+                    // Reminder side-channel failures should not block route sync.
                 }
             }
         }

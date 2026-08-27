@@ -204,18 +204,15 @@ namespace AuditIt.Api.Services
                 _context.Reminders.AddRange(reminders);
                 await _context.SaveChangesAsync();
 
-                foreach (var reminder in reminders)
+                foreach (var channel in _notificationChannels)
                 {
-                    foreach (var channel in _notificationChannels)
+                    try
                     {
-                        try
-                        {
-                            await channel.DeliverAsync(reminder, default);
-                        }
-                        catch
-                        {
-                            // Notification side-channel failures should not block renter edits.
-                        }
+                        await channel.DeliverBatchAsync(reminders, default);
+                    }
+                    catch
+                    {
+                        // Notification side-channel failures should not block renter edits.
                     }
                 }
             }

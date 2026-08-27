@@ -55,7 +55,7 @@ namespace AuditIt.Api.Services
             }
         }
 
-        private async Task SweepOnceAsync(CancellationToken ct)
+        internal async Task SweepOnceAsync(CancellationToken ct)
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -146,6 +146,7 @@ namespace AuditIt.Api.Services
                     type = ReminderType.RentalShipmentSoon;
                 }
                 else if (hasRentalStarted
+                         && rental.Status != RentalStatus.Returned
                          && hasOutboundShipment
                          && !hasDeliveredOutboundShipment
                          && startDate.AddDays(1) <= today)
@@ -193,15 +194,19 @@ namespace AuditIt.Api.Services
 
                 foreach (var target in targets)
                 {
-                    var reminderDate = type == ReminderType.RentalReturnUnsigned
-                        ? today
-                        : (DateTime?)null;
-                    if (await HasOpenReminderAsync(db, rental.Id.ToString(), type.Value, target, reminderDate, ct))
+                    var reminder = BuildReminder(rental, type.Value, target, now);
+                    if (await HasReminderForOccurrenceAsync(
+                        db,
+                        rental.Id.ToString(),
+                        type.Value,
+                        target,
+                        reminder.DueAt,
+                        ct))
                     {
                         continue;
                     }
 
-                    created.Add(BuildReminder(rental, type.Value, target, now));
+                    created.Add(reminder);
                 }
             }
 
@@ -213,28 +218,29 @@ namespace AuditIt.Api.Services
             db.Reminders.AddRange(created);
             await db.SaveChangesAsync(ct);
 
-            foreach (var reminder in created)
+            foreach (var channel in channels)
             {
-                foreach (var channel in channels)
+                try
                 {
-                    try
-                    {
-                        await channel.DeliverAsync(reminder, ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Notification channel {Channel} failed for reminder {Id}", channel.Name, reminder.Id);
-                    }
+                    await channel.DeliverBatchAsync(created, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Notification channel {Channel} failed for reminder batch ({Count} reminders).",
+                        channel.Name,
+                        created.Count);
                 }
             }
         }
 
-        private static Task<bool> HasOpenReminderAsync(
+        private static Task<bool> HasReminderForOccurrenceAsync(
             ApplicationDbContext db,
             string entityId,
             ReminderType type,
             string? target,
-            DateTime? dueDate,
+            DateTime dueDate,
             CancellationToken ct)
         {
             return db.Reminders.AnyAsync(r =>
@@ -242,9 +248,7 @@ namespace AuditIt.Api.Services
                 && r.RelatedEntityId == entityId
                 && r.Type == type
                 && r.TargetUser == target
-                && (dueDate.HasValue
-                    ? r.DueAt.Date == dueDate.Value.Date
-                    : r.DismissedAt == null), ct);
+                && r.DueAt.Date == dueDate.Date, ct);
         }
 
         private static HashSet<string?> BuildRentalReminderTargets(Rental rental)

@@ -324,6 +324,74 @@ public class RentalSfRouteSyncTests
         Assert.Equal(new[] { "8000", "7000", "9000" }, sfExpress.RequestedPhoneTails);
     }
 
+    [Fact]
+    public async Task SyncSfRoutesAsync_doesNotResendDismissedIdenticalShipmentException()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20260603-0001",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            CreatedBy = "Creator",
+            Status = RentalStatus.Active,
+            StartDate = new DateTime(2026, 6, 3),
+            ExpectedShipDate = new DateTime(2026, 6, 2),
+            ExpectedEndDate = new DateTime(2026, 6, 8),
+            TotalPrice = 100m
+        };
+        rental.Shipments.Add(new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            TrackingNumber = "SF1234567890",
+            ShippedAt = new DateTime(2026, 6, 2),
+            CreatedBy = "Creator"
+        });
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var sfExpress = new MutableExceptionSfExpressService("2026-06-03 10:00 宁波 派送异常");
+        var channel = new RecordingNotificationChannel();
+        var service = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            new[] { channel },
+            sfExpress,
+            new StubSettlementService());
+
+        await service.SyncSfRoutesAsync(rental.Id, forceRefresh: true, "tester");
+        var first = await context.Reminders.SingleAsync();
+        first.DismissedAt = DateTime.UtcNow;
+        first.DismissedBy = "Creator";
+        await context.SaveChangesAsync();
+
+        await service.SyncSfRoutesAsync(rental.Id, forceRefresh: true, "tester");
+
+        Assert.Single(await context.Reminders.ToListAsync());
+        Assert.Single(channel.Batches);
+
+        sfExpress.ExceptionMessage = "2026-06-03 11:00 宁波 运单退回";
+        await service.SyncSfRoutesAsync(rental.Id, forceRefresh: true, "tester");
+
+        var reminders = await context.Reminders.OrderBy(reminder => reminder.CreatedAt).ToListAsync();
+        Assert.Equal(2, reminders.Count);
+        Assert.Contains("运单退回", reminders[1].Message);
+        Assert.Equal(2, channel.Batches.Count);
+    }
+
     private static Rental BuildRental(string rentalNumber, Renter renter, DateTime expectedEndDate, DateTime createdAt) => new()
     {
         Id = Guid.NewGuid(),
@@ -413,6 +481,62 @@ public class RentalSfRouteSyncTests
             }).ToList();
 
             return Task.FromResult(results);
+        }
+    }
+
+    private sealed class MutableExceptionSfExpressService : ISfExpressService
+    {
+        public MutableExceptionSfExpressService(string exceptionMessage)
+        {
+            ExceptionMessage = exceptionMessage;
+        }
+
+        public string ExceptionMessage { get; set; }
+
+        public Task<IReadOnlyList<SfRouteQueryResult>> QueryRoutesAsync(
+            IReadOnlyList<SfRouteQueryItem> items,
+            bool forceRefresh,
+            CancellationToken ct = default)
+        {
+            IReadOnlyList<SfRouteQueryResult> results = items.Select(item => new SfRouteQueryResult
+            {
+                ShipmentId = item.ShipmentId,
+                TrackingNumber = item.TrackingNumber,
+                CheckPhoneNo = item.CheckPhoneNo,
+                Queryable = true,
+                HasException = true,
+                ExceptionMessage = ExceptionMessage,
+                Routes =
+                {
+                    new SfRouteNodeDto
+                    {
+                        AcceptTime = "2026-06-03 10:00:00",
+                        FirstStatusName = "运输",
+                        SecondaryStatusName = "异常",
+                        Remark = ExceptionMessage
+                    }
+                }
+            }).ToList();
+
+            return Task.FromResult(results);
+        }
+    }
+
+    private sealed class RecordingNotificationChannel : INotificationChannel
+    {
+        public string Name => "recording";
+        public List<IReadOnlyList<Reminder>> Batches { get; } = new();
+
+        public Task DeliverAsync(Reminder reminder, CancellationToken ct)
+        {
+            Batches.Add(new[] { reminder });
+            return Task.CompletedTask;
+        }
+
+        public Task DeliverBatchAsync(IReadOnlyCollection<Reminder> reminders, CancellationToken ct)
+        {
+            Batches.Add(reminders.ToList());
+            return Task.CompletedTask;
         }
     }
 
