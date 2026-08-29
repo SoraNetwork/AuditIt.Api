@@ -226,6 +226,8 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ### `POST /rentals/{id}/return`
 - Body: `ReturnRentalDto`
+- `Items` or `RentalItemIds` may contain only the rental items being returned; unselected open items remain active and can be returned in a later request. If neither is supplied, all outstanding items are returned for backward compatibility.
+- The rental remains `Active` or `Overdue` until every rental item is returned. Each returned item updates its own inventory status and return condition.
 - When returning damaged items, set `repairOccupancy: true` and provide `repairExpectedReturnDate`. The returned physical items are then retained as a normal loan with destination/reason `损坏维修`.
 - Response: `RentalDto`
 

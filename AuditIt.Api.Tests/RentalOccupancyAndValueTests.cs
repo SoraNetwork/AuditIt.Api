@@ -331,6 +331,117 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task ReturnAsync_PartiallyReturnsSelectedItems_AndKeepsOutstandingReminderOpen()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var today = BusinessToday();
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var firstItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-PARTIAL-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut,
+            CurrentDestination = "租赁 R20990101-0003"
+        };
+        var secondItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-PARTIAL-002",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut,
+            CurrentDestination = "租赁 R20990101-0003"
+        };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990101-0003",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Active,
+            StartDate = today.AddDays(-5),
+            ExpectedShipDate = today.AddDays(-6),
+            ExpectedEndDate = today.AddDays(-2),
+            CreatedBy = "Creator"
+        };
+        var firstRentalItem = new RentalItem
+        {
+            Item = firstItem,
+            ItemShortIdSnapshot = firstItem.ShortId,
+            ItemNameSnapshot = definition.Name
+        };
+        var secondRentalItem = new RentalItem
+        {
+            Item = secondItem,
+            ItemShortIdSnapshot = secondItem.ShortId,
+            ItemNameSnapshot = definition.Name
+        };
+        rental.Items.Add(firstRentalItem);
+        rental.Items.Add(secondRentalItem);
+        rental.Shipments.Add(new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = today.AddDays(-6)
+        });
+        var overdueReminder = new Reminder
+        {
+            Type = ReminderType.RentalOverdue,
+            Level = ReminderLevel.Critical,
+            RelatedEntityType = "Rental",
+            RelatedEntityId = rental.Id.ToString(),
+            Title = "租赁逾期",
+            Message = "请跟进",
+            DueAt = today.AddDays(-1),
+            CreatedAt = today.AddDays(-1)
+        };
+        context.AddRange(rental, overdueReminder);
+        await context.SaveChangesAsync();
+
+        var result = await CreateRentalService(context).ReturnAsync(rental.Id, new ReturnRentalDto
+        {
+            Items = new List<ReturnRentalItemDto>
+            {
+                new() { RentalItemId = firstRentalItem.Id, Condition = ReturnCondition.Good }
+            }
+        }, "TestUser");
+
+        Assert.Null(result.error);
+        Assert.NotNull(result.rental);
+        Assert.Equal(RentalStatus.Overdue, result.rental!.Status);
+        Assert.Null(result.rental.ActualEndDate);
+        Assert.NotNull(result.rental.Items.Single(item => item.Id == firstRentalItem.Id).ReturnedAt);
+        Assert.Null(result.rental.Items.Single(item => item.Id == secondRentalItem.Id).ReturnedAt);
+
+        var savedFirstItem = await context.Items.SingleAsync(item => item.Id == firstItem.Id);
+        Assert.Equal(ItemStatus.InStock, savedFirstItem.Status);
+        Assert.Null(savedFirstItem.CurrentDestination);
+
+        var savedSecondItem = await context.Items.SingleAsync(item => item.Id == secondItem.Id);
+        Assert.Equal(ItemStatus.LoanedOut, savedSecondItem.Status);
+        Assert.Equal("租赁 R20990101-0003", savedSecondItem.CurrentDestination);
+
+        var savedReminder = await context.Reminders.SingleAsync(reminder => reminder.Id == overdueReminder.Id);
+        Assert.Null(savedReminder.DismissedAt);
+        Assert.Contains(
+            await context.Reminders.Where(reminder => reminder.Type == ReminderType.Manual).ToListAsync(),
+            reminder => reminder.Message?.Contains("部分归还", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
     public async Task InboundShipment_CanBeLinkedToSelectedRentalItems_AndLegacyShipmentRemainsUnassigned()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

@@ -2249,9 +2249,26 @@ namespace AuditIt.Api.Services
                 return (null, "没有可归还的商品。");
             }
 
+            if (targetIds != null && targetIds.Count > 0)
+            {
+                var openRentalItemIds = rental.Items
+                    .Where(ri => ri.ReturnedAt == null)
+                    .Select(ri => ri.Id)
+                    .ToHashSet();
+                if (targetIds.Any(id => !openRentalItemIds.Contains(id)))
+                {
+                    return (null, "部分归还商品不存在或已归还。");
+                }
+            }
+
             if (hasPerItemConditions && targets.Count != conditionByRentalItemId.Count)
             {
                 return (null, "部分归还商品不存在或已归还。");
+            }
+
+            if (targets.Any(ri => !ri.ItemId.HasValue || ri.Item == null))
+            {
+                return (null, "只能登记已关联具体库存商品的归还记录。");
             }
 
             var now = DateTime.UtcNow;

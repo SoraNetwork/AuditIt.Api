@@ -384,7 +384,8 @@ namespace AuditIt.Api.Models
 
     public class ReturnRentalDto
     {
-        // If null/empty, return all outstanding rental items.
+        // If null/empty, return all outstanding rental items. When supplied,
+        // only the listed rental items are returned and the rest stay open.
         public List<int>? RentalItemIds { get; set; }
 
         // Per-item condition takes precedence over the legacy global Condition.
