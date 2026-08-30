@@ -2016,6 +2016,9 @@ namespace AuditIt.Api.Services
                         .ThenInclude(i => i!.Warehouse)
                 .Include(r => r.Shipments)
                     .ThenInclude(s => s.OriginWarehouse)
+                .Include(r => r.Shipments)
+                    .ThenInclude(s => s.RentalItems)
+                        .ThenInclude(link => link.RentalItem)
                 .FirstOrDefaultAsync(r => r.Id == rentalId, ct);
 
             if (rental == null)

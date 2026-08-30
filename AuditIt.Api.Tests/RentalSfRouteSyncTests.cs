@@ -261,6 +261,85 @@ public class RentalSfRouteSyncTests
     }
 
     [Fact]
+    public async Task SyncSfRoutesAsync_preservesShipmentItemLinksInReturnedRental()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Lens", Description = "Lens category" };
+        var definition = new ItemDefinition { Name = "Prime Lens", Category = category, Unit = "件", Description = "Prime lens" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "LENS-LINK-001",
+            Status = ItemStatus.LoanedOut,
+            Warehouse = warehouse,
+            ItemDefinition = definition
+        };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20260520-LINK-01",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Active,
+            StartDate = new DateTime(2026, 5, 20),
+            ExpectedShipDate = new DateTime(2026, 5, 19),
+            ExpectedEndDate = new DateTime(2026, 5, 25),
+            TotalPrice = 100m
+        };
+        var rentalItem = new RentalItem
+        {
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name
+        };
+        var shipment = new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "顺丰",
+            TrackingNumber = "SF-LINK-001",
+            ShippedAt = new DateTime(2026, 5, 19)
+        };
+        shipment.RentalItems.Add(new RentalShipmentItem { RentalItem = rentalItem });
+        rental.Items.Add(rentalItem);
+        rental.Shipments.Add(shipment);
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        // Force SyncSfRoutesAsync to materialize a fresh graph. Without the
+        // shipment-item Include, ToDto would serialize shipment.items as empty.
+        context.ChangeTracker.Clear();
+
+        var service = new RentalService(
+            context,
+            new StubRenterService(),
+            new StubIdentityService(),
+            Array.Empty<INotificationChannel>(),
+            new StubSfExpressService(DateTime.UtcNow),
+            new StubSettlementService());
+
+        var (result, error) = await service.SyncSfRoutesAsync(rental.Id, forceRefresh: true, "tester");
+
+        Assert.Null(error);
+        Assert.NotNull(result!.Rental);
+        var returnedRental = result.Rental!;
+        var returnedShipment = Assert.Single(returnedRental.Shipments);
+        var returnedLink = Assert.Single(returnedShipment.Items);
+        Assert.Equal(rentalItem.Id, returnedLink.RentalItemId);
+        Assert.Equal(item.Id, returnedLink.ItemId);
+        Assert.Equal(item.ShortId, returnedLink.ItemShortIdSnapshot);
+    }
+
+    [Fact]
     public async Task SyncSfRoutesAsync_UsesAdminPhoneTailAfterRenterAndCreatorFallbacks()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
