@@ -2339,6 +2339,15 @@ namespace AuditIt.Api.Services
                 rental.ActualEndDate = now;
                 rental.HasRenewalIntent = false;
                 rental.RenewalIntentEndDate = null;
+
+                // A returned rental is closed as a whole. Close any stale
+                // outbound or inbound shipment as well so a completed order
+                // cannot keep showing "待签收" logistics.
+                foreach (var shipment in rental.Shipments.Where(shipment => !shipment.DeliveredAt.HasValue))
+                {
+                    shipment.DeliveredAt = now;
+                }
+
                 await DismissOpenRentalAutoRemindersAsync(rental.Id, currentUser);
             }
             else

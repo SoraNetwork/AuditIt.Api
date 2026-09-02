@@ -4247,6 +4247,185 @@ public class RentalOccupancyAndValueTests
         Assert.Equal($"租赁 {restoredSource.RentalNumber}", restoredItem.CurrentDestination);
     }
 
+    [Fact]
+    public async Task CheckAnalysis_FuzzySearchSeparatesCheckedAndUncheckedItems()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var checkedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-001",
+            SerialNumber = "SN-ALPHA",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var uncheckedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-002",
+            SerialNumber = "SN-BETA",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        context.Items.AddRange(checkedItem, uncheckedItem);
+        var startAt = DateTime.UtcNow.AddHours(-2);
+        var endAt = DateTime.UtcNow.AddHours(2);
+        context.AuditLogs.Add(new AuditLog
+        {
+            ItemId = checkedItem.Id,
+            ItemShortId = checkedItem.ShortId,
+            ItemName = definition.Name,
+            Warehouse = warehouse,
+            WarehouseName = warehouse.Name,
+            User = "TestUser",
+            Action = AuditAction.Check,
+            Timestamp = DateTime.UtcNow
+        });
+        await context.SaveChangesAsync();
+
+        var controller = new ItemsController(context, new StubWebHostEnvironment());
+        var action = await controller.GetCheckAnalysis(new CheckAnalysisQueryParameters
+        {
+            WarehouseId = warehouse.Id,
+            Search = "CAM-00",
+            StartAt = startAt,
+            EndAt = endAt
+        });
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        var result = Assert.IsType<CheckAnalysisResultDto>(ok.Value);
+        Assert.Equal(new[] { checkedItem.Id.ToString() }, result.CheckedItems.Select(item => item.Id));
+        Assert.Equal(new[] { uncheckedItem.Id.ToString() }, result.UncheckedItems.Select(item => item.Id));
+    }
+
+    [Fact]
+    public async Task UpdateItem_SynchronizesShortIdToEveryRentalItemSnapshot()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-OLD",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R-SHORT-ID-SYNC",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Returned,
+            StartDate = DateTime.UtcNow.AddDays(-3),
+            ExpectedShipDate = DateTime.UtcNow.AddDays(-4),
+            ExpectedEndDate = DateTime.UtcNow.AddDays(-1)
+        };
+        rental.Items.Add(new RentalItem
+        {
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name,
+            ReturnedAt = DateTime.UtcNow.AddDays(-1)
+        });
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var controller = new ItemsController(context, new StubWebHostEnvironment());
+        var action = await controller.UpdateItem(item.Id, new UpdateItemDto { ShortId = " CAM-NEW " });
+
+        Assert.IsType<NoContentResult>(action);
+        Assert.Equal("CAM-NEW", await context.Items.Where(value => value.Id == item.Id).Select(value => value.ShortId).SingleAsync());
+        Assert.Equal("CAM-NEW", await context.RentalItems.Where(value => value.ItemId == item.Id).Select(value => value.ItemShortIdSnapshot).SingleAsync());
+    }
+
+    [Fact]
+    public async Task ReturnAsync_ClosesAllOutstandingShipmentDeliveryStatesWhenRentalIsFullyReturned()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var today = BusinessToday();
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-RETURN-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut,
+            CurrentDestination = "租赁 R-RETURN-CLOSE"
+        };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R-RETURN-CLOSE",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Active,
+            StartDate = today.AddDays(-3),
+            ExpectedShipDate = today.AddDays(-4),
+            ExpectedEndDate = today.AddDays(-1)
+        };
+        rental.Items.Add(new RentalItem
+        {
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        rental.Shipments.Add(new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = today.AddDays(-3)
+        });
+        rental.Shipments.Add(new RentalShipment
+        {
+            Direction = ShipmentDirection.Inbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = today.AddHours(-2)
+        });
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var result = await CreateRentalService(context).ReturnAsync(rental.Id, new ReturnRentalDto(), "TestUser");
+
+        Assert.Null(result.error);
+        Assert.Equal(RentalStatus.Returned, result.rental!.Status);
+        var shipments = await context.RentalShipments.Where(shipment => shipment.RentalId == rental.Id).ToListAsync();
+        Assert.Equal(2, shipments.Count);
+        Assert.All(shipments, shipment => Assert.NotNull(shipment.DeliveredAt));
+    }
+
     private static RentalService CreateRentalService(ApplicationDbContext context) => new(
         context,
         new StubRenterService(),

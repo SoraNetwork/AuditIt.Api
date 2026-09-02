@@ -37,6 +37,15 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
   - `search?: string`
 - Response: `ItemDto[]`
 
+### `GET /items/check-analysis`
+- Query:
+  - `warehouseId: number`
+  - `categoryId?: number`
+  - `search?: string` (fuzzy matches short ID, SN, item name, or category)
+  - `startAt: datetime`
+  - `endAt: datetime`
+- Response: `{ checkedItems: ItemDto[]; uncheckedItems: ItemDto[] }`
+
 `ItemDto` shape:
 - `id: string`
 - `shortId: string`

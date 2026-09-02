@@ -78,6 +78,78 @@ namespace AuditIt.Api.Controllers
             return await query.OrderByDescending(i => i.LastUpdated).Select(i => ToItemDto(i)).ToListAsync();
         }
 
+        [HttpGet("check-analysis")]
+        [RequirePermission(PermissionCodes.ItemView)]
+        public async Task<ActionResult<CheckAnalysisResultDto>> GetCheckAnalysis(
+            [FromQuery] CheckAnalysisQueryParameters queryParameters)
+        {
+            if (!queryParameters.WarehouseId.HasValue)
+            {
+                return BadRequest("请选择库房。");
+            }
+
+            if (!queryParameters.StartAt.HasValue || !queryParameters.EndAt.HasValue)
+            {
+                return BadRequest("请选择完整的盘点时间范围。");
+            }
+
+            if (queryParameters.EndAt.Value < queryParameters.StartAt.Value)
+            {
+                return BadRequest("盘点结束时间不能早于开始时间。");
+            }
+
+            var itemsQuery = _context.Items
+                .Include(i => i.ItemDefinition)
+                    .ThenInclude(d => d!.Category)
+                .Include(i => i.Warehouse)
+                .Where(i => i.WarehouseId == queryParameters.WarehouseId.Value);
+
+            if (queryParameters.CategoryId.HasValue)
+            {
+                itemsQuery = itemsQuery.Where(i => i.ItemDefinition != null
+                    && i.ItemDefinition.CategoryId == queryParameters.CategoryId.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(queryParameters.Search))
+            {
+                var search = queryParameters.Search.Trim();
+                itemsQuery = itemsQuery.Where(i =>
+                    i.ShortId.Contains(search)
+                    || (i.SerialNumber != null && i.SerialNumber.Contains(search))
+                    || (i.ItemDefinition != null && i.ItemDefinition.Name.Contains(search))
+                    || (i.ItemDefinition != null
+                        && i.ItemDefinition.Category != null
+                        && i.ItemDefinition.Category.Name.Contains(search)));
+            }
+
+            var checkedItemIds = _context.AuditLogs
+                .Where(log => log.Action == AuditAction.Check
+                    && log.Timestamp >= queryParameters.StartAt.Value
+                    && log.Timestamp <= queryParameters.EndAt.Value
+                    // Batch "mark as suspected missing" writes a Check audit
+                    // entry too, but it is not a physical inventory check.
+                    && log.Destination != "Marked as Suspected Missing")
+                .Select(log => log.ItemId)
+                .Distinct();
+
+            var checkedItems = await itemsQuery
+                .Where(item => checkedItemIds.Contains(item.Id))
+                .OrderByDescending(item => item.LastUpdated)
+                .Select(item => ToItemDto(item))
+                .ToListAsync();
+            var uncheckedItems = await itemsQuery
+                .Where(item => !checkedItemIds.Contains(item.Id))
+                .OrderByDescending(item => item.LastUpdated)
+                .Select(item => ToItemDto(item))
+                .ToListAsync();
+
+            return Ok(new CheckAnalysisResultDto
+            {
+                CheckedItems = checkedItems,
+                UncheckedItems = uncheckedItems
+            });
+        }
+
         private static ItemDto ToItemDto(Item i)
         {
             var ownerUserNames = ItemOwnerSnapshot.Split(i.OwnerUserNamesSnapshot).ToList();
@@ -423,10 +495,12 @@ namespace AuditIt.Api.Controllers
                 return NotFound();
             }
 
-            if (!string.IsNullOrEmpty(dto.ShortId))
+            var nextShortId = dto.ShortId?.Trim();
+            var shortIdChanged = !string.IsNullOrWhiteSpace(nextShortId)
+                && !string.Equals(nextShortId, item.ShortId, StringComparison.Ordinal);
+            if (shortIdChanged)
             {
-                // Optional: Add validation to ensure ShortId is unique if needed
-                item.ShortId = dto.ShortId;
+                item.ShortId = nextShortId!;
             }
 
             if (dto.SerialNumber != null)
@@ -486,6 +560,17 @@ namespace AuditIt.Api.Controllers
             if (item.ExpectedReturnDate != previousExpectedReturnDate)
             {
                 await DismissManualLoanRemindersAsync(item.Id);
+            }
+
+            if (shortIdChanged)
+            {
+                var rentalItems = await _context.RentalItems
+                    .Where(rentalItem => rentalItem.ItemId == id)
+                    .ToListAsync();
+                foreach (var rentalItem in rentalItems)
+                {
+                    rentalItem.ItemShortIdSnapshot = item.ShortId;
+                }
             }
 
             await _context.SaveChangesAsync();
