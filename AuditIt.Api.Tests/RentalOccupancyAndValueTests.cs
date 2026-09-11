@@ -65,6 +65,8 @@ public class RentalOccupancyAndValueTests
         Assert.Equal(200.5m, result.Rental!.TotalPrice);
         Assert.Equal(120.5m, result.Rental.Items.Single(item => item.ItemId == item1.Id).PerItemPrice);
         Assert.Equal(80m, result.Rental.Items.Single(item => item.ItemId == item2.Id).PerItemPrice);
+        Assert.Equal(item1.ItemDefinitionId, result.Rental.Items.Single(item => item.ItemId == item1.Id).ItemDefinitionId);
+        Assert.Equal(item2.ItemDefinitionId, result.Rental.Items.Single(item => item.ItemId == item2.Id).ItemDefinitionId);
     }
 
     [Fact]
@@ -592,7 +594,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task UpdateRentalItemsAsync_PhysicallyRemovesItem_IfRentalHasNotStarted()
+    public async Task UpdateRentalItemsAsync_PreservesItemHistory_IfRentalHasNotStarted()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -665,18 +667,21 @@ public class RentalOccupancyAndValueTests
 
         // Verify database state
         var rentalItems = await context.RentalItems.ToListAsync();
-        // Item1 should be physically deleted, Item2 should be added
+        // Item1 remains as released history, while Item2 is added as the
+        // current rental item.
         var riItem1 = rentalItems.FirstOrDefault(ri => ri.ItemId == item1.Id);
         var riItem2 = rentalItems.FirstOrDefault(ri => ri.ItemId == item2.Id);
 
-        Assert.Null(riItem1);
+        Assert.NotNull(riItem1);
+        Assert.NotNull(riItem1!.ReturnedAt);
+        Assert.NotNull(riItem1.ReleasedFromRentalAt);
         Assert.NotNull(riItem2);
 
         // Verify busy calendar check for item1 is now empty
         var busyRentalsAfter1 = await context.Rentals
             .Include(r => r.Items)
             .Where(r => r.Status != RentalStatus.Cancelled)
-            .Where(r => r.Items.Any(ri => ri.ItemId == item1.Id && (ri.ReturnedAt == null || ri.ReturnedAt > r.StartDate)))
+            .Where(r => r.Items.Any(ri => ri.ItemId == item1.Id && ri.ReturnedAt == null))
             .ToListAsync();
         Assert.Empty(busyRentalsAfter1);
 
@@ -1037,6 +1042,131 @@ public class RentalOccupancyAndValueTests
         Assert.Contains(activeItems, ri => ri.ItemId == cameraItem.Id);
         Assert.Contains(activeItems, ri => ri.ItemId == null && ri.ItemDefinitionId == camera.Id);
         Assert.Contains(activeItems, ri => ri.ItemId == null && ri.ItemDefinitionId == lens.Id);
+    }
+
+    [Theory]
+    [InlineData(RentalStatus.Pending)]
+    [InlineData(RentalStatus.PartiallyShipped)]
+    public async Task UpdateRentalItemsAsync_PreservesRemovedItemsAndDefinitionsBeforeShipment(RentalStatus initialStatus)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var camera = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var lens = new ItemDefinition { Name = "Prime Lens", Category = category, Unit = "pcs", Description = "Lens" };
+        var cameraItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-PENDING-001",
+            Warehouse = warehouse,
+            ItemDefinition = camera,
+            Status = ItemStatus.InStock
+        };
+        var lensItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "LEN-PENDING-001",
+            Warehouse = warehouse,
+            ItemDefinition = lens,
+            Status = ItemStatus.InStock
+        };
+        var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20260610-KEEP",
+            Renter = renter,
+            Status = initialStatus,
+            StartDate = BusinessToday().AddDays(2),
+            ExpectedShipDate = BusinessToday().AddDays(1),
+            ExpectedEndDate = BusinessToday().AddDays(5)
+        };
+        rental.Items.Add(new RentalItem
+        {
+            Item = cameraItem,
+            ItemShortIdSnapshot = cameraItem.ShortId,
+            ItemNameSnapshot = camera.Name,
+            PerItemPrice = 100m
+        });
+        rental.Items.Add(new RentalItem
+        {
+            ItemDefinition = camera,
+            ItemDefinitionId = camera.Id,
+            ItemShortIdSnapshot = "待选择",
+            ItemNameSnapshot = camera.Name,
+            PerItemPrice = 50m
+        });
+
+        if (initialStatus == RentalStatus.PartiallyShipped)
+        {
+            cameraItem.Status = ItemStatus.LoanedOut;
+            cameraItem.CurrentDestination = $"租赁 {rental.RentalNumber}";
+            rental.Shipments.Add(new RentalShipment
+            {
+                Direction = ShipmentDirection.Outbound,
+                OriginWarehouse = warehouse,
+                Carrier = "SF",
+                ShippedAt = BusinessToday()
+            });
+        }
+
+        context.Items.Add(lensItem);
+        context.ItemDefinitions.Add(lens);
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var update = initialStatus == RentalStatus.PartiallyShipped
+            ? new UpdateRentalItemsDto
+            {
+                ItemIds = new List<string> { lensItem.Id.ToString() },
+                ItemPrices = new List<CreateRentalItemPriceDto>
+                {
+                    new() { ItemId = lensItem.Id.ToString(), PerItemPrice = 80m }
+                }
+            }
+            : new UpdateRentalItemsDto
+            {
+                ItemDefinitionIds = new List<int> { lens.Id },
+                ItemPrices = new List<CreateRentalItemPriceDto>
+                {
+                    new() { ItemDefinitionId = lens.Id, PerItemPrice = 80m }
+                }
+            };
+
+        var result = await CreateRentalService(context).UpdateRentalItemsAsync(rental.Id, update, "TestUser");
+
+        Assert.Null(result.Error);
+        Assert.NotNull(result.Rental);
+
+        var allRentalItems = await context.RentalItems
+            .Where(item => item.RentalId == rental.Id)
+            .ToListAsync();
+        Assert.Equal(3, allRentalItems.Count);
+        Assert.Contains(allRentalItems, item =>
+            item.ItemId == cameraItem.Id
+            && item.ItemDefinitionId == camera.Id
+            && item.ReturnedAt.HasValue
+            && item.ReleasedFromRentalAt.HasValue);
+        Assert.Contains(allRentalItems, item =>
+            item.ItemId == null
+            && item.ItemDefinitionId == camera.Id
+            && item.ReturnedAt.HasValue
+            && item.ReleasedFromRentalAt.HasValue);
+        Assert.Contains(allRentalItems, item =>
+            item.ItemDefinitionId == lens.Id
+            && !item.ReturnedAt.HasValue
+            && (initialStatus == RentalStatus.PartiallyShipped
+                ? item.ItemId == lensItem.Id
+                : item.ItemId == null));
     }
 
     [Fact]
@@ -4245,6 +4375,90 @@ public class RentalOccupancyAndValueTests
         var restoredItem = await assertContext.Items.SingleAsync(item => item.Id == itemId);
         Assert.Equal(ItemStatus.LoanedOut, restoredItem.Status);
         Assert.Equal($"租赁 {restoredSource.RentalNumber}", restoredItem.CurrentDestination);
+    }
+
+    [Fact]
+    public async Task ReturnAsync_RenewalRental_DoesNotRequireANewOutboundShipment()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var today = BusinessToday();
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-RENEW-RETURN-001",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut,
+            CurrentDestination = "租赁 R20990101-RENEW"
+        };
+        var source = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990101-RENEW",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Active,
+            StartDate = today.AddDays(-4),
+            ExpectedShipDate = today.AddDays(-5),
+            ExpectedEndDate = today.AddDays(1),
+            ExpectedReturnDate = today.AddDays(3)
+        };
+        source.Items.Add(new RentalItem
+        {
+            Item = item,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name,
+            PerItemPrice = 100m
+        });
+        source.Shipments.Add(new RentalShipment
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouse = warehouse,
+            Carrier = "SF",
+            ShippedAt = today.AddDays(-5)
+        });
+        context.Rentals.Add(source);
+        await context.SaveChangesAsync();
+
+        var service = CreateRentalService(context);
+        var renewalResult = await service.RenewAsync(source.Id, new RenewRentalDto
+        {
+            StartDate = today.AddDays(2),
+            ExpectedEndDate = today.AddDays(5),
+            TotalPrice = 100m
+        }, "TestUser");
+
+        Assert.Null(renewalResult.Error);
+        Assert.NotNull(renewalResult.RenewalRental);
+        var renewal = renewalResult.RenewalRental!;
+        Assert.True(renewal.IsRenewal);
+        Assert.Empty(renewal.Shipments);
+        Assert.Equal(item.ItemDefinitionId, renewal.Items.Single().ItemDefinitionId);
+
+        var returnResult = await service.ReturnAsync(renewal.Id, new ReturnRentalDto
+        {
+            Items = new List<ReturnRentalItemDto>
+            {
+                new() { RentalItemId = renewal.Items.Single().Id, Condition = ReturnCondition.Good }
+            }
+        }, "TestUser");
+
+        Assert.Null(returnResult.error);
+        Assert.NotNull(returnResult.rental);
+        Assert.Equal(RentalStatus.Returned, returnResult.rental!.Status);
+        Assert.NotNull(returnResult.rental.Items.Single().ReturnedAt);
+        Assert.Equal(ItemStatus.InStock, (await context.Items.SingleAsync(value => value.Id == item.Id)).Status);
     }
 
     [Fact]

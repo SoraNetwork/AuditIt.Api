@@ -772,6 +772,7 @@ namespace AuditIt.Api.Services
                 {
                     RentalId = rentalId,
                     ItemId = item.Id,
+                    ItemDefinitionId = item.ItemDefinitionId,
                     ItemShortIdSnapshot = item.ShortId,
                     ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty,
                     ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks,
@@ -962,7 +963,10 @@ namespace AuditIt.Api.Services
                 {
                     RentalId = renewalId,
                     ItemId = sourceItem.ItemId,
-                    ItemDefinitionId = sourceItem.ItemDefinitionId,
+                    // Keep both sides of the rental selection. Older rows may
+                    // have relied on Item.ItemDefinitionId for concrete items,
+                    // but a renewal must remain self-describing as well.
+                    ItemDefinitionId = sourceItem.ItemDefinitionId ?? sourceItem.Item?.ItemDefinitionId,
                     ItemShortIdSnapshot = sourceItem.ItemShortIdSnapshot,
                     ItemNameSnapshot = sourceItem.ItemNameSnapshot,
                     ListingRemarksSnapshot = sourceItem.ListingRemarksSnapshot,
@@ -2221,7 +2225,10 @@ namespace AuditIt.Api.Services
                 return (null, "已取消的租赁单不能登记归还。");
             }
 
-            if (!HasRentalStarted(rental))
+            // A renewal inherits the already-loaned inventory from its source
+            // rental and intentionally has no new outbound shipment. It is
+            // therefore returnable immediately after creation.
+            if (!IsRenewal(rental) && !HasRentalStarted(rental))
             {
                 return (null, "租赁尚未发货，请直接取消租赁。");
             }
@@ -2652,6 +2659,14 @@ namespace AuditIt.Api.Services
             var activeRentalItems = rental.Items
                 .Where(ri => ri.ReturnedAt == null)
                 .ToList();
+            foreach (var rentalItem in activeRentalItems)
+            {
+                if (!rentalItem.ItemDefinitionId.HasValue && rentalItem.Item?.ItemDefinitionId is int itemDefinitionId)
+                {
+                    rentalItem.ItemDefinitionId = itemDefinitionId;
+                }
+            }
+
             var currentItemIds = activeRentalItems
                 .Where(ri => ri.ItemId.HasValue)
                 .Select(ri => ri.ItemId!.Value)
@@ -2771,33 +2786,34 @@ namespace AuditIt.Api.Services
 
             foreach (var rentalItem in removeRentalItems)
             {
-                if (hasRentalStarted)
-                {
-                    rentalItem.ReturnedAt = now;
-                    rentalItem.ReleasedFromRentalAt = now;
-                    rentalItem.ReturnCondition = ReturnCondition.Good;
-                    rentalItem.ReturnNotes = RentalDateRules.RemovedFromRentalReturnNote;
+                // Keep the rental line as history even when the order has not
+                // shipped yet (or is only partially shipped). This preserves
+                // both a concrete item and an item-definition placeholder;
+                // only the active association is released.
+                rentalItem.ReturnedAt = now;
+                rentalItem.ReleasedFromRentalAt = now;
+                rentalItem.ReturnCondition = ReturnCondition.Good;
+                rentalItem.ReturnNotes = RentalDateRules.RemovedFromRentalReturnNote;
 
-                    if (rentalItem.Item != null)
-                    {
-                        if (rentalItem.Item.Status == ItemStatus.LoanedOut)
-                        {
-                            rentalItem.Item.Status = ItemStatus.InStock;
-                            rentalItem.Item.CurrentDestination = null;
-                        }
-
-                        rentalItem.Item.LastUpdated = now;
-                        LogAudit(rentalItem.Item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, "Removed from rental");
-                    }
-                }
-                else
+                if (rentalItem.Item != null)
                 {
-                    _context.RentalItems.Remove(rentalItem);
-                    if (rentalItem.Item != null)
+                    if (rentalItem.Item.Status == ItemStatus.LoanedOut
+                        && string.Equals(
+                            rentalItem.Item.CurrentDestination,
+                            $"租赁 {rental.RentalNumber}",
+                            StringComparison.OrdinalIgnoreCase))
                     {
-                        rentalItem.Item.LastUpdated = now;
-                        LogAudit(rentalItem.Item, AuditAction.RentalUpdated, rental.RentalNumber, currentUser, "Removed from rental before start");
+                        rentalItem.Item.Status = ItemStatus.InStock;
+                        rentalItem.Item.CurrentDestination = null;
                     }
+
+                    rentalItem.Item.LastUpdated = now;
+                    LogAudit(
+                        rentalItem.Item,
+                        AuditAction.RentalUpdated,
+                        rental.RentalNumber,
+                        currentUser,
+                        hasRentalStarted ? "Removed from rental" : "Removed from rental before start");
                 }
             }
 
@@ -2808,6 +2824,7 @@ namespace AuditIt.Api.Services
                 {
                     RentalId = rental.Id,
                     ItemId = item.Id,
+                    ItemDefinitionId = item.ItemDefinitionId,
                     ItemShortIdSnapshot = item.ShortId,
                     ItemNameSnapshot = item.ItemDefinition?.Name ?? string.Empty,
                     ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks,
