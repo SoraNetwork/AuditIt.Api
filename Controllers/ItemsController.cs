@@ -103,8 +103,9 @@ namespace AuditIt.Api.Controllers
                     .ThenInclude(d => d!.Category)
                 .Include(i => i.Warehouse)
                 .Where(i => i.WarehouseId == queryParameters.WarehouseId.Value
-                    // 盘点只针对当前在库物品，租借中的物品不应出现在盘点分析中。
-                    && i.Status != ItemStatus.LoanedOut);
+                    // 盘点分析只针对当前在库物品。借出、处置和已标记疑似丢失的物品
+                    // 都不应再次进入“未盘点（疑似丢失）”候选清单。
+                    && i.Status == ItemStatus.InStock);
 
             if (queryParameters.CategoryId.HasValue)
             {

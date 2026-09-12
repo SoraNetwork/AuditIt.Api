@@ -4462,7 +4462,7 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
-    public async Task CheckAnalysis_FuzzySearchSeparatesCheckedAndUncheckedItems()
+    public async Task CheckAnalysis_FuzzySearchSeparatesInStockItemsAndExcludesOtherStatuses()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -4493,7 +4493,36 @@ public class RentalOccupancyAndValueTests
             ItemDefinition = definition,
             Status = ItemStatus.InStock
         };
-        context.Items.AddRange(checkedItem, uncheckedItem);
+        var loanedOutItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-003",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.LoanedOut
+        };
+        var disposedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-004",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.Disposed
+        };
+        var suspectedMissingItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-005",
+            Warehouse = warehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.SuspectedMissing
+        };
+        context.Items.AddRange(
+            checkedItem,
+            uncheckedItem,
+            loanedOutItem,
+            disposedItem,
+            suspectedMissingItem);
         var startAt = DateTime.UtcNow.AddHours(-2);
         var endAt = DateTime.UtcNow.AddHours(2);
         context.AuditLogs.Add(new AuditLog
