@@ -102,7 +102,9 @@ namespace AuditIt.Api.Controllers
                 .Include(i => i.ItemDefinition)
                     .ThenInclude(d => d!.Category)
                 .Include(i => i.Warehouse)
-                .Where(i => i.WarehouseId == queryParameters.WarehouseId.Value);
+                .Where(i => i.WarehouseId == queryParameters.WarehouseId.Value
+                    // 盘点只针对当前在库物品，租借中的物品不应出现在盘点分析中。
+                    && i.Status != ItemStatus.LoanedOut);
 
             if (queryParameters.CategoryId.HasValue)
             {
@@ -644,6 +646,17 @@ namespace AuditIt.Api.Controllers
         [RequirePermission(PermissionCodes.ItemUpdate)]
         public async Task<ActionResult<ItemDto>> Check(Guid id)
         {
+            var item = await _context.Items.FindAsync(id);
+            if (item == null)
+            {
+                return NotFound();
+            }
+
+            if (item.Status == ItemStatus.LoanedOut)
+            {
+                return BadRequest("租借中的物品不能参与盘点。");
+            }
+
             return await UpdateItemStatus(id, ItemStatus.InStock, AuditAction.Check, null);
         }
 
