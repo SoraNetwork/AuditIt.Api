@@ -148,6 +148,9 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ### ItemDefinitions
 - `GET /itemDefinitions`
+- `GET /itemDefinitions/{id}/occupancy`
+  - Query: `from?: datetime`, `to?: datetime`, `warehouseId?: number`
+  - When `warehouseId` is supplied, stock and concrete-item occupancy are scoped to that warehouse; rentals without an assigned item are excluded from the warehouse view.
 - `POST /itemDefinitions`
 - `PUT /itemDefinitions/{id}`
 - `DELETE /itemDefinitions/{id}`

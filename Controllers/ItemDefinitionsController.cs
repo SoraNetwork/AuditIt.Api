@@ -111,12 +111,23 @@ namespace AuditIt.Api.Controllers
         public async Task<ActionResult<ItemDefinitionOccupancyCalendarDto>> GetOccupancyCalendar(
             int id,
             [FromQuery] DateTime? from,
-            [FromQuery] DateTime? to)
+            [FromQuery] DateTime? to,
+            [FromQuery] int? warehouseId = null)
         {
             var def = await _context.ItemDefinitions.FindAsync(id);
             if (def == null)
             {
                 return NotFound();
+            }
+
+            Warehouse? warehouse = null;
+            if (warehouseId.HasValue)
+            {
+                warehouse = await _context.Warehouses.FindAsync(warehouseId.Value);
+                if (warehouse == null)
+                {
+                    return BadRequest("仓库不存在");
+                }
             }
 
             var today = RentalDateRules.Today(DateTime.UtcNow);
@@ -135,6 +146,7 @@ namespace AuditIt.Api.Controllers
 
             var totalStock = await _context.Items.CountAsync(i =>
                 i.ItemDefinitionId == id
+                && (!warehouseId.HasValue || i.WarehouseId == warehouseId.Value)
                 && i.Status != ItemStatus.Disposed
                 && i.Status != ItemStatus.SuspectedMissing);
 
@@ -171,6 +183,7 @@ namespace AuditIt.Api.Controllers
                 .Where(entry => entry.RentalItem.ItemId.HasValue
                     && entry.RentalItem.Item != null
                     && entry.RentalItem.Item.ItemDefinitionId == id
+                    && (!warehouseId.HasValue || entry.RentalItem.Item.WarehouseId == warehouseId.Value)
                     && entry.RentalItem.Item.Status != ItemStatus.SuspectedMissing
                     && RentalDateRules.Overlaps(
                         RentalDateRules.OccupancyStartDate(entry.Rental),
@@ -189,7 +202,9 @@ namespace AuditIt.Api.Controllers
                     group => group.Select(entry => (StartDay: entry.StartDay.Date, EndDay: entry.EndDay.Date)).ToList());
 
             var manualLoanCandidates = await _context.Items
-                .Where(i => i.ItemDefinitionId == id && i.Status == ItemStatus.LoanedOut)
+                .Where(i => i.ItemDefinitionId == id
+                    && (!warehouseId.HasValue || i.WarehouseId == warehouseId.Value)
+                    && i.Status == ItemStatus.LoanedOut)
                 .Where(i => i.CurrentDestination == null || !i.CurrentDestination.StartsWith("租赁 "))
                 .Select(i => new
                 {
@@ -371,13 +386,15 @@ namespace AuditIt.Api.Controllers
                     ri.ItemId != null
                     && ri.Item != null
                     && ri.Item.ItemDefinitionId == id
+                    && (!warehouseId.HasValue || ri.Item.WarehouseId == warehouseId.Value)
                     && ri.Item.Status != ItemStatus.SuspectedMissing))
                 {
                     AddRentalItemSegment(rental, rentalItem, isUncertain: false);
                 }
 
                 foreach (var rentalItem in rental.Items.Where(ri =>
-                    ri.ItemId == null
+                    !warehouseId.HasValue
+                    && ri.ItemId == null
                     && ri.ItemDefinitionId == id))
                 {
                     AddRentalItemSegment(rental, rentalItem, isUncertain: true);
@@ -429,6 +446,8 @@ namespace AuditIt.Api.Controllers
             {
                 ItemDefinitionId = id,
                 Name = def.Name,
+                WarehouseId = warehouse?.Id,
+                WarehouseName = warehouse?.Name,
                 TotalStock = totalStock,
                 From = rangeStart,
                 To = rangeEnd,

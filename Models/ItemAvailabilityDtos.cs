@@ -37,6 +37,8 @@ namespace AuditIt.Api.Models
     {
         public int ItemDefinitionId { get; set; }
         public string Name { get; set; } = string.Empty;
+        public int? WarehouseId { get; set; }
+        public string? WarehouseName { get; set; }
         public int TotalStock { get; set; }
         public DateTime From { get; set; }
         public DateTime To { get; set; }

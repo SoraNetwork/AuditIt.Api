@@ -1357,6 +1357,87 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task DefinitionOccupancy_WhenWarehouseIsSelected_UsesOnlyThatWarehouse()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var mainWarehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var secondaryWarehouse = new Warehouse { Name = "Secondary", Location = "B1", Description = "Secondary warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var mainItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-MAIN-001",
+            Warehouse = mainWarehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var secondaryItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-SECONDARY-001",
+            Warehouse = secondaryWarehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        context.Items.AddRange(mainItem, secondaryItem);
+        await context.SaveChangesAsync();
+
+        var expectedShipDate = new DateTime(2099, 6, 19, 0, 0, 0, DateTimeKind.Utc);
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990619-WAREHOUSE",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = expectedShipDate.AddDays(1),
+            ExpectedShipDate = expectedShipDate,
+            ExpectedEndDate = expectedShipDate.AddDays(7)
+        };
+        context.Rentals.Add(rental);
+        context.RentalItems.Add(new RentalItem
+        {
+            RentalId = rental.Id,
+            ItemId = mainItem.Id,
+            Item = mainItem,
+            ItemShortIdSnapshot = mainItem.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        await context.SaveChangesAsync();
+
+        var controller = new ItemDefinitionsController(context);
+        var mainAction = await controller.GetOccupancyCalendar(
+            definition.Id,
+            expectedShipDate,
+            expectedShipDate,
+            mainWarehouse.Id);
+        var secondaryAction = await controller.GetOccupancyCalendar(
+            definition.Id,
+            expectedShipDate,
+            expectedShipDate,
+            secondaryWarehouse.Id);
+
+        var mainCalendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(
+            Assert.IsType<OkObjectResult>(mainAction.Result).Value);
+        var secondaryCalendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(
+            Assert.IsType<OkObjectResult>(secondaryAction.Result).Value);
+        Assert.Equal(mainWarehouse.Id, mainCalendar.WarehouseId);
+        Assert.Equal("Main", mainCalendar.WarehouseName);
+        Assert.Equal(1, mainCalendar.TotalStock);
+        Assert.Equal(1, Assert.Single(mainCalendar.DailyStocks).OccupiedCount);
+        Assert.Equal(secondaryWarehouse.Id, secondaryCalendar.WarehouseId);
+        Assert.Equal(1, secondaryCalendar.TotalStock);
+        Assert.Equal(0, Assert.Single(secondaryCalendar.DailyStocks).OccupiedCount);
+    }
+
+    [Fact]
     public async Task ItemAvailability_ShowsUncertainDefinitionOccupancyFromExpectedShipmentDate()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
