@@ -144,11 +144,16 @@ namespace AuditIt.Api.Controllers
                 rangeEnd = rangeStart.AddDays(180).AddTicks(-1);
             }
 
-            var totalStock = await _context.Items.CountAsync(i =>
-                i.ItemDefinitionId == id
-                && (!warehouseId.HasValue || i.WarehouseId == warehouseId.Value)
-                && i.Status != ItemStatus.Disposed
-                && i.Status != ItemStatus.SuspectedMissing);
+            var stockCountsByWarehouse = await _context.Items
+                .Where(i => i.ItemDefinitionId == id
+                    && i.Status != ItemStatus.Disposed
+                    && i.Status != ItemStatus.SuspectedMissing)
+                .GroupBy(i => i.WarehouseId)
+                .Select(group => new { WarehouseId = group.Key, Count = group.Count() })
+                .ToDictionaryAsync(entry => entry.WarehouseId, entry => entry.Count);
+            var totalStock = warehouseId.HasValue
+                ? stockCountsByWarehouse.GetValueOrDefault(warehouseId.Value)
+                : stockCountsByWarehouse.Values.Sum();
 
             var candidateRentals = await _context.Rentals
                 .Include(r => r.Renter)
@@ -178,6 +183,87 @@ namespace AuditIt.Api.Controllers
                     rangeStart,
                     rangeEnd))
                 .ToList();
+            var automaticWarehouseByRentalItemId = new Dictionary<int, int>();
+            if (warehouseId.HasValue && stockCountsByWarehouse.Count > 0)
+            {
+                var remainingCapacity = stockCountsByWarehouse
+                    .ToDictionary(entry => entry.Key, entry => entry.Value);
+
+                bool IsRelevantRentalItem(Rental rental, RentalItem rentalItem) =>
+                    rentalItem.ReturnedAt == null
+                    || RentalDateRules.Overlaps(
+                        RentalDateRules.OccupancyStartDate(rental),
+                        RentalDateRules.OccupancyEndDate(rental, rentalItem, rangeEnd),
+                        rangeStart,
+                        rangeEnd);
+
+                foreach (var entry in overlappingRentals
+                    .SelectMany(rental => rental.Items.Select(item => new { Rental = rental, Item = item }))
+                    .Where(entry => entry.Item.ItemId.HasValue
+                        && entry.Item.Item != null
+                        && entry.Item.Item.ItemDefinitionId == id
+                        && entry.Item.Item.Status != ItemStatus.SuspectedMissing
+                        && IsRelevantRentalItem(entry.Rental, entry.Item)))
+                {
+                    var assignedWarehouseId = entry.Item.Item!.WarehouseId;
+                    if (remainingCapacity.ContainsKey(assignedWarehouseId))
+                    {
+                        remainingCapacity[assignedWarehouseId]--;
+                    }
+                }
+
+                foreach (var rental in overlappingRentals.OrderBy(entry => entry.Id))
+                {
+                    var unassignedItems = rental.Items
+                        .Where(item => item.ItemId == null
+                            && item.ItemDefinitionId == id
+                            && IsRelevantRentalItem(rental, item))
+                        .OrderBy(item => item.Id)
+                        .ToList();
+                    if (unassignedItems.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var singleWarehouseCandidates = remainingCapacity
+                        .Where(entry => entry.Value >= unassignedItems.Count)
+                        .Select(entry => entry.Key)
+                        .OrderBy(candidateWarehouseId => candidateWarehouseId)
+                        .ToList();
+                    if (singleWarehouseCandidates.Count > 0)
+                    {
+                        var selectedWarehouseId = singleWarehouseCandidates[
+                            StableWarehouseOffset(rental.Id, id, singleWarehouseCandidates.Count)];
+                        foreach (var item in unassignedItems)
+                        {
+                            automaticWarehouseByRentalItemId[item.Id] = selectedWarehouseId;
+                        }
+                        remainingCapacity[selectedWarehouseId] -= unassignedItems.Count;
+                        continue;
+                    }
+
+                    foreach (var item in unassignedItems)
+                    {
+                        var availableWarehouses = remainingCapacity
+                            .Where(entry => entry.Value > 0)
+                            .Select(entry => entry.Key)
+                            .OrderBy(candidateWarehouseId => candidateWarehouseId)
+                            .ToList();
+                        if (availableWarehouses.Count == 0)
+                        {
+                            availableWarehouses = stockCountsByWarehouse.Keys.OrderBy(value => value).ToList();
+                        }
+
+                        var selectedWarehouseId = availableWarehouses[
+                            StableWarehouseOffset(rental.Id, item.Id, availableWarehouses.Count)];
+                        automaticWarehouseByRentalItemId[item.Id] = selectedWarehouseId;
+                        if (remainingCapacity.GetValueOrDefault(selectedWarehouseId) > 0)
+                        {
+                            remainingCapacity[selectedWarehouseId]--;
+                        }
+                    }
+                }
+            }
             var specificRentalPeriodsByItemId = overlappingRentals
                 .SelectMany(r => r.Items.Select(ri => new { Rental = r, RentalItem = ri }))
                 .Where(entry => entry.RentalItem.ItemId.HasValue
@@ -393,9 +479,10 @@ namespace AuditIt.Api.Controllers
                 }
 
                 foreach (var rentalItem in rental.Items.Where(ri =>
-                    !warehouseId.HasValue
-                    && ri.ItemId == null
-                    && ri.ItemDefinitionId == id))
+                    ri.ItemId == null
+                    && ri.ItemDefinitionId == id
+                    && (!warehouseId.HasValue
+                        || automaticWarehouseByRentalItemId.GetValueOrDefault(ri.Id) == warehouseId.Value)))
                 {
                     AddRentalItemSegment(rental, rentalItem, isUncertain: true);
                 }
@@ -625,5 +712,29 @@ namespace AuditIt.Api.Controllers
             RentalDateRules.IsReturningBusinessDate(expectedEndDate, day)
                 ? ItemOccupancyStatus.Returning
                 : ItemOccupancyStatus.Scheduled;
+
+        private static int StableWarehouseOffset(Guid rentalId, int discriminator, int modulo)
+        {
+            if (modulo <= 1)
+            {
+                return 0;
+            }
+
+            unchecked
+            {
+                uint hash = 2166136261;
+                foreach (var value in rentalId.ToByteArray())
+                {
+                    hash = (hash ^ value) * 16777619;
+                }
+
+                foreach (var value in BitConverter.GetBytes(discriminator))
+                {
+                    hash = (hash ^ value) * 16777619;
+                }
+
+                return (int)(hash % (uint)modulo);
+            }
+        }
     }
 }

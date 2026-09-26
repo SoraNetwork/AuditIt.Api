@@ -1497,6 +1497,18 @@ namespace AuditIt.Api.Services
                     return new RentalShipmentResult { Error = "请为本次发货的每件物品选择具体库存。" };
                 }
 
+                var wrongWarehouseItems = selectedOutboundRentalItems
+                    .Where(item => item.Item?.WarehouseId != dto.OriginWarehouseId)
+                    .Select(item => item.ItemShortIdSnapshot)
+                    .ToList();
+                if (wrongWarehouseItems.Count > 0)
+                {
+                    return new RentalShipmentResult
+                    {
+                        Error = $"以下物品不属于所选发货仓库：{string.Join("，", wrongWarehouseItems)}"
+                    };
+                }
+
                 var conflict = await ValidateOutboundShipmentConflictsAsync(
                     rental.Id,
                     selectedOutboundRentalItems.Select(item => item.ItemId!.Value).ToList());
@@ -2904,6 +2916,118 @@ namespace AuditIt.Api.Services
             return new RentalItemsUpdateResult { Rental = await GetByIdAsync(rentalId) };
         }
 
+        public async Task<(RentalDto? rental, string? error)> PrepareRentalItemsAsync(
+            Guid rentalId,
+            PrepareRentalItemsDto dto,
+            string? currentUser)
+        {
+            var rental = await _context.Rentals
+                .Include(entry => entry.Items)
+                    .ThenInclude(entry => entry.Item)
+                .Include(entry => entry.Shipments)
+                    .ThenInclude(entry => entry.RentalItems)
+                .FirstOrDefaultAsync(entry => entry.Id == rentalId);
+            if (rental == null)
+            {
+                return (null, "租赁单不存在。");
+            }
+
+            if (IsClosedStatus(rental.Status))
+            {
+                return (null, "已结束的租赁单不能提前配货。");
+            }
+
+            if (HasRentalStarted(rental) || HasOutboundShipment(rental))
+            {
+                return (null, "租赁已开始发货，不能再执行提前配货。");
+            }
+
+            var warehouse = await _context.Warehouses.FindAsync(dto.WarehouseId);
+            if (warehouse == null)
+            {
+                return (null, "计划发货仓库不存在。");
+            }
+
+            var unassignedItems = rental.Items
+                .Where(item => !item.ReturnedAt.HasValue
+                    && !item.ItemId.HasValue
+                    && item.ItemDefinitionId.HasValue)
+                .OrderBy(item => item.Id)
+                .ToList();
+            if (unassignedItems.Count == 0)
+            {
+                return (await GetByIdAsync(rentalId), null);
+            }
+
+            var definitionIds = unassignedItems
+                .Select(item => item.ItemDefinitionId!.Value)
+                .Distinct()
+                .ToList();
+            var currentRentalItemIds = rental.Items
+                .Where(item => !item.ReturnedAt.HasValue && item.ItemId.HasValue)
+                .Select(item => item.ItemId!.Value)
+                .ToHashSet();
+            var candidates = await _context.Items
+                .Include(item => item.ItemDefinition)
+                .Include(item => item.Listings)
+                .Where(item => item.WarehouseId == dto.WarehouseId
+                    && definitionIds.Contains(item.ItemDefinitionId)
+                    && item.Status == ItemStatus.InStock
+                    && !currentRentalItemIds.Contains(item.Id))
+                .ToListAsync();
+
+            var conflict = await ValidateCreateConflictsAsync(
+                candidates.Select(item => item.Id).ToList(),
+                rental.ExpectedShipDate,
+                RentalDateRules.EffectiveExpectedReturnDate(rental),
+                rental.Id);
+            var conflictingItemIds = (conflict?.PendingShipmentConflicts ?? new List<RentalScheduleConflictDto>())
+                .Concat(conflict?.ShippedConflicts ?? new List<RentalScheduleConflictDto>())
+                .Select(entry => entry.ItemId)
+                .ToHashSet();
+            var availableByDefinition = candidates
+                .Where(item => !conflictingItemIds.Contains(item.Id))
+                .OrderBy(item => StableItemOrderKey(rental.Id, item.Id))
+                .GroupBy(item => item.ItemDefinitionId)
+                .ToDictionary(group => group.Key, group => new Queue<Item>(group));
+
+            foreach (var demand in unassignedItems.GroupBy(item => item.ItemDefinitionId!.Value))
+            {
+                var availableCount = availableByDefinition.GetValueOrDefault(demand.Key)?.Count ?? 0;
+                if (availableCount < demand.Count())
+                {
+                    var definitionName = candidates
+                        .FirstOrDefault(item => item.ItemDefinitionId == demand.Key)
+                        ?.ItemDefinition?.Name
+                        ?? demand.First().ItemNameSnapshot;
+                    return (null, $"仓库“{warehouse.Name}”中的“{definitionName}”可配库存不足，需要 {demand.Count()} 件，可用 {availableCount} 件。");
+                }
+            }
+
+            foreach (var rentalItem in unassignedItems)
+            {
+                var item = availableByDefinition[rentalItem.ItemDefinitionId!.Value].Dequeue();
+                var listingRemarks = string.Join("; ", item.Listings
+                    .Where(listing => listing.Status == ListingStatus.Listed)
+                    .Select(listing => $"{listing.Platform}: {listing.Remarks ?? "无备注"}"));
+                rentalItem.ItemId = item.Id;
+                rentalItem.Item = item;
+                rentalItem.ItemShortIdSnapshot = item.ShortId;
+                rentalItem.ItemNameSnapshot = item.ItemDefinition?.Name ?? rentalItem.ItemNameSnapshot;
+                rentalItem.ListingRemarksSnapshot = string.IsNullOrWhiteSpace(listingRemarks) ? null : listingRemarks;
+            }
+
+            rental.UpdatedAt = DateTime.UtcNow;
+            rental.UpdatedBy = currentUser;
+            await _context.SaveChangesAsync();
+            await NotifyStatusChangeAsync(
+                rental,
+                "提前配货完成",
+                currentUser,
+                $"计划发货仓库：{warehouse.Name}；已分配 {unassignedItems.Count} 件具体物品");
+            return (await GetByIdAsync(rentalId), null);
+        }
+
         public async Task<(RentalDto? rental, string? error)> BulkUpdateItemsAsync(Guid rentalId, BulkUpdateRentalItemsDto dto, string? currentUser)
         {
             var rental = await _context.Rentals
@@ -3859,6 +3983,20 @@ namespace AuditIt.Api.Services
 
         private static bool IsClosedStatus(RentalStatus status) =>
             status is RentalStatus.Returned or RentalStatus.Cancelled or RentalStatus.Renewed;
+
+        private static ulong StableItemOrderKey(Guid rentalId, Guid itemId)
+        {
+            unchecked
+            {
+                ulong hash = 14695981039346656037;
+                foreach (var value in rentalId.ToByteArray().Concat(itemId.ToByteArray()))
+                {
+                    hash = (hash ^ value) * 1099511628211;
+                }
+
+                return hash;
+            }
+        }
 
         private static bool HasInboundShipment(Rental rental) =>
             rental.Shipments.Any(s => s.Direction == ShipmentDirection.Inbound);

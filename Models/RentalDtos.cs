@@ -252,6 +252,12 @@ namespace AuditIt.Api.Models
         public RentalCreateConflictDto? Conflict { get; set; }
     }
 
+    public class PrepareRentalItemsDto
+    {
+        [Range(1, int.MaxValue)]
+        public int WarehouseId { get; set; }
+    }
+
     public class RentalShipmentResult
     {
         public RentalDto? Rental { get; set; }

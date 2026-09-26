@@ -322,6 +322,16 @@ namespace AuditIt.Api.Controllers
             return Ok(result.Rental);
         }
 
+        [HttpPost("{id:guid}/prepare")]
+        [RequirePermission(PermissionCodes.RentalUpdate)]
+        public async Task<ActionResult<RentalDto>> PrepareItems(Guid id, [FromBody] PrepareRentalItemsDto dto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+            var (rental, error) = await _rentals.PrepareRentalItemsAsync(id, dto, CurrentUser());
+            if (error != null) return BadRequest(error);
+            return Ok(rental);
+        }
+
         private string? CurrentUser() => User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
     }
 }

@@ -1438,6 +1438,165 @@ public class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task DefinitionOccupancy_WhenItemIsUnassigned_AttributesDemandToWarehouseWithCapacity()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var mainWarehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var secondaryWarehouse = new Warehouse { Name = "Secondary", Location = "B1", Description = "Secondary warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var mainItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-MAIN-AUTO-001",
+            Warehouse = mainWarehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var secondaryItem1 = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-SECONDARY-AUTO-001",
+            Warehouse = secondaryWarehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var secondaryItem2 = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-SECONDARY-AUTO-002",
+            Warehouse = secondaryWarehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        context.Items.AddRange(mainItem, secondaryItem1, secondaryItem2);
+
+        var expectedShipDate = new DateTime(2099, 6, 20, 0, 0, 0, DateTimeKind.Utc);
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990620-AUTO-WAREHOUSE",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = expectedShipDate.AddDays(1),
+            ExpectedShipDate = expectedShipDate,
+            ExpectedEndDate = expectedShipDate.AddDays(7)
+        };
+        context.Rentals.Add(rental);
+        context.RentalItems.AddRange(
+            new RentalItem
+            {
+                RentalId = rental.Id,
+                ItemId = mainItem.Id,
+                Item = mainItem,
+                ItemShortIdSnapshot = mainItem.ShortId,
+                ItemNameSnapshot = definition.Name
+            },
+            new RentalItem
+            {
+                RentalId = rental.Id,
+                ItemDefinition = definition,
+                ItemNameSnapshot = definition.Name
+            });
+        await context.SaveChangesAsync();
+
+        var controller = new ItemDefinitionsController(context);
+        var mainAction = await controller.GetOccupancyCalendar(
+            definition.Id, expectedShipDate, expectedShipDate, mainWarehouse.Id);
+        var secondaryAction = await controller.GetOccupancyCalendar(
+            definition.Id, expectedShipDate, expectedShipDate, secondaryWarehouse.Id);
+        var mainCalendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(
+            Assert.IsType<OkObjectResult>(mainAction.Result).Value);
+        var secondaryCalendar = Assert.IsType<ItemDefinitionOccupancyCalendarDto>(
+            Assert.IsType<OkObjectResult>(secondaryAction.Result).Value);
+
+        Assert.Equal(1, Assert.Single(mainCalendar.DailyStocks).OccupiedCount);
+        Assert.Equal(1, Assert.Single(secondaryCalendar.DailyStocks).OccupiedCount);
+        Assert.True(Assert.Single(Assert.Single(secondaryCalendar.DailyStocks).Details).IsUncertain);
+    }
+
+    [Fact]
+    public async Task PrepareRentalItems_AllocatesAvailableItemsFromSelectedWarehouse()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var mainWarehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var otherWarehouse = new Warehouse { Name = "Other", Location = "B1", Description = "Other warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera Body", Category = category, Unit = "pcs", Description = "Body" };
+        var mainItems = Enumerable.Range(1, 2).Select(index => new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = $"CAM-PREP-{index:000}",
+            Warehouse = mainWarehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        }).ToList();
+        var otherItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-OTHER-001",
+            Warehouse = otherWarehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        context.Items.AddRange(mainItems.Append(otherItem));
+
+        var expectedShipDate = new DateTime(2099, 7, 1, 0, 0, 0, DateTimeKind.Utc);
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990701-PREPARE",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = expectedShipDate,
+            ExpectedShipDate = expectedShipDate,
+            ExpectedEndDate = expectedShipDate.AddDays(7)
+        };
+        context.Rentals.Add(rental);
+        context.RentalItems.AddRange(
+            new RentalItem
+            {
+                RentalId = rental.Id,
+                ItemDefinition = definition,
+                ItemNameSnapshot = definition.Name,
+                PerItemPrice = 100m
+            },
+            new RentalItem
+            {
+                RentalId = rental.Id,
+                ItemDefinition = definition,
+                ItemNameSnapshot = definition.Name,
+                PerItemPrice = 120m
+            });
+        await context.SaveChangesAsync();
+
+        var (prepared, error) = await CreateRentalService(context).PrepareRentalItemsAsync(
+            rental.Id,
+            new PrepareRentalItemsDto { WarehouseId = mainWarehouse.Id },
+            "TestUser");
+
+        Assert.Null(error);
+        Assert.NotNull(prepared);
+        Assert.All(prepared!.Items, item => Assert.Contains(item.ItemId!.Value, mainItems.Select(candidate => candidate.Id)));
+        Assert.Equal(new decimal?[] { 100m, 120m }, prepared.Items.Select(item => item.PerItemPrice).OrderBy(value => value));
+        Assert.All(mainItems, item => Assert.Equal(ItemStatus.InStock, item.Status));
+    }
+
+    [Fact]
     public async Task ItemAvailability_ShowsUncertainDefinitionOccupancyFromExpectedShipmentDate()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -4081,6 +4240,62 @@ public class RentalOccupancyAndValueTests
             shipment.Items.Select(item => item.RentalItemId).OrderBy(id => id));
         Assert.Equal(ItemStatus.LoanedOut, firstItem.Status);
         Assert.Equal(ItemStatus.LoanedOut, secondItem.Status);
+    }
+
+    [Fact]
+    public async Task AddShipmentAsync_RejectsItemsOutsideSelectedWarehouse()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var itemWarehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var selectedWarehouse = new Warehouse { Name = "Secondary", Location = "B1", Description = "Secondary warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera", Category = category, Unit = "pcs", Description = "Camera" };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            ShortId = "CAM-WRONG-WAREHOUSE",
+            Warehouse = itemWarehouse,
+            ItemDefinition = definition,
+            Status = ItemStatus.InStock
+        };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990701-WRONG-WAREHOUSE",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = BusinessToday(),
+            ExpectedShipDate = BusinessToday(),
+            ExpectedEndDate = BusinessToday().AddDays(3)
+        };
+        rental.Items.Add(new RentalItem
+        {
+            Item = item,
+            ItemDefinition = definition,
+            ItemShortIdSnapshot = item.ShortId,
+            ItemNameSnapshot = definition.Name
+        });
+        context.Warehouses.Add(selectedWarehouse);
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var result = await CreateRentalService(context).AddShipmentAsync(rental.Id, new CreateShipmentDto
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouseId = selectedWarehouse.Id,
+            Carrier = "SF"
+        }, "TestUser");
+
+        Assert.Contains("不属于所选发货仓库", result.Error);
+        Assert.Null(result.Rental);
+        Assert.Equal(ItemStatus.InStock, item.Status);
     }
 
     [Fact]
