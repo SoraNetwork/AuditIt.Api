@@ -158,6 +158,22 @@ namespace AuditIt.Api.Services
                 rental.Status == RentalStatus.Returned ? rental.StartDate : null);
         }
 
+        public static IEnumerable<RentalShipment> OutboundShipmentsFor(Rental rental, RentalItem item) =>
+            rental.Shipments.Where(s => s.Direction == ShipmentDirection.Outbound
+                && (s.RentalItems.Count == 0 || s.RentalItems.Any(link => link.RentalItemId == item.Id)));
+
+        public static bool HasItemShipped(Rental rental, RentalItem item) =>
+            IsRenewal(rental) || OutboundShipmentsFor(rental, item).Any();
+
+        public static DateTime OccupancyStartDate(Rental rental, RentalItem item, DateTime? expectedShipDate = null)
+        {
+            if (IsRenewal(rental)) return ToBusinessDate(expectedShipDate ?? rental.ExpectedShipDate);
+            return OccupancyStartDate(expectedShipDate ?? rental.ExpectedShipDate,
+                OutboundShipmentsFor(rental, item),
+                rental.Status == RentalStatus.Returned ? rental.StartDate
+                    : item.ReturnedAt.HasValue ? rental.ExpectedShipDate : null);
+        }
+
         public static DateTime OccupancyEndDate(
             DateTime expectedEndDate,
             DateTime? actualEndDate,
@@ -216,17 +232,16 @@ namespace AuditIt.Api.Services
                 expectedReturnDate: EffectiveExpectedReturnDate(rental)));
 
         public static DateTime OccupancyEndDate(Rental rental, RentalItem rentalItem, DateTime openEndedRangeEnd) =>
-            ExtendReturnedRenewalEndDate(
-                rental,
-                rentalItem,
-                OccupancyEndDate(
+            OccupancyEndDate(
                 EffectiveExpectedEndDate(rental),
                 rental.ActualEndDate,
                 rentalItem.ReturnedAt,
-                OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt, HasRentalStarted(rental), openEndedRangeEnd),
+                OpenEndedUntil(rental.ActualEndDate, rentalItem.ReturnedAt,
+                    HasItemShipped(rental, rentalItem) || rental.Status == RentalStatus.Pending || rental.Status == RentalStatus.PartiallyShipped,
+                    openEndedRangeEnd),
                 ShouldUseReturnBuffer(rental),
                 EffectiveReleasedFromRentalAt(rentalItem),
-                EffectiveExpectedReturnDate(rental)));
+                EffectiveExpectedReturnDate(rental));
 
         private static DateTime ExtendReturnedRenewalEndDate(Rental rental, RentalItem? rentalItem, DateTime endDate)
         {

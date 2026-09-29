@@ -13,7 +13,7 @@ using Xunit;
 
 namespace AuditIt.Api.Tests;
 
-public class RentalOccupancyAndValueTests
+public partial class RentalOccupancyAndValueTests
 {
     [Fact]
     public async Task CreateAsync_SavesPerItemPricesAndDerivesTotalPrice()
@@ -989,7 +989,9 @@ public class RentalOccupancyAndValueTests
         var renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" };
         var rentalId = Guid.NewGuid();
 
-        context.Items.AddRange(cameraItem, lensStock);
+        // One concrete camera plus one camera placeholder requires two cameras.
+        context.Items.AddRange(cameraItem, lensStock,
+            new Item { Id = Guid.NewGuid(), ShortId = "CAM-002", Warehouse = warehouse, ItemDefinition = camera, Status = ItemStatus.InStock });
         context.Rentals.Add(new Rental
         {
             Id = rentalId,
@@ -1770,7 +1772,7 @@ public class RentalOccupancyAndValueTests
         Assert.Equal(Guid.Empty, manualLoan.RentalId);
         Assert.Equal("普通借出", manualLoan.RentalNumber);
         Assert.Equal(loanDate, manualLoan.StartAt);
-        Assert.Equal(today, manualLoan.EndAt);
+        Assert.Equal(today.AddDays(1).AddTicks(-1), manualLoan.EndAt);
         Assert.True(manualLoan.IsOpen);
 
         item.Status = ItemStatus.InStock;
@@ -1832,7 +1834,7 @@ public class RentalOccupancyAndValueTests
         var itemOk = Assert.IsType<OkObjectResult>(itemAction.Result);
         var itemCalendar = Assert.IsType<ItemAvailabilityCalendarDto>(itemOk.Value);
         var manualLoan = Assert.Single(itemCalendar.BusyPeriods);
-        Assert.Equal(today, manualLoan.EndAt);
+        Assert.Equal(today.AddDays(1).AddTicks(-1), manualLoan.EndAt);
         Assert.True(manualLoan.IsOpen);
 
         var definitionController = new ItemDefinitionsController(context);
@@ -2081,7 +2083,7 @@ public class RentalOccupancyAndValueTests
         Assert.Contains(itemCalendar.BusyPeriods, period =>
             period.IsManualLoan
             && period.StartAt == manualLoanStart
-            && period.EndAt == expectedManualReturn);
+            && period.EndAt == expectedManualReturn.AddDays(1).AddTicks(-1));
     }
 
     [Fact]
