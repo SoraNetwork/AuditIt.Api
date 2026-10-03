@@ -733,6 +733,10 @@ namespace AuditIt.Api.Services
                 };
             }
 
+            var expectedShipperName = NormalizeNullableText(dto.ExpectedShipperName) ?? NormalizeNullableText(currentUser);
+            if (expectedShipperName == null)
+                return new CreateRentalResult { Error = "请选择预计发货人。" };
+
             var renter = await _renterService.ResolveOrUpsertAsync(dto.Renter, currentUser);
             var rentalId = Guid.NewGuid();
             var rentalNumber = await GenerateRentalNumberAsync(now);
@@ -759,6 +763,7 @@ namespace AuditIt.Api.Services
                 Notes = NormalizeNullableText(dto.Notes),
                 CreatedAt = now,
                 CreatedBy = currentUser,
+                ExpectedShipperName = expectedShipperName,
                 UpdatedAt = now,
                 UpdatedBy = currentUser,
                 AssignedTo = NormalizeAssignedTo(dto.AssignedTo)
@@ -1296,6 +1301,17 @@ namespace AuditIt.Api.Services
                     rental.SenderName = senderName;
                 }
             }
+            if (dto.ExpectedShipperName != null)
+            {
+                var expectedShipperName = NormalizeNullableText(dto.ExpectedShipperName);
+                if (expectedShipperName == null)
+                    return new UpdateRentalResult { Error = "请选择预计发货人。" };
+                if (expectedShipperName != rental.ExpectedShipperName)
+                {
+                    changes.Add($"预计发货人：{rental.ExpectedShipperName ?? rental.CreatedBy ?? "-"} -> {expectedShipperName}");
+                    rental.ExpectedShipperName = expectedShipperName;
+                }
+            }
 
             if (changes.Count == 0)
             {
@@ -1333,6 +1349,10 @@ namespace AuditIt.Api.Services
             return new UpdateRentalResult { Rental = await GetByIdAsync(id) };
         }
 
+        private static bool RequiresExpressDetails(string carrier) =>
+            !carrier.Contains("同城", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(carrier, "其他", StringComparison.OrdinalIgnoreCase);
+
         public async Task<RentalShipmentResult> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser)
         {
             var rental = await _context.Rentals
@@ -1355,6 +1375,17 @@ namespace AuditIt.Api.Services
             if (IsClosedStatus(rental.Status))
             {
                 return new RentalShipmentResult { Error = "租赁单已结束，不能继续登记物流。" };
+            }
+
+            var carrier = dto.Carrier?.Trim() ?? string.Empty;
+            if (carrier.Length == 0)
+                return new RentalShipmentResult { Error = "请填写物流公司。" };
+            if (dto.Direction == ShipmentDirection.Outbound && RequiresExpressDetails(carrier))
+            {
+                if (string.IsNullOrWhiteSpace(dto.TrackingNumber))
+                    return new RentalShipmentResult { Error = "快递发货必须填写运单号。" };
+                if (dto.ShippingFee == null)
+                    return new RentalShipmentResult { Error = "快递发货必须填写运费，0 元也请明确填写。" };
             }
 
             if (dto.Direction == ShipmentDirection.Inbound && !HasRentalStarted(rental))
@@ -1562,7 +1593,7 @@ namespace AuditIt.Api.Services
                 Rental = rental,
                 Direction = dto.Direction,
                 OriginWarehouseId = dto.OriginWarehouseId,
-                Carrier = dto.Carrier.Trim(),
+                Carrier = carrier,
                 TrackingNumber = NormalizeNullableText(dto.TrackingNumber),
                 ShippedAt = shippedAt,
                 ShippingFee = dto.ShippingFee,
@@ -1583,7 +1614,7 @@ namespace AuditIt.Api.Services
 
             _context.RentalShipments.Add(shipment);
 
-            var logisticsSummary = BuildShipmentSummary(dto.Carrier, shipment.TrackingNumber);
+            var logisticsSummary = BuildShipmentSummary(carrier, shipment.TrackingNumber);
             if (dto.Direction == ShipmentDirection.Outbound)
             {
                 var fullyShipped = IsFullyOutboundShipped(
@@ -4211,6 +4242,7 @@ namespace AuditIt.Api.Services
             SettlementNotifiedStatus = rental.SettlementNotifiedStatus,
             AssignedTo = rental.AssignedTo,
             SenderName = rental.SenderName,
+            ExpectedShipperName = rental.ExpectedShipperName ?? rental.CreatedBy,
             Items = rental.Items.Select(ToItemDto).ToList(),
             Shipments = rental.Shipments.Select(ToShipmentDto).ToList()
         };

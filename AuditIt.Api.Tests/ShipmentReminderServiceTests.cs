@@ -13,6 +13,70 @@ namespace AuditIt.Api.Tests;
 public class ShipmentReminderServiceTests
 {
     [Fact]
+    public async Task Escalation_calls_expected_shipper_every_half_hour_until_shipped()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connection).Options;
+        await using var db = new ApplicationDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var creator = new User { Id = Guid.NewGuid(), Name = "Creator", Mobile = "13800138000", Status = UserStatus.Active };
+        var shipper = new User { Id = Guid.NewGuid(), Name = "Shipper", Mobile = "13900139000", Status = UserStatus.Active };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(), RentalNumber = "R20260808-0099",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "租客", Phone = "13700137000" },
+            Status = RentalStatus.Pending,
+            ExpectedShipDate = new DateTime(2026, 8, 8),
+            StartDate = new DateTime(2026, 8, 10),
+            ExpectedEndDate = new DateTime(2026, 8, 12),
+            CreatedBy = creator.Name, ExpectedShipperName = shipper.Name,
+            TotalPrice = 100m
+        };
+        db.Users.AddRange(creator, shipper);
+        db.Rentals.Add(rental);
+        db.ShipmentReminderSettings.Add(new ShipmentReminderSettings
+        {
+            Enabled = true, SmsEnabled = false, VoiceEnabled = true,
+            VoiceSendHour = 12, VoiceSendMinute = 30,
+            VoiceTtsCode = "TTS_123",
+            TemplateVariablesJson = JsonSerializer.Serialize(new[]
+            {
+                new ShipmentReminderTemplateVariableDto { Name = "order_id", Source = ShipmentReminderVariableSource.RentalNumber },
+                new ShipmentReminderTemplateVariableDto { Name = "time", Source = ShipmentReminderVariableSource.RelativeExpectedShipDate }
+            })
+        });
+        await db.SaveChangesAsync();
+
+        var sender = new RecordingSender();
+        var service = new ShipmentReminderService(db, sender,
+            Options.Create(new AliyunNotificationOptions { AccessKeyId = "key", AccessKeySecret = "secret" }),
+            NullLogger<ShipmentReminderService>.Instance);
+        await service.DispatchScheduledAsync(new DateTime(2026, 8, 8, 7, 59, 0, DateTimeKind.Utc));
+        Assert.Single(sender.VoiceSends);
+        Assert.Equal(creator.Mobile, sender.VoiceSends[0].Mobile);
+
+        await service.DispatchScheduledAsync(new DateTime(2026, 8, 8, 8, 0, 0, DateTimeKind.Utc));
+        await service.DispatchScheduledAsync(new DateTime(2026, 8, 8, 8, 10, 0, DateTimeKind.Utc));
+        Assert.Equal(2, sender.VoiceSends.Count);
+        Assert.Equal(shipper.Mobile, sender.VoiceSends[1].Mobile);
+
+        await service.DispatchScheduledAsync(new DateTime(2026, 8, 8, 8, 30, 0, DateTimeKind.Utc));
+        Assert.Equal(3, sender.VoiceSends.Count);
+        Assert.Equal(2, await db.ShipmentReminderDispatches.CountAsync(dispatch =>
+            dispatch.Channel == ShipmentReminderChannel.EscalationVoice));
+
+        await service.DispatchScheduledAsync(new DateTime(2026, 8, 8, 16, 0, 0, DateTimeKind.Utc)); // Next day, 00:00 China time
+        Assert.Equal(4, sender.VoiceSends.Count);
+
+        rental.Status = RentalStatus.Active;
+        await db.SaveChangesAsync();
+        await service.DispatchScheduledAsync(new DateTime(2026, 8, 8, 16, 30, 0, DateTimeKind.Utc));
+        Assert.Equal(4, sender.VoiceSends.Count);
+    }
+
+    [Fact]
     public async Task DispatchScheduledAsync_separatesSmsAndVoiceSchedules_and_deduplicatesRecipientsAndSweeps()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -29,7 +93,7 @@ public class ShipmentReminderServiceTests
             RentalNumber = "R20260808-0001",
             Renter = new Renter { Id = Guid.NewGuid(), Name = "张三", Phone = "13900139000" },
             Status = RentalStatus.Pending,
-            ExpectedShipDate = new DateTime(2026, 8, 7),
+            ExpectedShipDate = new DateTime(2026, 8, 8),
             StartDate = new DateTime(2026, 8, 7),
             ExpectedEndDate = new DateTime(2026, 8, 10),
             CreatedBy = creator.Name,
@@ -95,7 +159,7 @@ public class ShipmentReminderServiceTests
         Assert.Single(sender.VoiceSends);
         Assert.Equal("13800138000", send.Mobile);
         Assert.Equal("R20260808-0001 张三等2条", send.Parameters["order_Name"]);
-        Assert.Equal("昨天", send.Parameters["when"]);
+        Assert.Equal("今天", send.Parameters["when"]);
         Assert.Equal("请加急", send.Parameters["note"]);
         Assert.Equal(4, await db.ShipmentReminderDispatches.CountAsync());
         Assert.All(await db.ShipmentReminderDispatches.ToListAsync(), dispatch =>

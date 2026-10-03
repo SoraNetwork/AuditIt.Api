@@ -42,6 +42,7 @@ namespace AuditIt.Api.Models
         public string? SettlementNotifiedStatus { get; set; }
         public string? AssignedTo { get; set; }
         public string? SenderName { get; set; }
+        public string? ExpectedShipperName { get; set; }
         public List<RentalItemDto> Items { get; set; } = new();
         public List<RentalShipmentDto> Shipments { get; set; } = new();
     }
@@ -137,6 +138,9 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? AssignedTo { get; set; }
 
+        [StringLength(100)]
+        public string? ExpectedShipperName { get; set; }
+
         public bool AllowScheduleConflict { get; set; }
     }
 
@@ -180,6 +184,9 @@ namespace AuditIt.Api.Models
         public string? CreatedBy { get; set; }
 
         public string? SenderName { get; set; }
+
+        [StringLength(100)]
+        public string? ExpectedShipperName { get; set; }
 
         public bool AllowScheduleConflict { get; set; }
     }

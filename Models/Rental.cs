@@ -101,6 +101,10 @@ namespace AuditIt.Api.Models
         [StringLength(100)]
         public string? SenderName { get; set; }
 
+        // Person expected to ship the order; separate from the settlement shipper.
+        [StringLength(100)]
+        public string? ExpectedShipperName { get; set; }
+
         public virtual ICollection<RentalItem> Items { get; set; } = new List<RentalItem>();
 
         public virtual ICollection<RentalShipment> Shipments { get; set; } = new List<RentalShipment>();

@@ -60,7 +60,8 @@ public class ShipmentReminderSettings
 public enum ShipmentReminderChannel
 {
     Sms,
-    Voice
+    Voice,
+    EscalationVoice
 }
 
 public enum ShipmentReminderVariableSource
@@ -99,7 +100,7 @@ public class ShipmentReminderDispatch
 
     public ShipmentReminderChannel Channel { get; set; }
 
-    /// <summary>China business date for which the reminder was sent.</summary>
+    /// <summary>China business date for daily reminders, or half-hour slot for escalation calls.</summary>
     public DateTime BusinessDate { get; set; }
 
     [StringLength(100)]

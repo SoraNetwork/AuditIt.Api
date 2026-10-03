@@ -3511,6 +3511,8 @@ public partial class RentalOccupancyAndValueTests
             Direction = ShipmentDirection.Outbound,
             OriginWarehouseId = warehouse.Id,
             Carrier = "SF",
+            TrackingNumber = "SF-CONFLICT-001",
+            ShippingFee = 0m,
             ShippedAt = today.AddHours(4)
         }, "TestUser");
 
@@ -4139,10 +4141,10 @@ public partial class RentalOccupancyAndValueTests
         {
             Direction = ShipmentDirection.Outbound,
             OriginWarehouseId = warehouse.Id,
-            Carrier = "SF",
+            Carrier = "其他",
             RentalItemIds = new List<int>()
         }, "TestUser");
-        Assert.NotNull(emptySelection.Error);
+        Assert.Contains("请至少选择", emptySelection.Error);
         Assert.False(await context.RentalShipments.AnyAsync());
 
         var firstShipment = await service.AddShipmentAsync(rental.Id, new CreateShipmentDto
@@ -4150,6 +4152,8 @@ public partial class RentalOccupancyAndValueTests
             Direction = ShipmentDirection.Outbound,
             OriginWarehouseId = warehouse.Id,
             Carrier = "SF",
+            TrackingNumber = "SF-PARTIAL-001",
+            ShippingFee = 0m,
             RentalItemIds = new List<int> { firstRentalItem.Id },
             ItemSelections = new List<RentalItemShipSelectionDto>
             {
@@ -4179,6 +4183,8 @@ public partial class RentalOccupancyAndValueTests
             Direction = ShipmentDirection.Outbound,
             OriginWarehouseId = warehouse.Id,
             Carrier = "SF",
+            TrackingNumber = "SF-PARTIAL-002",
+            ShippingFee = 0m,
             RentalItemIds = new List<int> { secondRentalItem.Id },
             ItemSelections = new List<RentalItemShipSelectionDto>
             {
@@ -4225,11 +4231,29 @@ public partial class RentalOccupancyAndValueTests
         context.Rentals.Add(rental);
         await context.SaveChangesAsync();
 
-        var result = await CreateRentalService(context).AddShipmentAsync(rental.Id, new CreateShipmentDto
+        var service = CreateRentalService(context);
+        var missingTracking = await service.AddShipmentAsync(rental.Id, new CreateShipmentDto
         {
             Direction = ShipmentDirection.Outbound,
             OriginWarehouseId = warehouse.Id,
             Carrier = "SF"
+        }, "TestUser");
+        Assert.Contains("运单号", missingTracking.Error);
+        var missingFee = await service.AddShipmentAsync(rental.Id, new CreateShipmentDto
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouseId = warehouse.Id,
+            Carrier = "SF",
+            TrackingNumber = "SF-ALL-001"
+        }, "TestUser");
+        Assert.Contains("运费", missingFee.Error);
+        var result = await service.AddShipmentAsync(rental.Id, new CreateShipmentDto
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouseId = warehouse.Id,
+            Carrier = "SF",
+            TrackingNumber = "SF-ALL-001",
+            ShippingFee = 0m
         }, "TestUser");
 
         Assert.Null(result.Error);
@@ -4292,7 +4316,7 @@ public partial class RentalOccupancyAndValueTests
         {
             Direction = ShipmentDirection.Outbound,
             OriginWarehouseId = selectedWarehouse.Id,
-            Carrier = "SF"
+            Carrier = "顺丰同城"
         }, "TestUser");
 
         Assert.Contains("不属于所选发货仓库", result.Error);

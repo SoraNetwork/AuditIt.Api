@@ -191,10 +191,14 @@ public class ShipmentReminderService : IShipmentReminderService
     {
         var settings = await GetOrCreateSettingsAsync(ct);
         var channels = GetDueChannels(settings, utcNow).ToList();
-        if (!settings.Enabled || channels.Count == 0)
+        if (!settings.Enabled)
         {
             return;
         }
+
+        var escalationEnabled = settings.VoiceEnabled && !string.IsNullOrWhiteSpace(settings.VoiceTtsCode);
+        if (channels.Count == 0 && !escalationEnabled)
+            return;
 
         if (!_aliyunOptions.IsConfigured)
         {
@@ -303,6 +307,80 @@ public class ShipmentReminderService : IShipmentReminderService
                 }
             }
         }
+
+        if (escalationEnabled)
+            await DispatchEscalationAsync(candidates, settings, businessDate, utcNow, ct);
+    }
+
+    private async Task DispatchEscalationAsync(
+        IReadOnlyCollection<Rental> candidates,
+        ShipmentReminderSettings settings,
+        DateTime businessDate,
+        DateTime utcNow,
+        CancellationToken ct)
+    {
+        var chinaNow = utcNow.AddHours(8);
+        var slot = new DateTime(chinaNow.Year, chinaNow.Month, chinaNow.Day,
+            chinaNow.Hour, chinaNow.Minute < 30 ? 0 : 30, 0);
+        var lateRentals = candidates.Where(rental =>
+            RentalDateRules.ToBusinessDate(rental.ExpectedShipDate) < businessDate
+            || chinaNow.TimeOfDay >= TimeSpan.FromHours(16)).ToList();
+        if (lateRentals.Count == 0) return;
+
+        var shipperNames = lateRentals
+            .Select(rental => rental.ExpectedShipperName ?? rental.CreatedBy)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var shippers = await _db.Users.AsNoTracking()
+            .Where(user => user.Status == UserStatus.Active && shipperNames.Contains(user.Name))
+            .ToListAsync(ct);
+        var usersByName = shippers.ToDictionary(user => user.Name, StringComparer.OrdinalIgnoreCase);
+
+        var targets = lateRentals.Select(rental =>
+        {
+            var name = rental.ExpectedShipperName ?? rental.CreatedBy;
+            return name != null && usersByName.TryGetValue(name, out var user)
+                ? new RecipientTarget(rental, new Recipient(user.Name, NormalizeMobile(user.Mobile)))
+                : null;
+        }).Where(target => target?.Recipient.Mobile != null).Cast<RecipientTarget>().ToList();
+
+        foreach (var group in targets.GroupBy(target => target.Recipient.Mobile!, StringComparer.Ordinal))
+        {
+            var reserved = new List<(Rental Rental, ShipmentReminderDispatch Dispatch)>();
+            foreach (var target in group)
+            {
+                var dispatch = await ReserveDispatchAsync(target.Rental.Id, target.Recipient,
+                    ShipmentReminderChannel.EscalationVoice, slot, utcNow, ct);
+                if (dispatch != null) reserved.Add((target.Rental, dispatch));
+            }
+            if (reserved.Count == 0) continue;
+
+            try
+            {
+                var requestId = await SendChannelAsync(ShipmentReminderChannel.EscalationVoice,
+                    group.Key, settings,
+                    BuildGroupedTemplateParameters(reserved.Select(item => item.Rental), settings, businessDate), ct);
+                foreach (var (_, dispatch) in reserved)
+                {
+                    dispatch.ProviderRequestId = requestId;
+                    dispatch.Status = ShipmentReminderDispatchStatus.Succeeded;
+                    dispatch.SentAt = DateTime.UtcNow;
+                    dispatch.ErrorMessage = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                foreach (var (_, dispatch) in reserved)
+                {
+                    dispatch.Status = ShipmentReminderDispatchStatus.Failed;
+                    dispatch.ErrorMessage = Truncate(ex.Message, 1000);
+                }
+                _logger.LogWarning(ex, "Half-hour shipment call failed for {RecipientName}.", group.First().Recipient.Name);
+            }
+            await _db.SaveChangesAsync(ct);
+        }
     }
 
     private async Task<ShipmentReminderTestResultDto> SendTestChannelAsync(
@@ -351,7 +429,7 @@ public class ShipmentReminderService : IShipmentReminderService
             settings.SmsTemplateCode!,
             templateParameters,
             ct),
-        ShipmentReminderChannel.Voice => _sender.SendVoiceAsync(
+        ShipmentReminderChannel.Voice or ShipmentReminderChannel.EscalationVoice => _sender.SendVoiceAsync(
             mobile,
             settings.VoiceCalledShowNumber,
             settings.VoiceTtsCode!,
