@@ -380,6 +380,10 @@ namespace AuditIt.Api.Models
 
     public class UpdateShipmentDto
     {
+        // Null keeps the existing tracking number unchanged; an empty string clears it.
+        [StringLength(100)]
+        public string? TrackingNumber { get; set; }
+
         [Range(0, double.MaxValue)]
         public decimal? ShippingFee { get; set; }
 

@@ -216,6 +216,7 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ### `POST /rentals/{id}/ship`
 - Body: `CreateShipmentDto`
+- When `carrier` is `顺丰速运`, outbound `trackingNumber` and `shippingFee` may be omitted and filled in later. Other express carriers still require both fields.
 - New clients explicitly send `rentalItemIds` for the outbound rental items selected for this parcel. An empty explicit list is rejected; omitting the property preserves legacy whole-rental behavior.
 - `itemSelections` contains `{ rentalItemId, itemId }` mappings. Outbound mappings identify concrete inventory for uncertain rental items; inbound mappings associate return logistics with selected items.
 - Response: `RentalDto`
@@ -234,6 +235,10 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 
 ### `POST /rentals/{id}/shipments/{shipmentId}/deliver`
 - Body: `DeliverShipmentDto`
+- Response: `RentalDto`
+
+### `PUT /rentals/{id}/shipments/{shipmentId}`
+- Body: `UpdateShipmentDto`. `trackingNumber` can be supplied to add or change an existing shipment's tracking number; omit it to keep the current value. `shippingFee` and `itemSelections` retain their existing update behavior.
 - Response: `RentalDto`
 
 ### `POST /rentals/{id}/return`

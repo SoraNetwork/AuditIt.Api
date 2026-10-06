@@ -4269,6 +4269,62 @@ public partial class RentalOccupancyAndValueTests
     }
 
     [Fact]
+    public async Task AddShipmentAsync_SfExpressAllowsTrackingAndFeeToBeAddedLater()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var context = new ApplicationDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+
+        var warehouse = new Warehouse { Name = "Main", Location = "A1", Description = "Main warehouse" };
+        var category = new Category { Name = "Camera", Description = "Camera category" };
+        var definition = new ItemDefinition { Name = "Camera", Category = category, Unit = "pcs", Description = "Camera" };
+        var item = new Item { Id = Guid.NewGuid(), ShortId = "CAM-SF-LATER", Warehouse = warehouse, ItemDefinition = definition, Status = ItemStatus.InStock };
+        var rental = new Rental
+        {
+            Id = Guid.NewGuid(),
+            RentalNumber = "R20990701-SF-LATER",
+            Renter = new Renter { Id = Guid.NewGuid(), Name = "Tenant", Phone = "13800138000" },
+            Status = RentalStatus.Pending,
+            StartDate = BusinessToday(),
+            ExpectedShipDate = BusinessToday(),
+            ExpectedEndDate = BusinessToday().AddDays(3)
+        };
+        rental.Items.Add(new RentalItem { Item = item, ItemShortIdSnapshot = item.ShortId, ItemNameSnapshot = definition.Name });
+        context.Rentals.Add(rental);
+        await context.SaveChangesAsync();
+
+        var service = CreateRentalService(context);
+        var shipped = await service.AddShipmentAsync(rental.Id, new CreateShipmentDto
+        {
+            Direction = ShipmentDirection.Outbound,
+            OriginWarehouseId = warehouse.Id,
+            Carrier = "顺丰速运"
+        }, "TestUser");
+
+        Assert.Null(shipped.Error);
+        var shipment = Assert.Single(shipped.Rental!.Shipments);
+        Assert.Null(shipment.TrackingNumber);
+        Assert.Null(shipment.ShippingFee);
+        Assert.Equal(RentalStatus.Active, shipped.Rental.Status);
+
+        var (updated, error) = await service.UpdateShipmentAsync(rental.Id, shipment.Id, new UpdateShipmentDto
+        {
+            TrackingNumber = "SF-LATER-001",
+            ShippingFee = 18.5m
+        }, "TestUser");
+
+        Assert.Null(error);
+        var updatedShipment = Assert.Single(updated!.Shipments);
+        Assert.Equal("SF-LATER-001", updatedShipment.TrackingNumber);
+        Assert.Equal(18.5m, updatedShipment.ShippingFee);
+    }
+
+    [Fact]
     public async Task AddShipmentAsync_RejectsItemsOutsideSelectedWarehouse()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");

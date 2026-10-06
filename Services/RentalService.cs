@@ -1351,6 +1351,7 @@ namespace AuditIt.Api.Services
 
         private static bool RequiresExpressDetails(string carrier) =>
             !carrier.Contains("同城", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(carrier, "顺丰速运", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(carrier, "其他", StringComparison.OrdinalIgnoreCase);
 
         public async Task<RentalShipmentResult> AddShipmentAsync(Guid rentalId, CreateShipmentDto dto, string? currentUser)
@@ -1776,6 +1777,20 @@ namespace AuditIt.Api.Services
                 .FirstAsync(r => r.Id == rentalId);
 
             var previousShippingFee = shipment.ShippingFee;
+            var previousTrackingNumber = shipment.TrackingNumber;
+
+            if (dto.TrackingNumber != null)
+            {
+                var trackingNumber = NormalizeNullableText(dto.TrackingNumber);
+                if (shipment.Direction == ShipmentDirection.Outbound
+                    && RequiresExpressDetails(shipment.Carrier)
+                    && trackingNumber == null)
+                {
+                    return (null, "快递发货必须填写运单号。");
+                }
+
+                shipment.TrackingNumber = trackingNumber;
+            }
 
             if (dto.ItemSelections != null)
             {
@@ -1923,10 +1938,10 @@ namespace AuditIt.Api.Services
             await _context.SaveChangesAsync();
             await NotifyStatusChangeAsync(
                 rental,
-                dto.ItemSelections == null ? "物流运费已更新" : "物流物品关联已更新",
+                dto.ItemSelections == null ? "物流信息已更新" : "物流物品关联已更新",
                 currentUser,
                 dto.ItemSelections == null
-                    ? $"物流：{BuildShipmentSummary(shipment.Carrier, shipment.TrackingNumber)}；运费：{FormatOptionalMoney(previousShippingFee)} -> {FormatOptionalMoney(shipment.ShippingFee)}"
+                    ? $"物流：{BuildShipmentSummary(shipment.Carrier, shipment.TrackingNumber)}；运单号：{previousTrackingNumber ?? "未填写"} -> {shipment.TrackingNumber ?? "未填写"}；运费：{FormatOptionalMoney(previousShippingFee)} -> {FormatOptionalMoney(shipment.ShippingFee)}"
                     : $"物流：{BuildShipmentSummary(shipment.Carrier, shipment.TrackingNumber)}；已补录/重新关联 {dto.ItemSelections.Count} 件物品");
 
             return (await GetByIdAsync(rentalId), null);
