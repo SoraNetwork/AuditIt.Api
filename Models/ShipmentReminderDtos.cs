@@ -4,6 +4,7 @@ namespace AuditIt.Api.Models;
 
 public class ShipmentReminderSettingsDto
 {
+    public Guid? DefaultShipperUserId { get; set; }
     public bool Enabled { get; set; }
     public bool SmsEnabled { get; set; }
     public bool VoiceEnabled { get; set; }
@@ -21,6 +22,11 @@ public class ShipmentReminderSettingsDto
     public bool AliyunCredentialsConfigured { get; set; }
     public DateTime UpdatedAt { get; set; }
     public string? UpdatedBy { get; set; }
+}
+
+public class UpdateDefaultShipperDto
+{
+    public Guid? DefaultShipperUserId { get; set; }
 }
 
 public class UpdateShipmentReminderSettingsDto

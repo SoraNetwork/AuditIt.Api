@@ -17,6 +17,9 @@ public class ShipmentReminderSettings
     public bool SmsEnabled { get; set; } = true;
     public bool VoiceEnabled { get; set; }
 
+    /// <summary>Global default used when creating a rental; resolved against active employees.</summary>
+    public Guid? DefaultShipperUserId { get; set; }
+
     [Range(0, 23)]
     public int SendHour { get; set; } = 12;
 

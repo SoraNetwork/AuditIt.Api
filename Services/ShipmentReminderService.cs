@@ -44,6 +44,26 @@ public class ShipmentReminderService : IShipmentReminderService
         return ToDto(settings);
     }
 
+    public async Task<ShipmentReminderSettingsDto> UpdateDefaultShipperAsync(
+        UpdateDefaultShipperDto dto,
+        string? currentUser,
+        CancellationToken ct = default)
+    {
+        if (dto.DefaultShipperUserId.HasValue
+            && !await _db.Users.AnyAsync(user => user.Id == dto.DefaultShipperUserId.Value
+                && user.Status == UserStatus.Active, ct))
+        {
+            throw new InvalidOperationException("默认发货人不存在或已离职，请选择在职员工。");
+        }
+
+        var settings = await GetOrCreateSettingsAsync(ct);
+        settings.DefaultShipperUserId = dto.DefaultShipperUserId;
+        settings.UpdatedAt = DateTime.UtcNow;
+        settings.UpdatedBy = Normalize(currentUser);
+        await _db.SaveChangesAsync(ct);
+        return ToDto(settings);
+    }
+
     public async Task<IReadOnlyList<ShipmentReminderRecipientDto>> ListActiveRecipientsAsync(CancellationToken ct = default) =>
         await _db.Users
             .AsNoTracking()
@@ -534,6 +554,7 @@ public class ShipmentReminderService : IShipmentReminderService
 
     private ShipmentReminderSettingsDto ToDto(ShipmentReminderSettings settings) => new()
     {
+        DefaultShipperUserId = settings.DefaultShipperUserId,
         Enabled = settings.Enabled,
         SmsEnabled = settings.SmsEnabled,
         VoiceEnabled = settings.VoiceEnabled,

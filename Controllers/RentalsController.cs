@@ -45,6 +45,11 @@ namespace AuditIt.Api.Controllers
             return Ok(await _rentals.GetOwnerOptionsAsync());
         }
 
+        [HttpGet("shipment-defaults")]
+        [RequirePermission(PermissionCodes.RentalCreate)]
+        public async Task<ActionResult<object>> ShipmentDefaults(CancellationToken ct = default) =>
+            Ok(new { defaultShipperName = await _rentals.GetDefaultShipperNameAsync(ct) });
+
         [HttpGet("payment-account-default")]
         [RequirePermission(PermissionCodes.RentalView)]
         public async Task<ActionResult<object>> PaymentAccountDefault(CancellationToken ct = default)

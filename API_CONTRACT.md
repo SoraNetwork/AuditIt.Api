@@ -1,6 +1,6 @@
 ﻿# AuditIt.Api Current Effective Contract
 
-Last updated: 2026-04-18
+Last updated: 2026-11-01
 
 This document is the current API contract baseline for `AuditIt.Ant` integration.
 
@@ -205,8 +205,14 @@ This document is the current API contract baseline for `AuditIt.Ant` integration
 ### `GET /rentals/{id}`
 - Response: `RentalDto`
 
+### `GET /rentals/shipment-defaults`
+- Requires `rental.create` only, so every user who can create rentals can read the default without reminder-management or user-directory permissions.
+- Response: `{ defaultShipperName: string | null }`; unavailable or departed employees resolve to `null`.
+- New-rental forms preselect this employee, falling back to the current user if no active default exists. The selection can be overridden for each order.
+
 ### `POST /rentals`
 - Body: `CreateRentalDto`
+- Uses an explicitly provided `expectedShipperName` first, then the active global default, then the current user. The default is resolved using the employee ID, so employee renames apply to future orders.
 - `itemPrices` is optional for compatibility. When supplied, provide one `{ itemId | itemDefinitionId, perItemPrice }` for every selected item; the server calculates `totalPrice` from the entries.
 - Response: `RentalDto`
 
@@ -283,6 +289,13 @@ All endpoints require the `shipmentreminder.manage` permission. This permission 
 
 ### `GET /shipment-reminder-settings`
 - Response: `ShipmentReminderSettingsDto`
+- Includes `defaultShipperUserId: guid | null`, the global default for new rentals.
+
+### `PUT /shipment-reminder-settings/default-shipper`
+- Body: `{ defaultShipperUserId: guid | null }`
+- Selects an active employee, or clears the global default with `null`.
+- Response: `ShipmentReminderSettingsDto`.
+- Saves independently of SMS/voice configuration and requires no Alibaba Cloud credentials. It does not change existing rentals.
 
 ### `GET /shipment-reminder-settings/recipients`
 - Returns active employees as `{ id, name, mobile? }` for specified-administrator and test-recipient selectors. It is authorized by `shipmentreminder.manage`; it does not require the separate user-directory permission.

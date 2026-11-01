@@ -23,6 +23,24 @@ public class ShipmentReminderSettingsController : ControllerBase
     public async Task<ActionResult<ShipmentReminderSettingsDto>> Get(CancellationToken ct) =>
         Ok(await _shipmentReminders.GetSettingsAsync(ct));
 
+    [HttpPut("default-shipper")]
+    [RequirePermission(PermissionCodes.ShipmentReminderManage)]
+    public async Task<ActionResult<ShipmentReminderSettingsDto>> UpdateDefaultShipper(
+        [FromBody] UpdateDefaultShipperDto dto,
+        CancellationToken ct)
+    {
+        if (!ModelState.IsValid) return ValidationProblem(ModelState);
+
+        try
+        {
+            return Ok(await _shipmentReminders.UpdateDefaultShipperAsync(dto, CurrentUser(), ct));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     [HttpGet("recipients")]
     [RequirePermission(PermissionCodes.ShipmentReminderManage)]
     public async Task<ActionResult<IReadOnlyList<ShipmentReminderRecipientDto>>> ListRecipients(CancellationToken ct) =>

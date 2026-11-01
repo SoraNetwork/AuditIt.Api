@@ -142,6 +142,7 @@ public class ReminderSweeperTests
 
     private sealed class NoopShipmentReminderService : IShipmentReminderService
     {
+        public Task<ShipmentReminderSettingsDto> UpdateDefaultShipperAsync(UpdateDefaultShipperDto dto, string? currentUser, CancellationToken ct = default) => throw new NotImplementedException();
         public Task DispatchScheduledAsync(DateTime utcNow, CancellationToken ct = default) => Task.CompletedTask;
         public Task<ShipmentReminderSettingsDto> GetSettingsAsync(CancellationToken ct = default) => throw new NotImplementedException();
         public Task<IReadOnlyList<ShipmentReminderRecipientDto>> ListActiveRecipientsAsync(CancellationToken ct = default) => throw new NotImplementedException();

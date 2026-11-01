@@ -6,6 +6,7 @@ namespace AuditIt.Api.Services
     {
         Task<(IEnumerable<RentalDto> items, int total)> ListAsync(RentalQueryParameters query, string? currentUser = null);
         Task<RentalOwnerOptionsDto> GetOwnerOptionsAsync();
+        Task<string?> GetDefaultShipperNameAsync(CancellationToken ct = default);
         Task<IReadOnlyList<RentalCalendarEventDto>> GetCalendarAsync(
             RentalCalendarQueryParameters query,
             string? currentUser,

@@ -30,6 +30,12 @@ namespace AuditIt.Api.Services
             _settlementService = settlementService;
         }
 
+        public Task<string?> GetDefaultShipperNameAsync(CancellationToken ct = default) =>
+            (from settings in _context.ShipmentReminderSettings.AsNoTracking()
+             join user in _context.Users.AsNoTracking() on settings.DefaultShipperUserId equals (Guid?)user.Id
+             where settings.Id == ShipmentReminderSettings.SingletonId && user.Status == UserStatus.Active
+             select user.Name).FirstOrDefaultAsync(ct);
+
         public async Task<(IEnumerable<RentalDto> items, int total)> ListAsync(RentalQueryParameters query, string? currentUser = null)
         {
             var q = _context.Rentals
@@ -733,7 +739,9 @@ namespace AuditIt.Api.Services
                 };
             }
 
-            var expectedShipperName = NormalizeNullableText(dto.ExpectedShipperName) ?? NormalizeNullableText(currentUser);
+            var expectedShipperName = NormalizeNullableText(dto.ExpectedShipperName)
+                ?? NormalizeNullableText(await GetDefaultShipperNameAsync())
+                ?? NormalizeNullableText(currentUser);
             if (expectedShipperName == null)
                 return new CreateRentalResult { Error = "请选择预计发货人。" };
 
